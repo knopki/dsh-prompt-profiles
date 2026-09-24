@@ -47,13 +47,13 @@ mode (пресет агента) может работать в разных п�
 | 12 | Применяется на всех поверхностях, где есть воркспейс; пикер — лишь способ переопределить |
 | 13 | Чип выбора — `conversation.input.left` (list, внутри тул-строки поля промпта, после `permission` и `plan`); виден только на пустой сессии, после старта рендерит `null` |
 | 14 | Редактор — своя секция `settings.section` (id `prompt-profiles`, порядок 25): полный CRUD секций и профилей. Три таба — Profiles / Sections / Preview; внутри таба drill-down (список → форма), назад по `← back`, Esc или повторному клику по активному табу |
-| 15 | Порядок в редакторе: outline, где built-ins показаны серыми read-only (весь справочник из mirror); добавление своих секций — пикером `+ Add section` (поиск + мультивыбор), drag — только перестановка внутри состава профиля; числа пересчитываются, число можно править руками |
+| 15 | Порядок в редакторе: outline, где built-ins показаны серыми read-only (весь справочник из mirror); добавление своих секций — пикером `+ Add section` (поиск + мультивыбор); переупорядочивание кнопками ↑↓ (`IconChevronUpOutlineMedium`/`IconChevronDownOutlineMedium`) плюс числовое поле — только внутри состава профиля; order пересчитывается как середина между соседями, при перестановке крайних — шаг ±1 с перенормировкой; HTML5 drag — опция, реализуемая вручную, не в v1 |
 | 16 | Переименование секции — батч-операция с откатом: новая строка → правка ссылок во всех профилях → снятие старой строки |
 | 17 | Удаление своей строки — физическое; удаление строки, пришедшей из бандла, — `disabled: true` в нашем профильном слое |
 | 18 | Создание/удаление строк — своим writer'ом `insert:` в профильный патч (config-editor создавать строки не умеет) |
 | 19 | Правка существующей строки — через `ctx.settings` / `configEditor` (валидация, revisions, атомарность, сохранение комментариев) |
 | 20 | Деградация: ничего не фатально; битые данные → варнинг в лог и UI, работаем дальше; ссылка на несуществующий профиль → тихий сброс |
-| 21 | Комбинация профиля с mode, у которого `complete: true` (пресет `minimal`), — предупреждение в UI; секции в такой сессии движком отбрасываются |
+| 21 | Комбинация профиля с mode, у которого `complete: true` (пресет `minimal`), — предупреждение в UI; секции в такой сессии движком отбрасываются. Детекция (доказано спайком): host-side `ctx.agentPresets.readDocument(id)` возвращает `{agentPreset, content (YAML-строка), name?, description?}`; парсим `content` с custom-тегом `!!js`, flatten-им список плагинов и ищем строку `@deepseek-ai/dsh-persona` с `config.complete === true`. `compositionInventory()` для этого НЕдостаточно — её строки не несут config |
 | 22 | Локаль: en в v1, ru вторым этапом через `dsh-client-locale` |
 | 23 | UI-название фичи: **Prompt profile** |
 | 24 | Правки сохраняются автосейвом с дебаунсом; отдельной кнопки Save нет |
@@ -136,6 +136,14 @@ const Config = z.object({
 })
 ```
 
+Две оговорки по семантике записи:
+
+- `unset` значения, унаследованного от нижнего слоя, восстанавливает значение этого нижнего слоя;
+  ключ, пришедший из бандла, удалить нельзя — только переопределить;
+- запись массива `sections` целиком замещает config строки как есть, поэтому refs, отданные
+  бандлом и не попавшие в новый массив, исчезают — это ожидаемая семантика override, но её
+  нужно явно показывать в UI редактора.
+
 Все три плагина объявляют `ctx.inject(['settings'], (child) => child.effect(() =>
 child.settings.configure({ auto: false }, ctx.fiber)))` — страницу рисуем сами.
 
@@ -172,36 +180,60 @@ Subpath-плагины `/section` и `/profile` тривиальны: объяв
 ### 5.2 Mirror порядков
 
 При старте: распарсить `SECTION_ORDERS` из `lib/index.js` установленного `@deepseek-ai/dsh-system-prompt`
-(резолв от каталога профиля, фолбэк — захардкоженная копия). Если парсинг упал или таблица
-разошлась с копией — варнинг и работа на копии. Mirror нужен только для UI и для защиты от
-коллизий; в рантайме он не обязателен.
+(резолв от каталога профиля; фолбэк — захардкоженная копия). Правило приоритета:
+**успешно распарсенная таблица установленной версии — истина**; если она разошлась с копией, пишем
+варнинг (копия устарела) и работаем на распарсенной. Копия используется только тогда, когда парсинг
+не удался или пакет не найден. Mirror нужен только для UI и для защиты от коллизий; в рантайме он
+не обязателен.
 
 ### 5.3 Разрешение профиля и запечатывание
 
-Слушатель waterfall `system-prompt/assemble` (глобальный, не scoped):
+Слушатель waterfall `system-prompt/assemble` — koa-style, глобальный (не scoped); unscoped-слушатель
+получает и agent-scoped сборки, а `context.agent` для агентных сборок есть всегда:
 
+```js
+ctx.on('system-prompt/assemble', (assembly, context, next) => {
+  const agent = context.agent        // всегда определён у агентной сборки
+  const session = agent.session
+  const snapshot = snapshots.get(session.id)   // storageDomain, таблица sessions
+  if (!snapshot) {
+    const workspace = workspaceRegistry.resolveByPath(session.header.cwd)
+    const profileId = lastByWorkspace[workspace.id] ?? default ?? null
+    snapshot = buildSnapshot(profileId, scopePredicate(agent))
+    await snapshots.put(session.id, snapshot)  // дальше только чтение
+  }
+  if (snapshot.sections.length > 0) {
+    // мутируем assembly.sections на месте, вставляя записи по вычисленному индексу
+  }
+  return next()
+})
 ```
-onAssemble(assembly, context):
-  agent = context.agent                    // есть только у агентной сборки
-  if (!agent) return
-  session = agent.session
-  snapshot = snapshots.get(session.id)     // storageDomain, таблица sessions
-  if (!snapshot):
-      workspace = workspaceRegistry.resolveByPath(session.header.cwd)
-      profileId = lastByWorkspace[workspace.id] ?? default ?? null
-      snapshot  = buildSnapshot(profileId, isSubagent(agent))
-      await snapshots.put(session.id, snapshot)   // дальше только чтение
-  if (snapshot.sections.length === 0) return
-  для каждой секции: вставить в assembly.sections запись
-      { name: `prompt-profile:${section.id}`, order: effectiveOrder(section), text: section.text }
-  пересортировать/вставить по order, чтобы engine отсортировал корректно
+
+Ключевые факты API сборки (доказано спайком, `.spike/R1-R2-injection-and-patch.md`):
+
+- секции сортируются ДО waterfall и после него не пересортируются; `renderPrompt` не сортирует;
+- собранные секции не несут поля `order` — форма записи `{name, text, interpolate?}`;
+- поэтому слушатель сам вычисляет индекс вставки: строит зеркало name→order по built-in именам,
+  фактически присутствующим в `assembly.sections` (порядки built-in — из mirror `SECTION_ORDERS`,
+  порядки наших секций — из профиля; при совпадении order с built-in якорем наша секция идёт
+  после него, т.е. «+0.5»); built-in якорь, отсутствующий в сборке, пропускается;
+- обработка `complete: true` выполняется ПОСЛЕ waterfall и схлопывает секции в единственную
+  complete-секцию — поэтому секции профиля в таких режимах молча исчезают (уже решение 21).
+
+Предикаты scope (доказано спайком, `.spike/R5-R7-subagent-complete.md`):
+
+```js
+const isSubagent = agent.session.header.origin === 'subagent'
+const isFork     = agent.session.header.isSeeded === true
+// inherit        → всегда
+// main-only      → !isSubagent
+// subagents-only → isSubagent && !isFork
 ```
 
-`effectiveOrder` = `order` из профиля, а при совпадении с известным built-in — `order + 0.5`.
-
-Признак субагента (`isSubagent`) и способ отличить fork от обычного ребёнка — **проверить в спайке**;
-если признак недоступен, v1 применяет `scope` только как `inherit | main-only`, а `subagents-only`
-уходит в отложенное (решение зафиксировано в PLAN, шаг 3).
+Известный краевой случай: fork, взятый до того, как у родителя есть хоть один завершённый ход,
+имеет пустой seed — `isSeeded` у него false, и он обрабатывается как обычный ребёнок. Для
+бухгалтерии, если когда-нибудь понадобится, существует публичный серийный ивент `agent/created`
+`{agent, source, signal?}`, но точкой инъекции остаётся waterfall.
 
 ### 5.4 Снапшоты
 
@@ -209,6 +241,7 @@ onAssemble(assembly, context):
 const promptProfilesDomain = defineDomain({
   name: 'prompt_profiles',
   version: 1,
+  invalidRecords: 'backup-and-skip',   // битая запись снапшота не должна блокировать открытие домена
   tables: {
     sessions: domainTable(z.object({
       profileId: z.string().nullable(),
@@ -265,10 +298,27 @@ const promptProfilesDomain = defineDomain({
 
 ### 6.1 Чип
 
-`conversation.input.left`, `kind: 'list'`, `id: 'prompt-profile'`, order 10. Компонент:
+`conversation.input.left`, `kind: 'list'`, `id: 'prompt-profile'`, order 10. Регистрация (закрыто
+спайком R8):
 
-- пустая сессия (`session.blank === true`) — рисует кнопку-меню `[ profile: light ▾ ]`;
-- сессия началась — `null`;
+```js
+ctx.slots.inject('conversation.input.left', () => ctx.slots.register(
+  {
+    name: 'conversation.input.left',
+    id: 'prompt-profile',
+    order: 10,
+    inject: (sessionId) => ({ /* … */ }),
+  },
+  Chip,
+))
+```
+
+Session-scope слот передаёт `sessionId` первым аргументом `inject`; компонент дополнительно получает
+стандартный кит (`sessionId`, `useSession`, `useSessions`, `useWorkspaces`, `useProjection`).
+Слот `conversation.input.left` рендерится ТОЛЬКО когда у сессии есть sessionId и input — на
+hero-экране без открытой сессии чипа не будет вовсе. Сам компонент:
+
+- пустая сессия (`session.blank === true`) — рисует кнопку-меню `[ profile: light ▾ ]`; иначе `null`;
 - профилей нет вовсе — `null` (никакого пустого чипа);
 - меню: `none`, отсортированные по title профили, разделитель, `Manage profiles…` → открывает Settings ▸ Prompt profiles;
 - выбор пишет `last` (POST `/last`) и локально обновляет состояние; ошибка → `Toast`, как у mode-чипа.
@@ -365,11 +415,18 @@ Sections, Preview. Внутри таба drill-down: список → форма
 
 Поведение:
 - свои секции добавляются в профиль кнопкой `+ Add section` — пикер с поиском и мультивыбором;
-  drag используется только для перестановки внутри состава профиля (между табами тащить нельзя);
-- drag пересчитывает order как середину между соседями; ручная правка числа — в поле по клику;
+- переупорядочивание — кнопками ↑↓ (`IconChevronUpOutlineMedium`/`IconChevronDownOutlineMedium`)
+  плюс числовое поле, только внутри состава профиля (между табами тащить нельзя); order пересчитывается
+  как середина между соседями, при перестановке крайних — шаг ±1 с перенормировкой; ручная правка
+  числа — в поле по клику; HTML5 drag — опция, реализуемая вручную, не в v1 (sortable-примитива в
+  `@deepseek-ai/dsh-client-ui-primitives` нет — закрыто спайком R6);
 - коллизия с built-in подсвечивается и уходит в `+0.5`; пустое тело секции не эмитится;
 - в outline показывается весь справочник built-ins из mirror (часть может отсутствовать в конкретном mode);
 - `scope` правится только здесь, в составе профиля; форма секции показывает «используется в» read-only;
+- предупреждение complete-mode строится host-side: `ctx.agentPresets.readDocument(id)` →
+  `{agentPreset, content (YAML-строка), name?, description?}` → парс `content` с custom-тегом `!!js` →
+  flatten списка плагинов → строка `@deepseek-ai/dsh-persona` с `config.complete === true`;
+  `compositionInventory()` НЕдостаточна — её строки не несут config;
 - Preview показывает только наши секции в итоговом порядке с подстановкой `{{model}}`/`{{cwd}}`,
   built-ins — плейсхолдерами, пропущенные секции — с причиной.
 
@@ -442,16 +499,16 @@ Sections, Preview. Внутри таба drill-down: список → форма
 
 ## 9. Риски и спайк
 
-| Риск | Что проверяем |
-|---|---|
-| R1 | Мутация `assembly.sections` из слушателя `system-prompt/assemble` реально попадает в отрендеренный промпт |
-| R2 | Созданная writer'ом `insert:`-строка монтируется, HMR её подхватывает, реестр видит секцию |
-| R3 | `ctx.settings.mutate` принимает запись в volatile-словарь `lastByWorkspace` и в volatile-массив `sections` |
-| R4 | Снапшот в `storageDomain` переживает resume и воспроизводит тот же промпт |
-| R5 | Признак субагента/форка доступен в `context.agent` — иначе `subagents-only` уходит в отложенное |
-| R6 | Примитивы дают drag-and-drop/sortable; если нет — стрелки ↑↓ плюс числовое поле |
-| R7 | Как получить признак `complete: true` у выбранного mode (для предупреждения) |
-| R8 | Слот `conversation.input.left` получает session в props тем же способом, что `conversation.input.permission` |
+| Риск | Статус | Результат |
+|---|---|---|
+| R1 | ✅ закрыт спайком | мутация `assembly.sections` из слушателя реально попадает в промпт; сортировка — до waterfall, пересортировки после нет (`.spike/R1-R2-injection-and-patch.md`) |
+| R2 | ✅ закрыт спайком | `insert:`-строка writer'а монтируется, HMR подхватывает, реестр видит секцию (`.spike/R1-R2-injection-and-patch.md`) |
+| R3 | ✅ закрыт спайком | `ctx.settings.mutate` принимает запись в volatile-словарь и в volatile-массив; caveat — массив пишется целиком (`.spike/R3-R4-settings-and-storage.md`) |
+| R4 | ✅ закрыт спайком | снапшот в `storageDomain` переживает resume и воспроизводит тот же промпт (`.spike/R3-R4-settings-and-storage.md`) |
+| R5 | ✅ закрыт спайком | `isSubagent = origin === 'subagent'`, `isFork = isSeeded === true`; `subagents-only` остаётся в v1 (`.spike/R5-R7-subagent-complete.md`) |
+| R6 | ✅ закрыт спайком | sortable-примитива нет; выбран вариант ↑↓ + числовое поле (`.spike/R6-R8-client-slots.md`) |
+| R7 | ✅ закрыт спайком | признак `complete: true` извлекается через `ctx.agentPresets.readDocument(id)` + парс YAML `content` (`.spike/R5-R7-subagent-complete.md`) |
+| R8 | ✅ закрыт спайком | слот рендерится только при наличии sessionId и input; session-scope inject получает `sessionId` первым аргументом + стандартный кит (`.spike/R6-R8-client-slots.md`) |
 
 ---
 

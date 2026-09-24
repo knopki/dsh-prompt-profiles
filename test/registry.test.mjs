@@ -1,0 +1,189 @@
+/**
+ * Registry tests — duplicates, usedIn, effectiveOrder, insertionIndex.
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Verify the pure registry's observable contracts: sorted detached
+ *   views, deterministic duplicate-config.id resolution with both-rowId
+ *   warnings, usedIn scope reporting, the +0.5 collision rule (SPEC decision
+ *   7) and name-anchored splice planning against a realistic assembly.
+ * @scope lib/registry.js (PLAN step 2); assembly fixtures encode the spike-R1
+ *   fact that assembled sections carry names but no order field.
+ * #endregion moduleContract
+ */
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { PromptProfilesRegistry, effectiveOrder, insertionIndex } from "../lib/registry.js";
+import { BUILTIN_ORDERS, builtinOrdersByName } from "../lib/builtin-orders.js";
+
+function fixtureRegistry() {
+  const warnings = [];
+  const registry = new PromptProfilesRegistry({ warn: (m) => warnings.push(m) });
+  const disposeA = registry.registerSection({
+    rowId: "row-a",
+    config: { id: "light-tone", title: "Light tone", body: "Be brief." },
+    source: "bundle",
+  });
+  const disposeB = registry.registerSection({
+    rowId: "row-b",
+    config: { id: "no-preamble", title: "No preamble", body: "No preamble." },
+    source: "bundle",
+  });
+  registry.registerProfile({
+    rowId: "row-light",
+    config: {
+      id: "light",
+      title: "Light",
+      sections: [
+        { id: "light-tone", order: 1050, scope: "main-only" },
+        { id: "no-preamble", order: 1400, scope: "inherit" },
+      ],
+    },
+    source: "bundle",
+  });
+  registry.registerProfile({
+    rowId: "row-review",
+    config: {
+      id: "review",
+      title: "Review",
+      sections: [{ id: "light-tone", order: 300, scope: "subagents-only" }],
+    },
+    source: "bundle",
+  });
+  return { registry, warnings, disposeA, disposeB };
+}
+
+// #region SECTION_views
+test("sections() sorts by id; profiles() sorts by title", () => {
+  const { registry } = fixtureRegistry();
+  assert.deepEqual(registry.sections().map((s) => s.id), ["light-tone", "no-preamble"]);
+  assert.deepEqual(registry.profiles().map((p) => p.id), ["light", "review"]);
+});
+
+test("views are detached copies", () => {
+  const { registry } = fixtureRegistry();
+  registry.sections()[0].title = "mutated";
+  assert.equal(registry.sections()[0].title, "Light tone");
+});
+
+test("disposers remove registrations", () => {
+  const { registry, disposeA } = fixtureRegistry();
+  disposeA();
+  assert.deepEqual(registry.sections().map((s) => s.id), ["no-preamble"]);
+});
+// #endregion SECTION_views
+
+// #region SECTION_duplicates
+test("duplicate config.id warns naming both rowIds and the later row wins", () => {
+  const { registry, warnings } = fixtureRegistry();
+  registry.registerSection({
+    rowId: "row-c",
+    config: { id: "light-tone", title: "Other tone", body: "Other." },
+    source: "user",
+  });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /duplicate section config\.id "light-tone"/);
+  assert.match(warnings[0], /"row-a"/);
+  assert.match(warnings[0], /"row-c"/);
+  const winner = registry.sections().find((s) => s.id === "light-tone");
+  assert.equal(winner.title, "Other tone");
+  assert.equal(winner.rowId, "row-c");
+});
+
+test("disposing an overridden registration is a no-op (deterministic winner)", () => {
+  const { registry, disposeA } = fixtureRegistry();
+  const disposeC = registry.registerSection({
+    rowId: "row-c",
+    config: { id: "light-tone", title: "Other tone", body: "Other." },
+    source: "user",
+  });
+  disposeA(); // overridden row must not delete the winner
+  const winner = registry.sections().find((s) => s.id === "light-tone");
+  assert.equal(winner.rowId, "row-c");
+  disposeC();
+  assert.equal(registry.sections().find((s) => s.id === "light-tone"), undefined);
+});
+// #endregion SECTION_duplicates
+
+// #region SECTION_usedIn
+test("usedIn lists referencing profiles with per-profile scope", () => {
+  const { registry } = fixtureRegistry();
+  assert.deepEqual(registry.usedIn("light-tone"), [
+    { profileId: "light", scope: "main-only" },
+    { profileId: "review", scope: "subagents-only" },
+  ]);
+  assert.deepEqual(registry.usedIn("no-preamble"), [{ profileId: "light", scope: "inherit" }]);
+  assert.deepEqual(registry.usedIn("missing"), []);
+});
+// #endregion SECTION_usedIn
+
+// #region SECTION_effectiveOrder
+test("effectiveOrder applies +0.5 on builtin collision (SPEC decision 7)", () => {
+  assert.equal(effectiveOrder(1050, BUILTIN_ORDERS), 1050);       // free slot
+  assert.equal(effectiveOrder(1000, BUILTIN_ORDERS), 1000.5);     // TOOL_BASH
+  assert.equal(effectiveOrder(-1000, BUILTIN_ORDERS), -999.5);    // HARNESS_IDENTITY
+  assert.equal(effectiveOrder(0, BUILTIN_ORDERS), 0.5);           // PERSONA_PREFIX
+  assert.throws(() => effectiveOrder(Number.NaN, BUILTIN_ORDERS), /finite/);
+});
+// #endregion SECTION_effectiveOrder
+
+// #region SECTION_insertionIndex
+test("insertionIndex anchors on builtin names present in the assembly", () => {
+  // Realistic assembly: entries carry names only, NO order field (spike R1).
+  const assemblyNames = [
+    "harness:identity",            // -1000
+    "deployment:persona-prefix",   // 0
+    "plan:policy",                 // 500
+    "tool:bash",                   // 1000
+    "deployment:persona-suffix",   // 10200
+  ];
+  const byName = builtinOrdersByName(BUILTIN_ORDERS);
+  // Our snapshot sections, effective orders already ascending.
+  const ours = [300, 1000.5, 1400];
+  const plan = insertionIndex(ours, assemblyNames, byName);
+  assert.deepEqual(plan, [
+    { order: 300, index: 2 },    // after plan:policy(500)? no: 500>300 → after persona(0) → index 2
+    { order: 1000.5, index: 4 }, // +0.5 collision: after tool:bash, before persona-suffix
+    { order: 1400, index: 4 },   // after tool:bash as well (no anchor between 1000 and 10200)
+  ]);
+});
+
+test("insertionIndex ignores builtins absent from the assembly and unknown names", () => {
+  const byName = builtinOrdersByName(BUILTIN_ORDERS);
+  // Only the tail of the assembly is present; earlier built-ins must not count.
+  const plan = insertionIndex([500], ["tool:bash", "deployment:persona-suffix"], byName);
+  assert.deepEqual(plan, [{ order: 500, index: 0 }]);
+  // Unknown/foreign names occupy slots but never act as anchors.
+  const plan2 = insertionIndex([1200], ["foreign:x", "tool:bash", "foreign:y"], byName);
+  assert.deepEqual(plan2, [{ order: 1200, index: 2 }]); // right after tool:bash
+  // Empty assembly: everything goes to index 0.
+  assert.deepEqual(insertionIndex([1, 2], [], byName), [
+    { order: 1, index: 0 },
+    { order: 2, index: 0 },
+  ]);
+});
+
+test("insertionIndex splices descending keep our ascending order intact", () => {
+  const byName = builtinOrdersByName(BUILTIN_ORDERS);
+  const assembly = [
+    { name: "harness:identity", text: "A" },
+    { name: "deployment:persona-prefix", text: "B" },
+    { name: "plan:policy", text: "C" },
+    { name: "tool:bash", text: "D" },
+    { name: "deployment:persona-suffix", text: "E" },
+  ];
+  const plan = insertionIndex([1000.5, 1400], assembly.map((s) => s.name), byName);
+  for (const entry of [...plan].reverse()) {
+    assembly.splice(entry.index, 0, { name: `prompt-profile:x${entry.order}`, text: "ours" });
+  }
+  assert.deepEqual(assembly.map((s) => s.name), [
+    "harness:identity",
+    "deployment:persona-prefix",
+    "plan:policy",
+    "tool:bash",
+    "prompt-profile:x1000.5",
+    "prompt-profile:x1400",
+    "deployment:persona-suffix",
+  ]);
+});
+// #endregion SECTION_insertionIndex

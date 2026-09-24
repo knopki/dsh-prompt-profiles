@@ -23,6 +23,17 @@
 
 Выход шага: короткий отчёт «что подтвердилось / что меняем в SPEC» и правки SPEC, если нужно.
 
+### Результаты (закрыто спайком)
+
+- R1 — закрыто: мутация `assembly.sections` из слушателя waterfall попадает в промпт (`.spike/R1-R2-injection-and-patch.md`).
+- R2 — закрыто: `insert:`-строки writer'а монтируются через HMR, реестр их видит (`.spike/R1-R2-injection-and-patch.md`).
+- R3 — закрыто: `ctx.settings.mutate` пишет volatile-словарь и volatile-массив (массив — целиком) (`.spike/R3-R4-settings-and-storage.md`).
+- R4 — закрыто: снапшот в `storageDomain` воспроизводит промпт после resume (`.spike/R3-R4-settings-and-storage.md`).
+- R5 — закрыто: `origin === 'subagent'` и `isSeeded === true` читаются из `context.agent`; `subagents-only` остаётся в v1 (`.spike/R5-R7-subagent-complete.md`).
+- R6 — закрыто: sortable-примитива нет; выбран вариант ↑↓ + числовое поле (`.spike/R6-R8-client-slots.md`).
+- R7 — закрыто: `complete: true` детектируется через `ctx.agentPresets.readDocument(id)` + парс YAML `content` (`.spike/R5-R7-subagent-complete.md`).
+- R8 — закрыто: слот `conversation.input.left` рендерится при sessionId+input, inject получает `sessionId` + стандартный кит (`.spike/R6-R8-client-slots.md`).
+
 ---
 
 ## Шаг 1. Каркас пакета и установка
@@ -113,10 +124,13 @@ rename не оставляет битых ссылок, удаление чуж�
 **Делаем:** `settings.section` (id `prompt-profiles`, order 25) — SPEC §6.2: три таба
 Profiles / Sections / Preview с drill-down внутри таба (`← back`, Esc, повторный клик по табу),
 автосейв с дебаунсом. Таб Profiles: список + «Default for new sessions» + состав профиля как outline
-с built-ins из mirror, кнопка `+ Add section` (пикер с поиском и мультивыбором) и drag/↑↓ — только
-перестановка внутри состава. Таб Sections: поиск, `used in`,
+с built-ins из mirror, кнопка `+ Add section` (пикер с поиском и мультивыбором) и ↑↓ + числовое
+поле — только перестановка внутри состава (order — середина между соседями, крайние — ±1
+с перенормировкой). Таб Sections: поиск, `used in`,
 `source`, форма секции (title + body, «используется в» read-only, без scope). Таб Preview: наши
-секции в порядке, built-ins плейсхолдерами, пропущенные — с причиной.
+секции в порядке, built-ins плейсхолдерами, пропущенные — с причиной. Доступные примитивы:
+`Menu`, `Tag`, `Switch`, `Toast`, `Tooltip`, `SegmentedTabs`, `DisclosureRow`,
+`SettingsForm`/`SettingsValueField` и иконки `Icon*Medium/Regular`.
 
 **Готово когда:** все операции выполняются из UI, а результат совпадает с тем, что даёт ручная правка
 профильного патча; пустое тело и битые ссылки деградируют с предупреждением, а не с падением.
