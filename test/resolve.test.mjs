@@ -7,7 +7,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolveProfileId, buildSnapshot, planInsertion, isSubagent, isFork, sealSnapshot, retryingCache } from "../lib/resolve.js";
+import { resolveProfileId, buildSnapshot, planInsertion, isSubagent, isFork, sealSnapshot, retryingCache, interpolateSealedText } from "../lib/resolve.js";
 import { builtinOrdersByName } from "../lib/builtin-orders.js";
 
 const orders = builtinOrdersByName();
@@ -75,8 +75,8 @@ test("two profile sections between the same built-ins retain profile order", () 
   ] };
   const planned = planInsertion({ snapshot, assemblySections: assembly, builtinOrdersByName: orders });
   assert.deepEqual(planned, [
-    { name: "prompt-profile:a", text: "A", index: 1 },
-    { name: "prompt-profile:b", text: "B", index: 1 },
+    { name: "prompt-profile:a", text: "A", interpolate: false, index: 1 },
+    { name: "prompt-profile:b", text: "B", interpolate: false, index: 1 },
   ]);
   for (let i = planned.length - 1; i >= 0; i--) assembly.splice(planned[i].index, 0, planned[i]);
   assert.deepEqual(assembly.map((row) => row.name), ["tool:bash", "prompt-profile:a", "prompt-profile:b", "tool:read"]);
@@ -93,8 +93,8 @@ test("missing built-in anchors and foreign sections: last preceding present anch
   const assembly = [{ name: "foreign:before" }, { name: "tool:bash" }, { name: "foreign:after" }, { name: "deployment:persona-suffix" }];
   const snapshot = { sections: [{ id: "mid", order: 1150, text: "Mid" }, { id: "low", order: -2000, text: "Low" }] };
   assert.deepEqual(planInsertion({ snapshot, assemblySections: assembly, builtinOrdersByName: orders }), [
-    { name: "prompt-profile:low", text: "Low", index: 0 },
-    { name: "prompt-profile:mid", text: "Mid", index: 2 },
+    { name: "prompt-profile:low", text: "Low", interpolate: false, index: 0 },
+    { name: "prompt-profile:mid", text: "Mid", interpolate: false, index: 2 },
   ]);
   assert.equal(planInsertion({ snapshot: { sections: [{ id: "solo", order: 1100, text: "X" }] }, assemblySections: [{ name: "foreign" }], builtinOrdersByName: orders })[0].index, 0);
 });
@@ -110,16 +110,130 @@ test("fake storage seals first result and reuses it without rerunning config res
   let release;
   let builds = 0;
   const table = { get: (id) => records.get(id), put: async (id, snapshot) => { await new Promise((resolve) => { release = resolve; }); records.set(id, snapshot); } };
+  const memo = new Map();
+  const openTable = async () => table;
   const createSnapshot = () => { builds++; return { profileId: "light", sections: [{ id: "x", title: "X", order: 1, text: "Original" }] }; };
-  const first = sealSnapshot({ table, sessionId: "s1", createSnapshot });
+  const first = sealSnapshot({ sessionId: "s1", memo, openTable, createSnapshot });
   assert.equal(records.has("s1"), false);
+  await new Promise((resolve) => setImmediate(resolve)); // the delayed put is now pending
   release();
   assert.equal((await first).sections[0].text, "Original");
-  const again = await sealSnapshot({ table, sessionId: "s1", createSnapshot: () => { throw Error("config leaked"); } });
+  const again = await sealSnapshot({ sessionId: "s1", memo, openTable, createSnapshot: () => { throw Error("config leaked"); } });
   assert.equal(again.sections[0].text, "Original");
   assert.equal(builds, 1);
 });
 // #endregion TEST_sealing
+
+// #region TEST_sealInterpolation
+/** @purpose Astra finding D: interpolation is resolved and validated at SEAL time;
+ *  unusable bodies are skipped with a warning instead of persisted. */
+test("unknown variable skips the section with a warning; known variables are resolved into the sealed text", () => {
+  const warnings = [];
+  const warn = (message) => warnings.push(message);
+  const map = new Map([
+    ["ok", { title: "Ok", body: "Work in {{cwd}}, model {{model}}." }],
+    ["bad", { title: "Bad", body: "Uses {{unknown}} here." }],
+    ["literal", { title: "Literal", body: "Math: {{ is prose, no closing braces" }],
+    ["malformed", { title: "Malformed", body: "Broken {{1up}} ref" }],
+  ]);
+  const snapshot = buildSnapshot({
+    profile: { id: "p", sections: [
+      { id: "ok", order: 1 }, { id: "bad", order: 2 }, { id: "literal", order: 3 }, { id: "malformed", order: 4 },
+    ] },
+    sectionsById: map, variables: { cwd: "/tmp/x", model: "glm" }, warn,
+  });
+  assert.deepEqual(snapshot.sections, [{ id: "ok", title: "Ok", order: 1, text: "Work in /tmp/x, model glm." },
+    { id: "literal", title: "Literal", order: 3, text: "Math: {{ is prose, no closing braces" }]);
+  assert.equal(warnings.length, 2);
+  assert.match(warnings[0], /unknown prompt variable "\{\{unknown\}\}"/);
+  assert.match(warnings.join("\n"), /section "bad" skipped/);
+  assert.match(warnings.join("\n"), /section "malformed" skipped/);
+  assert.equal(interpolateSealedText("x", "{{a}}{{a}}", { a: 1 }), "11");
+  assert.throws(() => interpolateSealedText("x", "{{ }}", {}), /malformed/);
+  assert.throws(() => interpolateSealedText("x", "{{novalue}}", { novalue: undefined }), /has no value/);
+});
+
+test("sealed text stays identical across steps even when variables change; insertion carries interpolate:false", async () => {
+  let variables = { cwd: "/first" };
+  const records = new Map();
+  const memo = new Map();
+  const table = { get: (id) => records.get(id), put: async (id, snapshot) => { records.set(id, snapshot); } };
+  const build = () => buildSnapshot({
+    profile: { id: "p", sections: [{ id: "cwd", order: 1000 }] },
+    sectionsById: new Map([["cwd", { title: "Cwd", body: "cwd={{cwd}}" }]]),
+    variables,
+  });
+  const first = await sealSnapshot({ sessionId: "s", memo, openTable: async () => table, createSnapshot: build });
+  assert.equal(first.sections[0].text, "cwd=/first");
+  variables = { cwd: "/second" }; // a later assembly step with different variables
+  const second = await sealSnapshot({ sessionId: "s", memo, openTable: async () => table, createSnapshot: build });
+  assert.equal(second.sections[0].text, "cwd=/first");
+  assert.equal(second, first, "memoized decision object");
+  // The engine (dsh-system-prompt) returns interpolate:false sections verbatim:
+  // a literal `{{` in sealed text can never throw at render time.
+  const planned = planInsertion({ snapshot: first, assemblySections: [{ name: "tool:bash" }], builtinOrdersByName: orders });
+  assert.equal(planned[0].interpolate, false);
+  const rendered = planned.map((row) => row.interpolate === false ? row.text : (() => { throw new Error("would interpolate"); })()).join("");
+  assert.match(rendered, /cwd=\/first/);
+});
+
+test("a body with literal {{ cannot break rendering: sealed verbatim and never re-interpolated", () => {
+  const body = "Braces {{ stay, and {{not-a-var}} is skipped at seal time";
+  const warnings = [];
+  const snapshot = buildSnapshot({
+    profile: { id: "p", sections: [{ id: "braces", order: 1 }] },
+    sectionsById: new Map([["braces", { title: "B", body }]]),
+    variables: {}, warn: (message) => warnings.push(message),
+  });
+  // "{{ ... {{not-a-var}}" is a MALFORMED reference for the engine (a `{{`
+  // followed later by `}}` without a complete simple group) → the section is
+  // skipped+warned BEFORE persistence; nothing that throws at render time is
+  // ever stored.
+  assert.deepEqual(snapshot.sections, []);
+  assert.match(warnings[0], /section "braces" skipped: (malformed|unknown)/);
+  const literal = buildSnapshot({
+    profile: { id: "p", sections: [{ id: "braces", order: 1 }] },
+    sectionsById: new Map([["braces", { title: "B", body: "Only literal {{ braces" }]]),
+    variables: {}, warn: () => {},
+  });
+  assert.equal(literal.sections[0].text, "Only literal {{ braces");
+});
+// #endregion TEST_sealInterpolation
+
+// #region TEST_pinnedDecision
+/** @purpose Astra finding G: storage failures never yield an unprofiled turn nor mid-session activation. */
+test("storage outage pins the decision in memory; retry persists the SAME snapshot; no mid-session activation", async () => {
+  const records = new Map();
+  let openFailuresRemaining = 2;
+  const openTable = async () => {
+    if (openFailuresRemaining > 0) {
+      openFailuresRemaining -= 1;
+      throw new Error("storage down");
+    }
+    return { get: (id) => records.get(id), put: async (id, snapshot) => { records.set(id, snapshot); } };
+  };
+  const warnings = [];
+  const memo = new Map();
+  let configProfile = "light";
+  const build = () => ({ profileId: configProfile, sections: [{ id: "x", title: "X", order: 1, text: "Light text" }] });
+  // First assembly: storage is down — the turn is STILL profiled (in memory).
+  const first = await sealSnapshot({ sessionId: "s", memo, openTable, createSnapshot: build, warn: (m) => warnings.push(m) });
+  assert.equal(first.profileId, "light");
+  assert.equal(first.sections.length, 1);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /pinned in memory/);
+  // The user edits settings while storage is down: a retry must NOT activate
+  // the new profile mid-session.
+  configProfile = "other";
+  const second = await sealSnapshot({ sessionId: "s", memo, openTable, createSnapshot: build, warn: (m) => warnings.push(m) });
+  assert.equal(second.profileId, "light");
+  assert.equal(second, first);
+  // Storage recovers: the pinned decision is persisted verbatim.
+  const third = await sealSnapshot({ sessionId: "s", memo, openTable, createSnapshot: build, warn: (m) => warnings.push(m) });
+  assert.equal(third, first);
+  assert.deepEqual(records.get("s"), first, "pinned snapshot persisted after recovery");
+});
+// #endregion TEST_pinnedDecision
 
 // #region TEST_retryCache
 /** @purpose Prove a rejected open is dropped from the cache so the next assembly retries (verify-step2b-glm defect 1). */

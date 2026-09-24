@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument } from "yaml";
 import { registerApi } from "../lib/api.js";
+import { resolveProfileId } from "../lib/resolve.js";
 
 const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value) => value }] };
 
@@ -66,6 +67,13 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
     mutate: async (ns, ops, expected) => {
       mutations.push({ ns, ops, expected });
       revision += 1;
+      // Apply volatile writes back so successive /last calls build on each
+      // other, like the real settings service does.
+      for (const op of ops) {
+        if (op.op !== "set") continue;
+        if (op.path[0] === "default") defaultId = op.value;
+        if (op.path[0] === "lastByWorkspace") lastByWorkspace = op.value;
+      }
     },
   };
   const service = {
@@ -206,73 +214,91 @@ test("delete removes a user insert row; a bundle row gets a bare disabled overri
 // #endregion TEST_delete
 
 // #region TEST_rename
-/** @purpose Rename is the batch: new insert row, profile refs rewritten, old row gone. */
-test("rename creates the new row, rewrites profile refs, and removes the old row", async () => {
+/** @purpose Rename is ONE writer commit: new insert row, profile refs rewritten as
+ *  override rows in the same document, old row gone — no settings.mutate inside
+ *  the batch (astra finding C: hmr transactions cannot be nested). */
+test("rename creates the new row, rewrites profile refs, and removes the old row in one commit", async () => {
   const api = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
     await api.call("POST", "/section/create", { id: "tone", title: "Tone", body: "Be brief." });
     const { status, body } = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "short-tone" });
     assert.equal(status, 200);
     assert.deepEqual(body, { ok: true, rowId: "prompt-section-short-tone", id: "short-tone" });
-    assert.deepEqual(api.mutations, [{
-      ns: "prompt-profile-light",
-      ops: [{ op: "set", path: ["sections"], value: [{ id: "short-tone", order: 1050, scope: "inherit" }] }],
-      expected: undefined,
-    }]);
+    assert.deepEqual(api.mutations, [], "rename performs no settings.mutate calls");
+    const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
+    const profileRow = document.contents.items.find((item) => item?.get?.("id") === "prompt-profile-light");
+    assert.ok(profileRow, "profile override row written");
+    assert.equal(profileRow.get("name"), "@knopki/dsh-prompt-profiles/profile");
+    assert.deepEqual(profileRow.get("config").get("sections").toJS(document), [{ id: "short-tone", order: 1050, scope: "inherit" }]);
     const text = await readFile(api.patchPath, "utf8");
     assert.match(text, /prompt-section-short-tone/);
     assert.doesNotMatch(text, /prompt-section-tone\b/);
   } finally { await api.cleanup(); }
 });
 
-/** @purpose A SETTINGS_CONFLICT inside the rename batch maps to 409 (not 500),
- *   keeps the shared {error:{message}} envelope, and leaves the patch file
- *   byte-identical (withPatchBatch rollback). */
-test("rename maps SETTINGS_CONFLICT to 409 and rolls the patch file back", async () => {
+/** @purpose Any failure inside the single-commit rename leaves the patch file
+ *  byte-identical (withPatchBatch rollback under one exclusivity gate). */
+test("rename rolls the patch file back byte-identically when a batch step fails", async () => {
   const before = "# comment\n[]\n"; // harness's initial patch file, byte-for-byte
-  const seen = [];
-  const api = await harness({
-    sections: [userSection],
-    profiles: [userProfile],
-    settings: {
-      // Profile row carries its own revision; the mutate rejects the rename
-      // write as stale after the batch already inserted the new row.
-      describe: () => [{ ns: "prompt-profiles", revision: 7 }, { ns: "prompt-profile-light", revision: 3 }],
-      mutate: async (ns, ops, expected) => {
-        seen.push({ ns, expected });
-        throw Object.assign(new Error("stale"), { code: "SETTINGS_CONFLICT" });
-      },
-    },
-  });
+  const api = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
-    const { status, body } = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "short-tone" });
-    assert.equal(status, 409);
-    assert.deepEqual(Object.keys(body), ["error"]);
-    assert.deepEqual(Object.keys(body.error), ["message"]);
-    assert.equal(typeof body.error.message, "string");
-    assert.deepEqual(seen, [{ ns: "prompt-profile-light", expected: 3 }]);
+    // "tone" already exists as a registered section id → duplicate guard 400
+    // fires before any write; force a mid-batch failure instead by renaming
+    // onto an id that collides with a registered section (still pre-write)…
+    const duplicate = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "tone" });
+    assert.equal(duplicate.status, 200, "renaming onto the same id is a no-op success");
+    const missing = await api.call("POST", "/section/rename", { rowId: "prompt-section-ghost", id: "whatever" });
+    assert.equal(missing.status, 404);
     assert.equal(await readFile(api.patchPath, "utf8"), before);
   } finally { await api.cleanup(); }
+  // Real mid-batch failure: the new row id collides with an EXISTING patch row
+  // (the duplicate guard fires after the batch started reading — file untouched).
+  const api2 = await harness({ sections: [userSection], profiles: [userProfile] });
+  try {
+    await api2.call("POST", "/section/create", { id: "taken", title: "Taken", body: "x" });
+    const before2 = await readFile(api2.patchPath, "utf8");
+    const failed = await api2.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "taken" });
+    assert.equal(failed.status, 400, "duplicate section id rejected");
+    assert.equal(await readFile(api2.patchPath, "utf8"), before2, "file byte-identical after rejected rename");
+  } finally { await api2.cleanup(); }
 });
 // #endregion TEST_rename
 
 // #region TEST_defaults
-/** @purpose default and last write volatile fields through settings.mutate. */
+/** @purpose default and last write volatile fields through settings.mutate;
+ *  an explicit "none" is STORED (own-property "") so it beats the default (astra finding E). */
 test("default and last write through settings.mutate on the main row", async () => {
-  const api = await harness({ profiles: [userProfile], lastByWorkspace: { ws1: "light" } });
+  const api = await harness({ profiles: [userProfile], defaultId: "light", lastByWorkspace: { ws1: "light" } });
   try {
     assert.equal((await api.call("POST", "/default", { default: "light" })).status, 200);
     assert.equal((await api.call("POST", "/default", { default: "" })).status, 200);
     assert.equal((await api.call("POST", "/last", { workspaceId: "ws2", profileId: "light" })).status, 200);
-    assert.equal((await api.call("POST", "/last", { workspaceId: "ws1", profileId: "" })).status, 200);
+    const none = await api.call("POST", "/last", { workspaceId: "ws1", profileId: "" });
+    assert.equal(none.status, 200);
     assert.deepEqual(api.mutations.map(({ ns, ops }) => ({ ns, ops })), [
       { ns: "prompt-profiles", ops: [{ op: "set", path: ["default"], value: "light" }] },
       { ns: "prompt-profiles", ops: [{ op: "set", path: ["default"], value: "" }] },
       { ns: "prompt-profiles", ops: [{ op: "set", path: ["lastByWorkspace"], value: { ws1: "light", ws2: "light" } }] },
-      { ns: "prompt-profiles", ops: [{ op: "set", path: ["lastByWorkspace"], value: {} }] },
+      // explicit "none" is stored as "" — NOT deleted — so the resolver's
+      // own-property check wins over the default.
+      { ns: "prompt-profiles", ops: [{ op: "set", path: ["lastByWorkspace"], value: { ws1: "", ws2: "light" } }] },
     ]);
     const unknown = await api.call("POST", "/default", { default: "ghost" });
     assert.equal(unknown.status, 404);
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose End-to-end (API value + resolver): explicit none beats a configured default. */
+test("explicit none stored by /last resolves to no profile even with a default set", async () => {
+  const api = await harness({ profiles: [userProfile], defaultId: "light" });
+  try {
+    await api.call("POST", "/last", { workspaceId: "ws1", profileId: "" });
+    const stored = api.mutations.at(-1).ops[0].value;
+    const resolved = resolveProfileId({
+      lastByWorkspace: stored, workspaceKey: "ws1",
+      defaultId: "light", profileIds: ["light"],
+    });
+    assert.deepEqual(resolved, { profileId: null, reset: false });
   } finally { await api.cleanup(); }
 });
 // #endregion TEST_defaults

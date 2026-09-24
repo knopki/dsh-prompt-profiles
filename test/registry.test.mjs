@@ -187,3 +187,41 @@ test("insertionIndex splices descending keep our ascending order intact", () => 
   ]);
 });
 // #endregion SECTION_insertionIndex
+
+// #region TEST_volatileUnwrap
+/** @purpose Astra finding B: volatile wrapper refs (.get()) are unwrapped at
+ *  READ time — a live settings edit after registration flows into views,
+ *  sorting, and usedIn without re-registering the row. */
+test("volatile wrappers are unwrapped at read time and follow live edits", () => {
+  const registry = new PromptProfilesRegistry({ warn: () => {} });
+  // Fake Cordis volatile wrapper: .get() returns the CURRENT value.
+  const box = (initial) => ({ value: initial, get() { return this.value; } });
+  const title = box("Zen");
+  const body = box("Old body.");
+  const sections = box([{ id: "zen", order: 100, scope: "main-only" }]);
+  registry.registerSection({ rowId: "row-zen", config: { id: "zen", title, body }, source: "user" });
+  registry.registerProfile({ rowId: "row-p", config: { id: "p", title: box("P"), sections }, source: "user" });
+  const sectionView = () => registry.sections().find((row) => row.id === "zen");
+  const profileView = () => registry.profiles().find((row) => row.id === "p");
+  // Unwrapped, not the wrapper objects themselves.
+  assert.equal(sectionView().title, "Zen");
+  assert.equal(sectionView().body, "Old body.");
+  assert.equal(typeof profileView().sections[0].id, "string");
+  assert.deepEqual(registry.usedIn("zen"), [{ profileId: "p", scope: "main-only" }]);
+  // A live settings edit AFTER registration…
+  title.value = "Zen 2";
+  body.value = "New body.";
+  sections.value = [{ id: "zen", order: 200, scope: "inherit" }];
+  // …is visible on the NEXT read, including scope via usedIn.
+  assert.equal(sectionView().title, "Zen 2");
+  assert.equal(sectionView().body, "New body.");
+  assert.equal(profileView().sections[0].order, 200);
+  assert.deepEqual(registry.usedIn("zen"), [{ profileId: "p", scope: "inherit" }]);
+  // Sorting follows live titles: a re-titled profile reorders against a peer.
+  const beta = box("Beta");
+  registry.registerProfile({ rowId: "row-b", config: { id: "b", title: beta, sections: box([]) }, source: "user" });
+  assert.deepEqual(registry.profiles().map((row) => row.id), ["b", "p"]);
+  beta.value = "Zeta";
+  assert.deepEqual(registry.profiles().map((row) => row.id), ["p", "b"]);
+});
+// #endregion TEST_volatileUnwrap

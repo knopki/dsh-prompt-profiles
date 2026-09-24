@@ -14,7 +14,7 @@ import { mkdtemp, readFile, writeFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument, isSeq } from "yaml";
-import { insertRow, removeRow, disableRow, provenance, withPatchBatch } from "../lib/writer.js";
+import { insertRow, removeRow, disableRow, provenance, withPatchBatch, setWriteGate, renameSectionRow } from "../lib/writer.js";
 
 const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value) => value }] };
 const SECTION_NAME = "@knopki/dsh-prompt-profiles/section";
@@ -217,3 +217,109 @@ test("concurrent insertRows serialize without losing rows", async () => {
   }
 });
 // #endregion TEST_mutex
+
+// #region TEST_gateRmw
+/** @purpose Astra finding C: the exclusivity gate wraps the ENTIRE
+ *  read-modify-write, so a queued writer re-reads the file AFTER external
+ *  (configEditor-style) edits already on disk instead of committing a stale
+ *  full document over them. */
+test("a queued writer does not commit over an external edit that landed first", async () => {
+  const { dir, patchPath } = await workspace("[]\n");
+  // hmr-style exclusive queue: strictly one runner, FIFO (runExclusive shape).
+  let tail = Promise.resolve();
+  const gate = (fn) => {
+    const run = tail.then(fn, fn);
+    tail = run.then(() => {}, () => {});
+    return run;
+  };
+  setWriteGate(gate);
+  try {
+    // The external actor (configEditor/settings) holds the first gate slot
+    // and lands an edit on disk while our writer is queued behind it.
+    const external = gate(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await writeFile(patchPath, "- id: external-edit\n  name: some/plugin\n", "utf8");
+    });
+    const ours = insertRow({ patchPath, row: sectionRow("tone") });
+    await Promise.all([external, ours]);
+    const document = parseDocument(await readFile(patchPath, "utf8"), parseOptions);
+    const ids = document.contents.items.flatMap((item) =>
+      item?.get?.("insert") ? item.get("insert").items.map((row) => row.get("id")) : [item.get("id")]);
+    assert.ok(ids.includes("external-edit"), "the external edit is not lost");
+    assert.ok(ids.includes("prompt-section-tone"), "our row landed too");
+  } finally {
+    setWriteGate(null);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/** @purpose The batch (and its rollback) is ONE gate section: a concurrent
+ *  external edit is never clobbered by a backup restore, and a failing batch
+ *  leaves external edits intact. */
+test("a failing batch never restores a stale backup over an external edit", async () => {
+  const { dir, patchPath } = await workspace("[]\n");
+  let tail = Promise.resolve();
+  const gate = (fn) => {
+    const run = tail.then(fn, fn);
+    tail = run.then(() => {}, () => {});
+    return run;
+  };
+  setWriteGate(gate);
+  try {
+    const external = gate(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await writeFile(patchPath, "- id: external-edit\n  name: some/plugin\n", "utf8");
+    });
+    const ours = assert.rejects(
+      withPatchBatch({ patchPath }, async (ops) => {
+        await ops.insertRow({ row: sectionRow("doomed") });
+        throw new Error("later step failed");
+      }),
+      /later step failed/,
+    );
+    const [ , failed ] = await Promise.all([external, ours]);
+    assert.ok(failed === undefined);
+    const ids = entryIds(await readFile(patchPath, "utf8"));
+    assert.deepEqual(ids, ["external-edit"], "rollback kept the external edit and dropped the batch's row");
+  } finally {
+    setWriteGate(null);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/** @purpose renameSectionRow is a SINGLE commit: one read, one write, one gate
+ *  section — the new row, the rewritten profile sections, and the old row's
+ *  removal all land (or roll back) together. */
+test("renameSectionRow inserts the new row, rewrites profile refs, and drops the old row in one commit", async () => {
+  const { dir, patchPath } = await workspace("[]\n");
+  try {
+    await insertRow({ patchPath, row: sectionRow("tone") });
+    await insertRow({ patchPath, row: {
+      id: "prompt-profile-light", name: "@knopki/dsh-prompt-profiles/profile",
+      config: { id: "light", title: "Light", sections: [{ id: "tone", order: 1050, scope: "main-only" }] },
+    } });
+    await renameSectionRow({
+      patchPath,
+      row: { id: "prompt-section-short-tone", name: SECTION_NAME, config: { id: "short-tone", title: "Title tone", body: "Line one\nLine two" } },
+      oldRowId: "prompt-section-tone", oldName: SECTION_NAME, bundleOwned: false,
+      profileUpdates: [{
+        rowId: "prompt-profile-light", name: "@knopki/dsh-prompt-profiles/profile",
+        sections: [{ id: "short-tone", order: 1050, scope: "main-only" }],
+      }],
+    });
+    const document = parseDocument(await readFile(patchPath, "utf8"), parseOptions);
+    const ids = [];
+    for (const item of document.contents.items) {
+      if (item?.get?.("insert")) for (const row of item.get("insert").items) ids.push(row.get("id"));
+      else ids.push(item.get("id"));
+    }
+    assert.deepEqual([...ids].sort(), ["prompt-profile-light", "prompt-section-short-tone"]);
+    const profileEntry = document.contents.items
+      .find((item) => item?.get?.("insert")?.items?.some((row) => row.get("id") === "prompt-profile-light"));
+    const profile = profileEntry.get("insert").items.find((row) => row.get("id") === "prompt-profile-light");
+    assert.deepEqual(profile.get("config").get("sections").toJS(document), [{ id: "short-tone", order: 1050, scope: "main-only" }]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+// #endregion TEST_gateRmw
