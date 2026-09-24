@@ -1,9 +1,11 @@
 /**
  * #region moduleContract
  * @modulecontract
- * @purpose Pin the SPEC §5.5 HTTP API against fake webServer/settings/configEditor
- *   services and a temp profile patch: validation-first writes, correct
- *   routing of each operation, error objects instead of throws.
+ * @purpose Pin the SPEC §5.5 HTTP API (frozen live-bugfix contract: rowId OR
+ *   patchId addressing, whole-object writes via settings.replace) against
+ *   fake webServer/settings/configEditor services and a temp profile patch:
+ *   validation-first writes, correct routing of each operation, error
+ *   objects instead of throws, and failure logging.
  * @scope node:test with in-memory fakes; NOT: the real host webServer or settings.
  * #endregion moduleContract
  */
@@ -13,10 +15,21 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument, isSeq } from "yaml";
-import { registerApi } from "../lib/api.js";
+import { registerApi, toPatchId } from "../lib/api.js";
 import { resolveProfileId } from "../lib/resolve.js";
 
 const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value) => value }] };
+
+// #region FUNC_toPatchId_unit
+/** @purpose Unit-pin the normalization helper: strip `<parent>:` chains, keep the last segment, pass through unqualified ids. */
+test("toPatchId strips qualified prefix chains and passes unqualified ids through", () => {
+  assert.equal(toPatchId("include:prompt-section-1"), "prompt-section-1");
+  assert.equal(toPatchId("include:group:prompt-section-1"), "prompt-section-1");
+  assert.equal(toPatchId("prompt-section-1"), "prompt-section-1");
+  assert.equal(toPatchId(""), "");
+  assert.equal(toPatchId(null), null);
+});
+// #endregion FUNC_toPatchId_unit
 
 // #region FUNC_fakes
 /** @purpose Drive handlers without node sockets: minimal req/res stand-ins. */
@@ -54,13 +67,16 @@ function fakeResponse() {
 // #region FUNC_harness
 /**
  * @purpose Compose one API instance over fakes plus a temp patch file and
- *   return a `call(method, path, body)` driver.
+ *   return a `call(method, path, body)` driver. The fake settings records
+ *   BOTH mutate ops and whole-object replace calls.
  */
 async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, entries, settings: settingsOverride } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "dsh-pp-api-"));
   const patchPath = join(dir, "cordis.patch.yml");
   await writeFile(patchPath, "# comment\n[]\n", { mode: 0o600 });
   const mutations = [];
+  const replacements = [];
+  const logs = [];
   let revision = 7;
   const settings = settingsOverride ?? {
     describe: () => [{ ns: "prompt-profiles", revision }],
@@ -74,6 +90,10 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
         if (op.path[0] === "default") defaultId = op.value;
         if (op.path[0] === "lastByWorkspace") lastByWorkspace = op.value;
       }
+    },
+    replace: async (ns, value, expected) => {
+      replacements.push({ ns, value, expected });
+      revision += 1;
     },
   };
   const service = {
@@ -92,9 +112,15 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
     configEditor: entries ? { documentPath: patchPath, entries } : { documentPath: patchPath },
   };
   if (agentPresets !== undefined) ctx.agentPresets = agentPresets;
-  const dispose = registerApi(ctx, { service });
+  const dispose = registerApi(ctx, {
+    service,
+    log: {
+      warn: (message, details) => logs.push({ level: "warn", message, details }),
+      error: (message, details) => logs.push({ level: "error", message, details }),
+    },
+  });
   return {
-    patchPath, mutations, dispose,
+    patchPath, mutations, replacements, logs, dispose,
     async call(method, path, body) {
       const handler = routes.get(`/__dsh-prompt-profiles${path.split("?")[0]}`);
       assert.ok(handler, `route ${path} registered`);
@@ -115,14 +141,17 @@ const userProfile = { id: "light", title: "Light", sections: [{ id: "tone", orde
 // #endregion FUNC_harness
 
 // #region TEST_state
-/** @purpose GET /state serves every field SPEC §5.5 lists, incl. source/usedIn/emits and revision. */
-test("state returns profiles, sections with usedIn, builtinOrders, default, last, revision", async () => {
+/** @purpose GET /state serves every field SPEC §5.5 lists PLUS patchId on every row (frozen contract). */
+test("state returns profiles, sections with patchId, usedIn, builtinOrders, default, last, revision", async () => {
   const api = await harness({ sections: [userSection], profiles: [userProfile], defaultId: "light", lastByWorkspace: { ws1: "light" } });
   try {
     const { status, body } = await api.call("GET", "/state");
     assert.equal(status, 200);
-    assert.deepEqual(body.profiles, [userProfile]);
-    assert.deepEqual(body.sections, [{ ...userSection, usedIn: [{ profileId: "light", scope: "inherit" }], emits: true }]);
+    assert.deepEqual(body.profiles, [{ ...userProfile, patchId: "prompt-profile-light" }]);
+    assert.deepEqual(body.sections, [{
+      ...userSection, patchId: "prompt-section-tone",
+      usedIn: [{ profileId: "light", scope: "inherit" }], emits: true,
+    }]);
     assert.deepEqual(body.builtinOrders, { TOOL_BASH: 1000 });
     assert.deepEqual(body.modes, []);
     assert.equal(body.default, "light");
@@ -130,25 +159,51 @@ test("state returns profiles, sections with usedIn, builtinOrders, default, last
     assert.equal(body.revision, 7);
   } finally { await api.cleanup(); }
 });
+
+/** @purpose A registry row whose rowId is the QUALIFIED loader entry id still reports a clean unqualified patchId. */
+test("state normalizes patchId for qualified loader entry rowIds", async () => {
+  const qualified = { ...userSection, rowId: "include:prompt-section-tone" };
+  const api = await harness({ sections: [qualified] });
+  try {
+    const { status, body } = await api.call("GET", "/state");
+    assert.equal(status, 200);
+    assert.equal(body.sections[0].rowId, "include:prompt-section-tone");
+    assert.equal(body.sections[0].patchId, "prompt-section-tone");
+  } finally { await api.cleanup(); }
+});
 // #endregion TEST_state
 
 // #region TEST_validation
-/** @purpose Bad payloads fail with a clean error object and no file write. */
-test("create rejects a bad id slug, empty title, and non-numeric order without writing", async () => {
-  const api = await harness();
+/** @purpose Bad payloads fail with a clean error object, no file write, no settings call — the patch stays byte-identical (task d). */
+test("whole-object validation rejects bad values without writing (patch byte-identical)", async () => {
+  const api = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
-    for (const [path, bad] of [
+    const before = await readFile(api.patchPath, "utf8");
+    const attacks = [
+      ["/section/create", { title: "T", body: 42 }],
       ["/section/create", { id: "Bad_Id", title: "T", body: "B" }],
-      ["/section/create", { id: "ok-id", title: "  ", body: "B" }],
-      ["/profile/create", { id: "ok-id", title: "T", sections: [{ id: "x", order: "many" }] }],
-      ["/profile/create", { id: "ok-id", title: "T", sections: [{ id: "x", order: 1, scope: "everywhere" }] }],
-    ]) {
-      const { status, body } = await api.call("POST", path, bad);
-      assert.equal(status, 400, `${path} ${JSON.stringify(bad)}`);
-      assert.ok(body.error.message);
+      ["/section/update", { rowId: "prompt-section-tone", value: { title: "  ", body: "x" } }],
+      ["/section/update", { rowId: "prompt-section-tone", value: { title: "T", body: 7 } }],
+      ["/section/update", { rowId: "prompt-section-tone", value: "not-an-object" }],
+      ["/section/update", { rowId: "prompt-section-tone", revision: "not-a-number", value: { title: "T", body: "x" } }],
+      ["/profile/update", { rowId: "prompt-profile-light", value: { title: "T", sections: [{ id: "ghost", order: 1 }] } }],
+      ["/profile/update", { rowId: "prompt-profile-light", value: { title: "T", sections: [{ id: "tone", order: "invalid" }] } }],
+      ["/profile/update", { rowId: "prompt-profile-light", value: { title: "T", sections: [{ id: "tone", order: 1, scope: "everywhere" }] } }],
+      ["/profile/update", { rowId: "prompt-profile-light", value: { title: "T", sections: "not-an-array" } }],
+      ["/profile/update", { rowId: "prompt-profile-light", value: { title: "", sections: [] } }],
+      ["/profile/create", { title: "T", sections: [{ id: "x", order: "many" }] }],
+      ["/profile/create", { title: "T", sections: [{ id: "x", order: 1, scope: "everywhere" }] }],
+      ["/default", {}],
+      ["/default", { default: 42 }],
+    ];
+    for (const [path, body] of attacks) {
+      const { status, payload } = await api.call("POST", path, body).then((result) => ({ status: result.status, payload: result.body }));
+      assert.equal(status, 400, `${path} ${JSON.stringify(body)}`);
+      assert.ok(payload.error.message);
     }
-    assert.equal(await readFile(api.patchPath, "utf8"), "# comment\n[]\n");
+    assert.equal(await readFile(api.patchPath, "utf8"), before, "patch file byte-identical after validation failures");
     assert.equal(api.mutations.length, 0);
+    assert.equal(api.replacements.length, 0);
     const wrongMethod = await api.call("GET", "/section/create");
     assert.equal(wrongMethod.status, 405);
   } finally { await api.cleanup(); }
@@ -156,26 +211,51 @@ test("create rejects a bad id slug, empty title, and non-numeric order without w
 // #endregion TEST_validation
 
 // #region TEST_create
-/** @purpose section/profile create write insert rows through the writer. */
-test("section and profile create append insert rows to the patch", async () => {
+/** @purpose section/profile create write insert rows through the writer and answer the full frozen-contract payload INCLUDING patchId (task e). */
+test("section and profile create append insert rows and return rowId + patchId + configId", async () => {
   const api = await harness();
   try {
-    const section = await api.call("POST", "/section/create", { id: "tone", title: "Tone", body: "Be brief." });
+    const section = await api.call("POST", "/section/create", { title: "Tone", body: "Be brief." });
     assert.equal(section.status, 200);
-    assert.deepEqual(section.body, { ok: true, rowId: "prompt-section-tone", emits: true });
-    const profile = await api.call("POST", "/profile/create", { id: "light", title: "Light", sections: [{ id: "tone", order: 1050 }] });
-    assert.deepEqual(profile.body, { ok: true, rowId: "prompt-profile-light" });
+    assert.deepEqual(section.body, {
+      ok: true, rowId: "prompt-section-tone", patchId: "prompt-section-tone", configId: "tone",
+      title: "Tone", body: "Be brief.", emits: true,
+    });
+    const profile = await api.call("POST", "/profile/create", { title: "Light", sections: [{ id: "tone", order: 1050 }] });
+    assert.deepEqual(profile.body, {
+      ok: true, rowId: "prompt-profile-light", patchId: "prompt-profile-light", configId: "light",
+      title: "Light", sections: [{ id: "tone", order: 1050 }],
+    });
     const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
     const inserts = document.contents.items.filter((item) => item?.get?.("insert"));
     assert.deepEqual(inserts.map((item) => item.get("insert").items[0].get("id")), ["prompt-section-tone", "prompt-profile-light"]);
   } finally { await api.cleanup(); }
 });
+
+/** @purpose The server generates unique slug ids: ASCII slugs, Cyrillic → numeric fallback (live bug 2's `prompt-section-1`), collision → -2 suffix. */
+test("create generates the slug id server-side and avoids collisions", async () => {
+  const api = await harness({ sections: [userSection] });
+  try {
+    const cyrillic = await api.call("POST", "/section/create", { title: "Тестовая секция", body: "x" });
+    assert.equal(cyrillic.status, 200);
+    assert.equal(cyrillic.body.configId, "section-1");
+    assert.equal(cyrillic.body.rowId, "prompt-section-section-1");
+    assert.equal(cyrillic.body.patchId, "prompt-section-section-1");
+    const again = await api.call("POST", "/section/create", { title: "Тестовая секция", body: "y" });
+    assert.equal(again.body.configId, "section-2");
+    // "tone" is a REGISTERED section id → slug gets a -2 suffix, never a duplicate
+    const clash = await api.call("POST", "/section/create", { title: "Tone", body: "z" });
+    assert.equal(clash.body.configId, "tone-2");
+    // default title allowed
+    const untitled = await api.call("POST", "/section/create", { body: "b" });
+    assert.equal(untitled.status, 200);
+    assert.equal(untitled.body.title, "Section");
+  } finally { await api.cleanup(); }
+});
 // #endregion TEST_create
 
 // #region TEST_createDuplicate
-/** @purpose Creating a section or profile whose id already exists maps the
- *  writer's duplicate guard to a clean 400 — never a 500 (verify-fixes-glm
- *  defect 1); the file gains no second row. */
+/** @purpose Creating a section or profile whose id already exists maps the writer's duplicate guard to a clean 400 — never a 500. */
 test("section and profile create with an existing id answer 400 with the error envelope", async () => {
   const api = await harness();
   try {
@@ -194,28 +274,93 @@ test("section and profile create with an existing id answer 400 with the error e
 // #endregion TEST_createDuplicate
 
 // #region TEST_update
-/** @purpose Existing-row edits go through settings.mutate with the sent revision. */
-test("section update routes through settings.mutate with ops and revision", async () => {
+/** @purpose Updates replace the WHOLE config through settings.replace with the sent revision (task c). */
+test("section update replaces the whole config through settings.replace", async () => {
   const api = await harness({ sections: [userSection] });
   try {
-    const ops = [{ op: "set", path: ["body"], value: "Shorter." }];
-    const { status, body } = await api.call("POST", "/section/update", { rowId: "prompt-section-tone", revision: 7, ops });
+    const { status, body } = await api.call("POST", "/section/update", {
+      rowId: "prompt-section-tone", revision: 7,
+      value: { title: "New", body: "Shorter." },
+    });
     assert.equal(status, 200);
-    assert.deepEqual(body, { ok: true, emits: true });
-    assert.deepEqual(api.mutations, [{ ns: "prompt-section-tone", ops, expected: 7 }]);
-    const missing = await api.call("POST", "/section/update", { rowId: "prompt-section-ghost", ops });
-    assert.equal(missing.status, 404);
+    assert.deepEqual(body, { ok: true, rowId: "prompt-section-tone", patchId: "prompt-section-tone", emits: true });
+    assert.deepEqual(api.replacements, [{
+      ns: "prompt-section-tone",
+      value: { id: "tone", title: "New", body: "Shorter." },
+      expected: 7,
+    }]);
+    assert.equal(api.mutations.length, 0, "no per-op mutate calls anymore");
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose The QUALIFIED loader entry rowId works on update (task a) in both registry directions. */
+test("qualified include:… rowId works on section and profile update", async () => {
+  const api = await harness({ sections: [userSection], profiles: [userProfile] });
+  try {
+    const section = await api.call("POST", "/section/update", {
+      rowId: "include:prompt-section-tone",
+      value: { title: "Тестовая секция 2", body: "b" },
+    });
+    assert.equal(section.status, 200);
+    assert.equal(section.body.patchId, "prompt-section-tone");
+    assert.equal(api.replacements[0].ns, "prompt-section-tone");
+    const profile = await api.call("POST", "/profile/update", {
+      rowId: "include:prompt-profile-light",
+      value: { title: "Light", sections: [{ id: "tone", order: 100, scope: "inherit" }] },
+    });
+    assert.equal(profile.status, 200);
+    assert.equal(api.replacements[1].ns, "prompt-profile-light");
+    assert.deepEqual(api.replacements[1].value.sections, [{ id: "tone", order: 100, scope: "inherit" }]);
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose When the REGISTRY holds the qualified id, the settings ns is still the unqualified patch row id. */
+test("update normalizes the settings ns when the registry rowId is qualified", async () => {
+  const qualified = { ...userSection, rowId: "include:prompt-section-tone" };
+  const api = await harness({ sections: [qualified] });
+  try {
+    const sent = await api.call("POST", "/section/update", {
+      rowId: "include:prompt-section-tone", value: { title: "T", body: "b" },
+    });
+    assert.equal(sent.status, 200);
+    assert.equal(sent.body.rowId, "include:prompt-section-tone");
+    assert.equal(api.replacements[0].ns, "prompt-section-tone");
+    const unqualified = await api.call("POST", "/section/update", {
+      rowId: "prompt-section-tone", value: { title: "T", body: "b" },
+    });
+    assert.equal(unqualified.status, 200, "the unqualified form addresses the same row");
+    assert.equal(api.replacements[1].ns, "prompt-section-tone");
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose An unknown rowId answers a clear 404 envelope, never a bare 500 (task b). */
+test("unknown rowIds answer 404 with the error envelope, not 500", async () => {
+  const api = await harness({ sections: [userSection], profiles: [userProfile] });
+  try {
+    for (const [path, rowId] of [
+      ["/section/update", "include:prompt-section-ghost"],
+      ["/section/update", "prompt-section-ghost"],
+      ["/section/delete", "include:prompt-section-ghost"],
+      ["/section/rename", "prompt-section-ghost"],
+      ["/profile/update", "prompt-profile-ghost"],
+      ["/profile/delete", "prompt-profile-ghost"],
+    ]) {
+      const extra = path.endsWith("update") ? { value: { title: "T", body: "b" } } : path.endsWith("rename") ? { id: "new-id" } : {};
+      const { status, body } = await api.call("POST", path, { rowId, ...extra });
+      assert.equal(status, 404, `${path} ${rowId}`);
+      assert.match(body.error.message, /is not registered/);
+    }
   } finally { await api.cleanup(); }
 });
 // #endregion TEST_update
 
 // #region TEST_delete
-/** @purpose Delete removes user rows physically and disables bundle rows. */
-test("delete removes a user insert row; a bundle row gets a bare disabled override", async () => {
+/** @purpose Delete removes user rows physically and disables bundle rows; the QUALIFIED rowId works (task a). */
+test("delete removes a user insert row (qualified rowId); a bundle row gets a bare disabled override", async () => {
   const api = await harness({ sections: [userSection] });
   try {
     await api.call("POST", "/section/create", { id: "tone", title: "Tone", body: "B" });
-    const removed = await api.call("POST", "/section/delete", { rowId: "prompt-section-tone" });
+    const removed = await api.call("POST", "/section/delete", { rowId: "include:prompt-section-tone" });
     assert.deepEqual(removed.body, { ok: true, disabled: false });
     const after = await readFile(api.patchPath, "utf8");
     assert.doesNotMatch(after, /prompt-section-tone/);
@@ -235,22 +380,16 @@ test("delete removes a user insert row; a bundle row gets a bare disabled overri
 // #endregion TEST_delete
 
 // #region TEST_rename
-/** @purpose Rename is ONE writer commit: new insert row, referencing profile
- *  rows rewritten in the same document, old row gone — no settings.mutate
- *  inside the batch (astra finding C: hmr transactions cannot be nested).
- *  A profile that lives in this patch as an insert is safe to rewrite even
- *  when configEditor.entries() cannot name it (config is updated in place). */
+/** @purpose Rename is ONE writer commit: new insert row, referencing profile rows rewritten in the same document, old row gone. */
 test("rename creates the new row, rewrites profile refs, and removes the old row in one commit", async () => {
   const api = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
     await api.call("POST", "/section/create", { id: "tone", title: "Tone", body: "Be brief." });
-    // Put the profile row into the patch itself: an unnameable insert row is
-    // still safe (writer updates its config in place, name never matched).
     await api.call("POST", "/profile/create", { id: "light", title: "Light", sections: [{ id: "tone", order: 1050, scope: "inherit" }] });
     const { status, body } = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "short-tone" });
     assert.equal(status, 200);
-    assert.deepEqual(body, { ok: true, rowId: "prompt-section-short-tone", id: "short-tone" });
-    assert.deepEqual(api.mutations, [], "rename performs no settings.mutate calls");
+    assert.deepEqual(body, { ok: true, rowId: "prompt-section-short-tone", patchId: "prompt-section-short-tone", id: "short-tone" });
+    assert.deepEqual(api.replacements, [], "rename performs no settings.replace calls");
     const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
     const profileEntry = document.contents.items.find((item) => {
       const insert = item?.get?.("insert");
@@ -266,9 +405,21 @@ test("rename creates the new row, rewrites profile refs, and removes the old row
   } finally { await api.cleanup(); }
 });
 
-/** @purpose A referencing profile from a LOWER layer (no insert row here) is
- *  rewritten as a bare override carrying its REAL plugin name taken from
- *  configEditor.entries() — a guessed name would be skipped by the loader. */
+/** @purpose The QUALIFIED rowId works on rename too (task a). */
+test("rename accepts the qualified include:… rowId", async () => {
+  const api = await harness({ sections: [userSection], profiles: [userProfile] });
+  try {
+    await api.call("POST", "/section/create", { id: "tone", title: "Tone", body: "Be brief." });
+    await api.call("POST", "/profile/create", { id: "light", title: "Light", sections: [{ id: "tone", order: 1050, scope: "inherit" }] });
+    const { status } = await api.call("POST", "/section/rename", { rowId: "include:prompt-section-tone", id: "short-tone" });
+    assert.equal(status, 200);
+    const text = await readFile(api.patchPath, "utf8");
+    assert.match(text, /prompt-section-short-tone/);
+    assert.doesNotMatch(text, /prompt-section-tone\b/);
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose A referencing profile from a LOWER layer is rewritten as a bare override carrying its REAL plugin name from configEditor.entries(). */
 test("rename names a foreign profile from configEditor.entries() for its bare override", async () => {
   const foreignName = "@foreign/bundle/profile";
   const api = await harness({
@@ -276,7 +427,7 @@ test("rename names a foreign profile from configEditor.entries() for its bare ov
     entries: () => [{ options: { id: "prompt-profile-light", name: foreignName } }],
   });
   try {
-    await api.call("POST", "/section/create", { id: "tone", title: "Tone", body: "Be brief." });
+    await api.call("POST", "/section/create", { title: "Tone", body: "Be brief." });
     const { status } = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "short-tone" });
     assert.equal(status, 200);
     const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
@@ -287,13 +438,11 @@ test("rename names a foreign profile from configEditor.entries() for its bare ov
   } finally { await api.cleanup(); }
 });
 
-/** @purpose When a referencing profile can be named NOWHERE (no entries, not
- *  an insert in this patch), the rename is refused with 409 instead of
- *  writing a bare override the loader would silently skip. */
+/** @purpose When a referencing profile can be named NOWHERE, the rename is refused with 409 and the patch is untouched. */
 test("rename is refused when a referencing profile cannot be named safely", async () => {
   const api = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
-    await api.call("POST", "/section/create", { id: "tone", title: "Tone", body: "Be brief." });
+    await api.call("POST", "/section/create", { title: "Tone", body: "Be brief." });
     const before = await readFile(api.patchPath, "utf8");
     const { status, body } = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "short-tone" });
     assert.equal(status, 409);
@@ -302,31 +451,23 @@ test("rename is refused when a referencing profile cannot be named safely", asyn
   } finally { await api.cleanup(); }
 });
 
-/** @purpose Any failure inside the single-commit rename leaves the patch file
- *  byte-identical (withPatchBatch rollback under one exclusivity gate). */
+/** @purpose Any failure inside the single-commit rename leaves the patch file byte-identical. */
 test("rename rolls the patch file back byte-identically when a batch step fails", async () => {
   const before = "# comment\n[]\n"; // harness's initial patch file, byte-for-byte
   const api = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
-    // "tone" already exists as a registered section id → duplicate guard 400
-    // fires before any write; force a mid-batch failure instead by renaming
-    // onto an id that collides with a registered section (still pre-write)…
     const duplicate = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "tone" });
     assert.equal(duplicate.status, 200, "renaming onto the same id is a no-op success");
     const missing = await api.call("POST", "/section/rename", { rowId: "prompt-section-ghost", id: "whatever" });
     assert.equal(missing.status, 404);
     assert.equal(await readFile(api.patchPath, "utf8"), before);
   } finally { await api.cleanup(); }
-  // Real mid-batch failure: the new row id collides with an EXISTING patch row
-  // (the duplicate guard fires after the batch started reading — file untouched).
-  // entries() names the profile so the pre-batch safety refusal does not
-  // preempt this rollback scenario.
   const api2 = await harness({
     sections: [userSection], profiles: [userProfile],
     entries: () => [{ options: { id: "prompt-profile-light", name: "@knopki/dsh-prompt-profiles/profile" } }],
   });
   try {
-    await api2.call("POST", "/section/create", { id: "taken", title: "Taken", body: "x" });
+    await api2.call("POST", "/section/create", { title: "Taken", body: "x" });
     const before2 = await readFile(api2.patchPath, "utf8");
     const failed = await api2.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "taken" });
     assert.equal(failed.status, 400, "duplicate section id rejected");
@@ -336,8 +477,7 @@ test("rename rolls the patch file back byte-identically when a batch step fails"
 // #endregion TEST_rename
 
 // #region TEST_defaults
-/** @purpose default and last write volatile fields through settings.mutate;
- *  an explicit "none" is STORED (own-property "") so it beats the default (astra finding E). */
+/** @purpose default and last write volatile fields through settings.mutate; an explicit "none" is STORED (own-property ""). */
 test("default and last write through settings.mutate on the main row", async () => {
   const api = await harness({ profiles: [userProfile], defaultId: "light", lastByWorkspace: { ws1: "light" } });
   try {
@@ -350,8 +490,6 @@ test("default and last write through settings.mutate on the main row", async () 
       { ns: "prompt-profiles", ops: [{ op: "set", path: ["default"], value: "light" }] },
       { ns: "prompt-profiles", ops: [{ op: "set", path: ["default"], value: "" }] },
       { ns: "prompt-profiles", ops: [{ op: "set", path: ["lastByWorkspace"], value: { ws1: "light", ws2: "light" } }] },
-      // explicit "none" is stored as "" — NOT deleted — so the resolver's
-      // own-property check wins over the default.
       { ns: "prompt-profiles", ops: [{ op: "set", path: ["lastByWorkspace"], value: { ws1: "", ws2: "light" } }] },
     ]);
     const unknown = await api.call("POST", "/default", { default: "ghost" });
@@ -374,65 +512,65 @@ test("explicit none stored by /last resolves to no profile even with a default s
 });
 // #endregion TEST_defaults
 
-// #region TEST_opsAllowlist
-/** @purpose Update ops are allowlisted per row kind; bad paths/values/types never reach settings (verify-step4-sol defect 3). */
-test("update ops allowlist rejects id writes, bad orders, unknown sections, non-numeric revision, and silent default clears", async () => {
-  const api = await harness({ sections: [userSection], profiles: [userProfile] });
-  try {
-    const attacks = [
-      ["/section/update", { rowId: "prompt-section-tone", ops: [{ op: "set", path: ["id"], value: "wrong-domain" }] }],
-      ["/section/update", { rowId: "prompt-section-tone", revision: "not-a-number", ops: [{ op: "set", path: ["body"], value: "x" }] }],
-      ["/section/update", { rowId: "prompt-section-tone", ops: [{ op: "unset", path: ["body"] }] }],
-      ["/profile/update", { rowId: "prompt-profile-light", ops: [{ op: "set", path: ["sections"], value: [{ id: "tone", order: "invalid" }] }] }],
-      ["/profile/update", { rowId: "prompt-profile-light", ops: [{ op: "set", path: ["sections"], value: [{ id: "ghost", order: 1 }] }] }],
-      ["/profile/update", { rowId: "prompt-profile-light", ops: [{ op: "set", path: ["sections"], value: [{ id: "tone", order: 1, scope: "everywhere" }] }] }],
-      ["/profile/update", { rowId: "prompt-profile-light", ops: [{ op: "set", path: ["sections"], value: "not-an-array" }] }],
-      ["/default", {}],
-      ["/default", { default: 42 }],
-    ];
-    for (const [path, body] of attacks) {
-      const { status, payload } = await api.call("POST", path, body).then((result) => ({ status: result.status, payload: result.body }));
-      assert.equal(status, 400, `${path} ${JSON.stringify(body)}`);
-      assert.ok(payload.error.message);
-    }
-    assert.equal(api.mutations.length, 0, "no write happened");
-    const valid = await api.call("POST", "/profile/update", {
-      rowId: "prompt-profile-light",
-      ops: [{ op: "set", path: ["sections"], value: [{ id: "tone", order: 2000, scope: "main-only" }] }],
-    });
-    assert.equal(valid.status, 200);
-    assert.equal(api.mutations.length, 1);
-  } finally { await api.cleanup(); }
-});
-// #endregion TEST_opsAllowlist
-
 // #region TEST_emptyBody
-/** @purpose Empty/whitespace section bodies are legal (SPEC §7) and marked emits:false (verify-step4-sol defect 5). */
+/** @purpose Empty/whitespace section bodies are legal (SPEC §7) and marked emits:false on create AND whole-object update. */
 test("empty body is accepted on create and update and reported as non-emitting", async () => {
   const api = await harness();
   try {
-    const blank = await api.call("POST", "/section/create", { id: "blank", title: "Blank", body: "  \n " });
+    const blank = await api.call("POST", "/section/create", { title: "Blank", body: "  \n " });
     assert.equal(blank.status, 200);
-    assert.deepEqual(blank.body, { ok: true, rowId: "prompt-section-blank", emits: false });
-    const filled = await api.call("POST", "/section/create", { id: "filled", title: "Filled", body: "text" });
+    assert.equal(blank.body.emits, false);
+    const filled = await api.call("POST", "/section/create", { title: "Filled", body: "text" });
     assert.equal(filled.body.emits, true);
   } finally { await api.cleanup(); }
   const api2 = await harness({ sections: [userSection] });
   try {
     const cleared = await api2.call("POST", "/section/update", {
       rowId: "prompt-section-tone",
-      ops: [{ op: "set", path: ["body"], value: "" }],
+      value: { title: "Tone", body: "" },
     });
     assert.equal(cleared.status, 200);
-    assert.deepEqual(cleared.body, { ok: true, emits: false });
-    const titled = await api2.call("POST", "/section/update", {
-      rowId: "prompt-section-tone",
-      ops: [{ op: "set", path: ["title"], value: "New" }],
-    });
-    assert.deepEqual(titled.body, { ok: true });
+    assert.deepEqual(cleared.body, { ok: true, rowId: "prompt-section-tone", patchId: "prompt-section-tone", emits: false });
   } finally { await api2.cleanup(); }
 });
 // #endregion TEST_emptyBody
+
+// #region TEST_logging
+/** @purpose Task 3: every route failure is logged with route, rowId as received, normalized patchId, and the underlying message. */
+test("route failures are logged with route, rowId, normalized patchId, and the error message", async () => {
+  const api = await harness({ sections: [userSection] });
+  try {
+    await api.call("POST", "/section/update", { rowId: "include:prompt-section-ghost", value: { title: "T", body: "b" } });
+    const entry = api.logs.find((log) => log.details?.rowId === "include:prompt-section-ghost");
+    assert.ok(entry, "failure was logged");
+    assert.equal(entry.details.route, "POST /section/update");
+    assert.equal(entry.details.patchId, "prompt-section-ghost");
+    assert.match(entry.details.error, /is not registered/);
+    assert.ok(entry.message.includes("request failed"));
+    api.logs.length = 0;
+  } finally { await api.cleanup(); }
+  // 500s go to the error sink with the underlying message preserved.
+  const api2 = await harness({
+    sections: [userSection],
+    settings: {
+      describe: () => [{ ns: "prompt-profiles", revision: 7 }],
+      mutate: async () => {},
+      replace: async () => { throw new Error("settings failed"); },
+    },
+  });
+  try {
+    const boom = await api2.call("POST", "/section/update", { rowId: "include:prompt-section-tone", value: { title: "T", body: "b" } });
+    assert.equal(boom.status, 500);
+    assert.deepEqual(boom.body, { error: { message: "internal error" } });
+    const failure = api2.logs[0];
+    assert.equal(failure.level, "error");
+    assert.equal(failure.details.route, "POST /section/update");
+    assert.equal(failure.details.rowId, "include:prompt-section-tone");
+    assert.equal(failure.details.patchId, "prompt-section-tone");
+    assert.match(failure.details.error, /settings failed/);
+  } finally { await api2.cleanup(); }
+});
+// #endregion TEST_logging
 
 // #region TEST_modes
 /** @purpose state.modes derives complete flags from agentPresets documents (SPEC decision 21); absent service degrades to []. */
@@ -494,7 +632,7 @@ test("preview renders ordered sections with interpolation and skip reasons", asy
 // #endregion TEST_preview
 
 // #region TEST_writeSerialization
-/** @purpose All mutating API paths share one serializer: concurrent mutates never overlap (verify-step4-sol defect 1). */
+/** @purpose All mutating API paths share one serializer: concurrent writes never overlap. */
 test("concurrent settings writes through the API execute serially", async () => {
   const dir = await mkdtemp(join(tmpdir(), "dsh-pp-api-"));
   const patchPath = join(dir, "cordis.patch.yml");
@@ -507,9 +645,14 @@ test("concurrent settings writes through the API execute serially", async () => 
       await new Promise((resolve) => setTimeout(resolve, 5));
       seen[seen.length - 1].end = true;
     },
+    replace: async (ns) => {
+      seen.push({ ns, overlap: seen.some((entry) => !entry.end) });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      seen[seen.length - 1].end = true;
+    },
   };
   const service = {
-    sections: () => [], profiles: () => [userProfile], usedIn: () => [],
+    sections: () => [userSection], profiles: () => [userProfile], usedIn: () => [],
     builtinOrders: () => ({}), builtinOrdersByName: () => ({}),
     config: { default: { get: () => "" }, lastByWorkspace: { get: () => ({}) } },
   };
@@ -533,10 +676,11 @@ test("concurrent settings writes through the API execute serially", async () => 
     const statuses = await Promise.all([
       call("/default", { default: "light" }),
       call("/last", { workspaceId: "w", profileId: "light" }),
+      call("/section/update", { rowId: "prompt-section-tone", value: { title: "T", body: "b" } }),
     ]);
-    assert.deepEqual(statuses, [200, 200]);
-    assert.equal(seen.length, 2);
-    assert.ok(seen.every((entry) => entry.overlap === false), "no overlapping mutate windows");
+    assert.deepEqual(statuses, [200, 200, 200]);
+    assert.equal(seen.length, 3);
+    assert.ok(seen.every((entry) => entry.overlap === false), "no overlapping write windows");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

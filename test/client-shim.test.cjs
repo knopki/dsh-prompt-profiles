@@ -1,15 +1,19 @@
 // #region MODULE_CONTRACT
 // PURPOSE: Verify the hand-authored client loader wrapper: chip visibility
-//   gates, settings-section registration, the pure helpers, and — since the
-//   astra review — that every primitive is used with its REAL installed
-//   contract (Menu open/anchor/onClose, MenuItemButton onSelect-only, Toast
-//   as a render-only component).
-// SCOPE: Shim-only registration/component smoke test; NOT browser integration.
+//   gates, settings-section registration, the pure helpers, the frozen
+//   write contract (patchId in rowId, whole-object `value`, no path ops),
+//   the modal-free create flow (default title, poll until the patchId
+//   appears, busy-guard, drill-down), error surfacing (server message in
+//   the notify text + inline error line), and — since the astra review —
+//   that every primitive is used with its REAL installed contract (Menu
+//   open/anchor/onClose, Toast as a render-only component).
+// SCOPE: Shim-only registration/component/flow test; NOT browser integration.
 // INVARIANTS: Array/object comparisons use assert.deepStrictEqual on values
 //   normalized out of the vm realm (JSON round-trip) — the assertion stays
 //   strict while remaining cross-realm safe. Fake primitives THROW at element
 //   creation when the real prop contract is violated, so any regression in
-//   lib/client.js fails this file, not the browser.
+//   lib/client.js fails this file, not the browser. Async flow tests use a
+//   1 ms poll interval and a try cap so the file can never hang.
 // #endregion MODULE_CONTRACT
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -21,6 +25,23 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
 // #endregion FUNC_plain
+
+// #region FUNC_walk
+/** Depth-first walk of the fake element tree (fake createElement output). */
+function walk(el, visit) {
+  if (!el || typeof el !== 'object') return;
+  visit(el);
+  for (const child of el.children ?? []) walk(child, visit);
+  const propsChildren = el.props && el.props.children;
+  if (propsChildren && typeof propsChildren === 'object') walk(propsChildren, visit);
+}
+const elementText = (el) => JSON.stringify(el);
+function hasElement(el, predicate) {
+  let found = false;
+  walk(el, (node) => { if (predicate(node)) found = true; });
+  return found;
+}
+// #endregion FUNC_walk
 
 // #region SECTION_fakes Fake primitives that ENFORCE the installed contracts
 // (signatures verified against @deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.1
@@ -36,7 +57,7 @@ const Menu = {
     if (typeof props.onClose !== 'function') throw new TypeError('Menu requires an `onClose` callback');
     if (props.onSelect !== undefined && typeof props.onSelect !== 'function') throw new TypeError('Menu.onSelect must be a function');
     for (const entry of props.items ?? []) {
-      if (typeof entry?.id !== 'string') throw new TypeError('every Menu items entry needs a string id');
+      if (typeof entry?.id !== 'string') throw new TypeError('every Menu items entries need a string id');
       if (!('label' in entry) && !('type' in entry)) throw new TypeError('Menu items entries are data rows: {id,label} or {type:\'separator\'|\'label\'}');
     }
   },
@@ -132,10 +153,16 @@ const React = {
 };
 const code = fs.readFileSync(require('node:path').join(__dirname, '../lib/client.js'), 'utf8');
 new vm.Script(code, { filename: 'lib/client.js' });
-vm.runInNewContext(code, { window: { __ModuleLoader__: { load: (module) => { loaded = module.factory((name) => name === 'react' ? React : primitives); } } } });
+vm.runInNewContext(code, {
+  window: { __ModuleLoader__: { load: (module) => { loaded = module.factory((name) => name === 'react' ? React : primitives); } } },
+  // The create-flow poll needs real timers inside the vm realm.
+  setTimeout, clearTimeout,
+});
 // The client must never invoke Toast/Menu as plain functions (invalid hook call).
 assert.doesNotMatch(code, /(?<![a-zA-Z])Toast\s*\(/, 'client never calls Toast() as a function');
 assert.doesNotMatch(code, /(?<![a-zA-Z])Menu\s*\(/, 'client never calls Menu() as a function');
+// The client must never build path-op payloads again (frozen whole-object contract).
+assert.doesNotMatch(code, /op:\s*["']set["']/, 'client never builds path-op update payloads');
 const dict = { en: { nav: 'Prompt profiles' } };
 // #region SECTION_strictCtx
 // ACTIVATION GUARD: the plugin object must declare exactly the services its
@@ -187,7 +214,11 @@ assert.equal(chip.component(base), null, 'non-blank session returns null');
 assert.equal(chip.component({ ...base, useSession: (select) => select({ blank: true }) }), null, 'empty profile state returns null');
 // With loaded state on a blank session the chip renders — and its Menu element
 // must satisfy the installed contract (open/anchor/onClose/items) at creation.
-stateQueue = [{ profiles: [{ id: 'light', title: 'Light' }], sections: [], builtinOrders: {}, default: null, lastByWorkspace: {} }];
+// Entries now carry the frozen /state id triple (rowId/patchId/configId).
+stateQueue = [{
+  profiles: [{ rowId: 'prompt-profile-light', patchId: 'profile-light', configId: 'light', title: 'Light', sections: [] }],
+  sections: [], builtinOrders: {}, default: null, lastByWorkspace: {},
+}];
 const chipEl = chip.component({ ...base, useSession: (select) => select({ blank: true }) });
 stateQueue = [];
 assert.ok(chipEl, 'blank session with profiles renders the chip');
@@ -195,6 +226,7 @@ const chipMenu = chipEl.children.find((child) => child.type === Menu);
 assert.ok(chipMenu, 'chip renders a Menu element');
 assert.equal(chipMenu.props.open, false, 'chip Menu is owner-controlled via open');
 assert.ok(chipMenu.props.anchor, 'chip Menu carries the anchor trigger');
+assert.equal(chipMenu.props.items[1].id, 'light', 'menu rows key on the unqualified configId');
 assert.equal(chipMenu.props.items.at(-1).disabled, true, 'manage row is the disabled data entry');
 assert.ok(chipMenu.props.items.some((entry) => entry.type === 'separator'), 'separator is a data entry, not an hr child');
 // The disabled Manage item must carry a localized explanation (dictionary check:
@@ -224,9 +256,210 @@ assert.ok(sectionEl.children.some((child) => child && child.type === 'p'), 'load
 console.log('PASS settings.section / prompt-profiles / order 25 / label + api inject + loading render');
 // #endregion SECTION_settings
 
+// #region SECTION_apiShapes Frozen write contract: patchId in `rowId`, whole-object `value`, no ops.
+const sent = [];
+const recorderReq = (path, options) => {
+  sent.push([path, options ? JSON.parse(options.body) : null]);
+  return Promise.resolve({});
+};
+const recApi = loaded.makeApi(recorderReq);
+(async () => {
+  recApi.sectionUpdate('section-x', { title: 'T', body: 'B' });
+  recApi.profileUpdate('profile-y', { title: 'P', sections: [{ id: 'x', order: 10, scope: 'inherit' }] });
+  recApi.sectionCreate({ title: 'New section', body: '' });
+  recApi.profileCreate({ title: 'New profile', sections: [] });
+  recApi.sectionDelete('section-x');
+  recApi.profileDelete('profile-y');
+  recApi.sectionRename('section-x', 'renamed');
+  const byPath = Object.fromEntries(sent);
+  assert.ok(byPath['section/update'], 'section/update was issued');
+  assert.deepStrictEqual(byPath['section/update'], { rowId: 'section-x', value: { title: 'T', body: 'B' } },
+    'update sends {rowId: patchId, value: WHOLE object}');
+  assert.ok(!('ops' in byPath['section/update']), 'no ops key in section/update');
+  assert.deepStrictEqual(byPath['profile/update'], { rowId: 'profile-y', value: { title: 'P', sections: [{ id: 'x', order: 10, scope: 'inherit' }] } },
+    'profile/update sends the whole object too');
+  assert.ok(!('ops' in byPath['profile/update']), 'no ops key in profile/update');
+  assert.deepStrictEqual(byPath['section/create'], { title: 'New section', body: '' },
+    'create sends {title, body} — no client-generated id');
+  assert.deepStrictEqual(byPath['profile/create'], { title: 'New profile', sections: [] });
+  assert.deepStrictEqual(byPath['section/delete'], { rowId: 'section-x' }, 'delete sends the unqualified patchId');
+  assert.deepStrictEqual(byPath['section/rename'], { rowId: 'section-x', id: 'renamed' });
+  assert.ok(loaded.findEntry({ sections: [{ patchId: 'section-x' }], profiles: [] }, 'section-x'), 'findEntry locates by patchId');
+  assert.equal(loaded.findEntry({ sections: [], profiles: [] }, 'nope'), null, 'findEntry misses cleanly');
+  console.log('PASS api facade: whole-object {rowId: patchId, value} payloads, create without ids, no path ops');
+})();
+// #endregion SECTION_apiShapes
+
+// #region SECTION_createFlow Modal-free create flow: default title, poll retry, busy guard, drill.
+(async () => {
+  // -- success with HMR-race polling: the new row appears only on the 3rd read.
+  let reads = 0;
+  const emptyState = { profiles: [], sections: [], builtinOrders: {} };
+  const fullState = {
+    profiles: [], builtinOrders: {},
+    sections: [{ rowId: 'prompt-section-new-1', patchId: 'section-new-1', configId: 'new-1', title: 'New section', body: '', usedIn: [], source: 'user' }],
+  };
+  const creates = [];
+  const events = [];
+  const flow = loaded.makeCreateFlow({
+    api: {
+      sectionCreate: async (v) => { creates.push(v); return { rowId: 'prompt-section-new-1', patchId: 'section-new-1', configId: 'new-1', ...v }; },
+      loadState: async () => { reads += 1; return reads < 3 ? emptyState : fullState; },
+    },
+    t: (k) => k, notify: (m) => events.push(['notify', m]),
+    reload: async () => { events.push(['reload']); },
+    getState: () => emptyState,
+    onState: (s) => events.push(['state', s]),
+    onDrill: (id) => events.push(['drill', id]),
+    onPending: (b) => events.push(['pending', b]),
+    pollInterval: 1, pollDeadline: 5,
+  });
+  const first = flow.create('section', { title: 'New section', body: '' });
+  const second = flow.create('section', { title: 'New section', body: '' }); // in flight — must be a busy no-op
+  const r2 = await second;
+  assert.equal(r2.ok, false, 'concurrent create reports not-ok');
+  assert.equal(r2.busy, true, 'concurrent create reports busy (the disabled-button guard)');
+  const r1 = await first;
+  assert.equal(r1.ok, true, 'create succeeds once the row appears');
+  assert.equal(creates.length, 1, 'exactly ONE create POST — the double submit never reaches the server');
+  assert.equal(reads, 3, 'polled /state until the patchId appeared (2 misses, 1 hit)');
+  assert.deepEqual(events.filter((e) => e[0] === 'drill').at(-1), ['drill', 'new-1'], 'drills into the created item by its unqualified id');
+  const states = events.filter((e) => e[0] === 'state').map((e) => e[1]);
+  assert.equal(states.length, 2, 'state pushed twice: optimistic insert, then the polled document');
+  assert.equal(states[0].sections.length, 1, 'optimistic state already renders the new row from the create response');
+  assert.equal(states[0].sections[0].configId, 'new-1', 'optimistic row carries the unqualified id from the create response');
+  assert.equal(states[0].sections[0].source, 'user', 'optimistic row assumes user source until the row mounts');
+  assert.equal(states[1], fullState, 'the polled state (source/usedIn from the mounted row) replaces the optimistic one');
+  const pendings = events.filter((e) => e[0] === 'pending').map((e) => e[1]);
+  assert.deepEqual(pendings, [true, false], 'pending flag brackets the flight (create button disabled while in flight)');
+
+  // -- timeout: the row never appears — bounded retries, no hang.
+  const slowApi = { sectionCreate: async (v) => ({ patchId: 'ghost', configId: 'ghost', ...v }), loadState: async () => emptyState };
+  const notes = [];
+  const timeoutFlow = loaded.makeCreateFlow({
+    api: slowApi, t: (k) => k, notify: (m) => notes.push(m), reload: async () => {},
+    getState: () => emptyState,
+    pollInterval: 1, pollDeadline: 3,
+  });
+  const rt = await timeoutFlow.create('section', { title: 'x', body: '' });
+  assert.equal(rt.ok, false, 'timeout path resolves not-ok');
+  assert.ok(notes[0].includes('createTimeout'), 'timeout notify carries the createTimeout message');
+
+  // -- server error: the {error:{message}} text reaches the notify (Toast).
+  const failApi = {
+    sectionCreate: async () => { const e = new Error('writer: row id "prompt-section-1" already exists'); e.status = 400; throw e; },
+    loadState: async () => emptyState,
+  };
+  const errs = [];
+  const errFlow = loaded.makeCreateFlow({
+    api: failApi, t: (k) => k, notify: (m) => errs.push(m), reload: async () => {},
+    getState: () => emptyState,
+    pollInterval: 1, pollDeadline: 5,
+  });
+  const re = await errFlow.create('section', { title: 'New section', body: '' });
+  assert.equal(re.ok, false, 'failed create resolves not-ok');
+  assert.ok(errs[0].includes('already exists'), `server message surfaced: ${errs[0]}`);
+  assert.ok(errs[0].startsWith('createError'), 'notify prefixes with the localized createError');
+  console.log('PASS create flow: single POST under double submit, poll retry, busy guard, drill, timeout, server error toast');
+})();
+// #endregion SECTION_createFlow
+
+// #region SECTION_runSave Whole-object save runner: 409 re-apply once, error surfacing.
+(async () => {
+  const notes = [];
+  let attempts = 0;
+  const reloads = [];
+  const ok = await loaded.runSave(
+    async () => { attempts += 1; if (attempts === 1) { const e = new Error('stale revision'); e.status = 409; throw e; } },
+    async () => { reloads.push(1); },
+    (k) => k, (m) => notes.push(m));
+  assert.equal(ok, true, '409 re-read + re-apply succeeds');
+  assert.equal(attempts, 2, 'mutation applied exactly twice (first 409, then once more)');
+  assert.equal(reloads.length, 2, '409 path: reload before the retry, reload after the success');
+  assert.equal(notes.length, 0, 'no toast on the recovered 409');
+
+  let failures = 0;
+  const inline = [];
+  const bad = await loaded.runSave(
+    async () => { failures += 1; const e = new Error('internal error'); e.status = 500; throw e; },
+    async () => {},
+    (k) => k, (m) => notes.push(m), (text) => inline.push(text));
+  assert.equal(bad, false, 'non-409 failure reports false');
+  assert.equal(failures, 1, 'non-409 failure is NOT retried');
+  assert.ok(notes.at(-1).includes('internal error'), 'server message reaches the toast notify');
+  assert.equal(inline[0], 'saveError internal error', 'inline error line receives the same visible text');
+  console.log('PASS runSave: 409 re-apply once, 500 surfaces server message in toast + inline error');
+})();
+// #endregion SECTION_runSave
+
+// #region SECTION_tabsNoCreateModal Tabs render: create is a plain button, no create modal; default title payload.
+const sectionEntry = {
+  rowId: 'prompt-section-sec-1', patchId: 'section-sec-1', configId: 'sec-1',
+  title: 'Greeting', body: 'Be kind.', usedIn: [], source: 'user', emits: true,
+};
+const profileEntry = {
+  rowId: 'prompt-profile-main', patchId: 'profile-main', configId: 'main',
+  title: 'Main', sections: [], usedIn: [], source: 'user',
+};
+const tabState = { profiles: [profileEntry], sections: [sectionEntry], builtinOrders: {}, default: null, modes: [] };
+const noop = () => {};
+const flowCalls = [];
+const fakeFlow = { create: (kind, value) => { flowCalls.push([kind, value]); return Promise.resolve({ ok: true }); } };
+
+// SectionsTab useState order: query, creating, justCreated.
+stateQueue = ['', false, null];
+const secTab = loaded.components.SectionsTab({
+  state: tabState, api: {}, reload: noop, t: (k) => k, notify: noop,
+  drill: null, setDrill: noop, setState: noop, createFlow: fakeFlow,
+});
+stateQueue = [];
+assert.ok(!hasElement(secTab, (n) => n.type === Modal), 'SectionsTab renders NO modal — creation is modal-free');
+const secButtons = [];
+walk(secTab, (n) => { if (n.type === primitives.Button || n.type?.name === 'Button') secButtons.push(n); });
+const createSectionBtn = secButtons.find((b) => elementText(b).includes('newSection'));
+assert.ok(createSectionBtn, '+ New section button rendered');
+assert.equal(createSectionBtn.props.disabled, false, 'create button enabled when idle');
+createSectionBtn.props.onClick();
+assert.deepEqual(plain(flowCalls.at(-1)), ['section', { title: 'defaultSectionTitle', body: '' }],
+  'create click POSTs the default title payload (locale key resolved at click time)');
+
+// ProfilesTab useState order: creating, confirming, justCreated.
+stateQueue = [false, null, null];
+const profTab = loaded.components.ProfilesTab({
+  state: tabState, api: {}, reload: noop, t: (k) => k, notify: noop,
+  drill: null, setDrill: noop, onOpenSection: noop, setState: noop, createFlow: fakeFlow,
+});
+stateQueue = [];
+assert.ok(!hasElement(profTab, (n) => n.type === Modal), 'ProfilesTab renders NO modal while not confirming a delete');
+const profButtons = [];
+walk(profTab, (n) => { if (n.type === primitives.Button || n.type?.name === 'Button') profButtons.push(n); });
+const createProfileBtn = profButtons.find((b) => elementText(b).includes('newProfile'));
+assert.ok(createProfileBtn, '+ New profile button rendered');
+assert.equal(createProfileBtn.props.disabled, false, 'profile create button enabled when idle');
+createProfileBtn.props.onClick();
+assert.deepEqual(plain(flowCalls.at(-1)), ['profile', { title: 'defaultProfileTitle', sections: [] }],
+  'profile create click POSTs the default title payload');
+console.log('PASS tabs: modal-free create buttons wired to the flow with default titles');
+// #endregion SECTION_tabsNoCreateModal
+
+// #region SECTION_sectionFormErrors SectionForm renders the inline error line.
+// SectionForm useState order: title, body, confirmDelete, renameValue, confirmRename, error.
+stateQueue = ['Greeting', 'Be kind.', false, 'sec-1', false, 'saveError internal error'];
+const formEl = loaded.components.SectionForm({
+  section: sectionEntry, state: tabState, api: {}, reload: noop, t: (k) => k, notify: noop,
+  onBack: noop, autoFocusTitle: false,
+});
+stateQueue = [];
+assert.ok(hasElement(formEl, (n) => n.props && n.props.role === 'alert' && elementText(n).includes('internal error')),
+  'SectionForm shows an inline error line with the server message next to the fields');
+console.log('PASS SectionForm: inline error line renders the server message');
+// #endregion SECTION_sectionFormErrors
+
 // #region SECTION_helpers Pure helpers (strict, realm-normalized comparisons).
 const H = loaded.helpers;
 assert.ok(H, 'helpers are exported on the module object');
+assert.equal(H.idOf(profileEntry), 'main', 'idOf prefers the unqualified configId');
+assert.equal(H.idOf({ patchId: 'p' }), 'p', 'idOf falls back to patchId');
 
 // slugify + uniqueSlug
 assert.equal(H.slugify('Light tone!'), 'light-tone');
@@ -262,8 +495,8 @@ assert.deepStrictEqual(plain(outline[2].ref), { id: 'x', order: 500, scope: 'inh
 
 // filterSections
 const sections = [
-  { id: 'light-tone', title: 'Light tone' },
-  { id: 'no-preamble', title: 'No preamble' },
+  { id: 'light-tone', configId: 'light-tone', title: 'Light tone' },
+  { id: 'no-preamble', configId: 'no-preamble', title: 'No preamble' },
 ];
 assert.equal(H.filterSections(sections, 'light').length, 1);
 assert.equal(H.filterSections(sections, '').length, 2);
@@ -284,7 +517,7 @@ assert.deepStrictEqual(plain(plan).plan[0].names, ['persona-prefix', 'plan:polic
 assert.equal(plan.plan[1].text, 'Be brief.');
 assert.equal(plan.skipped[0].reason, 'scope subagents-only');
 assert.deepStrictEqual(plain(H.previewPlan({}).plan), [], 'tolerant to an empty response');
-console.log('PASS helpers: slugify/uniqueSlug, effectiveOrder/planMove, outlineRows, filterSections, previewPlan');
+console.log('PASS helpers: idOf, slugify/uniqueSlug, effectiveOrder/planMove, outlineRows, filterSections, previewPlan');
 // #endregion SECTION_helpers
 
 // #region SECTION_tokens Theme tokens: every --dsw-alias-* used must be a real shipped token.
@@ -303,4 +536,7 @@ for (const token of usedTokens) {
 }
 console.log(`PASS theme tokens: ${usedTokens.length} distinct --dsw-alias-* names all exist in the shipped token set`);
 // #endregion SECTION_tokens
-console.log('ALL OK');
+// Final line LAST: the async flow sections above settle within a few ms (1 ms
+// poll intervals, capped tries), so a short timer keeps the output ordered
+// without ever being able to hang the file.
+setTimeout(() => console.log('ALL OK'), 50);
