@@ -218,47 +218,54 @@ test("section and profile create append insert rows and return rowId + patchId +
   try {
     const section = await api.call("POST", "/section/create", { title: "Tone", body: "Be brief." });
     assert.equal(section.status, 200);
-    assert.match(section.body.configId, /^[0-9a-f]{8}$/);
-    assert.equal(section.body.rowId, `prompt-section-${section.body.configId}`);
+    // FROZEN ID SCHEME: configId IS the full row id (prefix included).
+    assert.match(section.body.configId, /^prompt-section-[0-9a-f]{8}$/);
+    assert.equal(section.body.rowId, section.body.configId);
     assert.equal(section.body.patchId, section.body.rowId);
     assert.equal(section.body.title, "Tone");
     assert.equal(section.body.body, "Be brief.");
     const profile = await api.call("POST", "/profile/create", { title: "Light", sections: [{ id: section.body.configId, order: 1050 }] });
-    assert.equal(profile.body.rowId, `prompt-profile-${profile.body.configId}`);
+    assert.match(profile.body.configId, /^prompt-profile-[0-9a-f]{8}$/);
+    assert.equal(profile.body.rowId, profile.body.configId);
     assert.equal(profile.body.title, "Light");
+    assert.deepEqual(profile.body.sections, [{ id: section.body.configId, order: 1050 }], "the full-id ref round-trips unchanged");
     const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
     const inserts = document.contents.items.filter((item) => item?.get?.("insert"));
-    const ids = inserts.map((item) => item.get("insert").items[0].get("id")).sort();
-    assert.deepEqual(ids, [`prompt-profile-${profile.body.configId}`, `prompt-section-${section.body.configId}`].sort());
+    const rows = inserts.flatMap((item) => item.get("insert").items.map((row) => ({
+      id: row.get("id"), configId: row.get("config").get("id"),
+    })));
+    assert.deepEqual(rows.map((row) => row.id).sort(), [profile.body.rowId, section.body.rowId].sort());
+    for (const row of rows) assert.equal(row.configId, row.id, "stored config.id equals the full row id");
   } finally { await api.cleanup(); }
 });
 
-/** @purpose Create ids are short random tokens (SPEC §3/§5.5): identical token part in rowId and configId, no dependence on the title. */
-test("create generates random token ids shared by rowId and configId, unique across creates", async (t) => {
+/** @purpose Create ids are short random tokens (SPEC §3/§5.5) carried IDENTICALLY by rowId and configId (full prefixed form), with no dependence on the title. */
+test("create mints one full id used as rowId and configId, unique across creates", async (t) => {
   const api = await harness();
   try {
     const section = await api.call("POST", "/section/create", { title: "Тестовая секция", body: "x" });
     assert.equal(section.status, 200);
-    assert.match(section.body.configId, /^[0-9a-f]{8}$/);
-    assert.equal(section.body.rowId, `prompt-section-${section.body.configId}`);
+    assert.match(section.body.configId, /^prompt-section-[0-9a-f]{8}$/);
+    assert.equal(section.body.rowId, section.body.configId, "rowId === configId (full prefixed id)");
     assert.equal(section.body.patchId, section.body.rowId);
     assert.equal(section.body.title, "Тестовая секция");
 
     const profile = await api.call("POST", "/profile/create", { title: "Light", sections: [] });
-    assert.match(profile.body.configId, /^[0-9a-f]{8}$/);
-    assert.equal(profile.body.rowId, `prompt-profile-${profile.body.configId}`);
+    assert.match(profile.body.configId, /^prompt-profile-[0-9a-f]{8}$/);
+    assert.equal(profile.body.rowId, profile.body.configId);
 
-    // two consecutive creates never share a token
+    // two consecutive creates never share an id
     const again = await api.call("POST", "/section/create", { body: "b" });
     assert.notEqual(again.body.configId, section.body.configId);
+    assert.equal(again.body.configId, again.body.rowId);
     assert.equal(again.body.title, "Section", "default title kept");
 
     const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
     const ids = document.contents.items.map((item) => item.get("insert")?.items?.[0]?.get("id")).filter(Boolean);
     assert.deepEqual(ids.sort(), [
-      `prompt-profile-${profile.body.configId}`,
-      `prompt-section-${again.body.configId}`,
-      `prompt-section-${section.body.configId}`,
+      profile.body.configId,
+      again.body.configId,
+      section.body.configId,
     ].sort());
   } finally { await api.cleanup(); }
 });
@@ -281,14 +288,80 @@ test("create regenerates the token on collision with an existing row id or confi
   try {
     const created = await api.call("POST", "/section/create", { title: "Fresh", body: "y" });
     assert.equal(created.status, 200);
-    assert.equal(created.body.configId, "cafebabe", "colliding tokens regenerated, not an error");
-    assert.equal(created.body.rowId, "prompt-section-cafebabe");
+    assert.equal(created.body.configId, "prompt-section-cafebabe", "colliding tokens regenerated, not an error");
+    assert.equal(created.body.rowId, created.body.configId);
     const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
     const ids = document.contents.items.map((item) => item?.get?.("insert")?.items?.[0]?.get("id")).filter(Boolean);
     assert.deepEqual(ids.sort(), ["prompt-section-cafebabe", "prompt-section-deadbeef"]);
   } finally { await api.cleanup(); }
 });
 // #endregion TEST_create
+
+// #region TEST_idScheme
+/** @purpose Explicit create ids accept the bare token, the full `prompt-<kind>-<token>` form, and a qualified `include:` form — all stored FULL. */
+test("explicit create ids accept bare, full and qualified forms and store the full form", async () => {
+  const api = await harness();
+  try {
+    const bare = await api.call("POST", "/section/create", { id: "tone", title: "Tone", body: "B" });
+    assert.equal(bare.status, 200);
+    assert.equal(bare.body.configId, "prompt-section-tone");
+    assert.equal(bare.body.rowId, "prompt-section-tone");
+
+    const full = await api.call("POST", "/section/create", { id: "prompt-section-alt", title: "Alt", body: "B" });
+    assert.equal(full.body.configId, "prompt-section-alt");
+    assert.equal(full.body.rowId, "prompt-section-alt");
+
+    const qualified = await api.call("POST", "/profile/create", { id: "include:prompt-profile-qual", title: "Qual", sections: [] });
+    assert.equal(qualified.body.configId, "prompt-profile-qual");
+    assert.equal(qualified.body.rowId, "prompt-profile-qual");
+
+    const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
+    const rows = document.contents.items
+      .flatMap((item) => (isSeq(item?.get?.("insert")) ? item.get("insert").items : []))
+      .map((row) => ({ id: row.get("id"), configId: row.get("config").get("id") }));
+    assert.deepEqual(rows.map((row) => row.id).sort(), ["prompt-profile-qual", "prompt-section-alt", "prompt-section-tone"]);
+    for (const row of rows) assert.equal(row.configId, row.id, "stored config.id === full row id");
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose A new id may never duplicate a registered config.id, even when no patch row carries that row id. */
+test("create rejects an explicit id that duplicates a registered config.id", async () => {
+  // A row addressed by a qualified loader id whose config.id is already full.
+  const registered = { ...userSection, id: "prompt-section-tone", rowId: "include:prompt-section-tone" };
+  const api = await harness({ sections: [registered] });
+  try {
+    const before = await readFile(api.patchPath, "utf8");
+    const clash = await api.call("POST", "/section/create", { id: "tone", title: "Tone", body: "B" });
+    assert.equal(clash.status, 400);
+    assert.match(clash.body.error.message, /already exists/);
+    assert.equal(await readFile(api.patchPath, "utf8"), before, "no row written");
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose Profile refs accept the bare token, full id and qualified form of a registered section; the registered config.id is stored so runtime lookups hit. */
+test("profile section refs accept every id form and store the registered config.id", async () => {
+  const registered = { ...userSection, id: "prompt-section-tone", rowId: "prompt-section-tone" };
+  const api = await harness({ sections: [registered], profiles: [userProfile] });
+  try {
+    const created = await api.call("POST", "/profile/create", {
+      title: "Refs",
+      sections: [
+        { id: "tone", order: 1000 },
+        { id: "prompt-section-tone", order: 1010 },
+        { id: "include:prompt-section-tone", order: 1020 },
+      ],
+    });
+    assert.equal(created.status, 200);
+    assert.deepEqual(created.body.sections.map((ref) => ref.id), ["prompt-section-tone", "prompt-section-tone", "prompt-section-tone"]);
+    const updated = await api.call("POST", "/profile/update", {
+      rowId: "light",
+      value: { title: "Light", sections: [{ id: "tone", order: 900 }] },
+    });
+    assert.equal(updated.status, 200, JSON.stringify(updated.body));
+    assert.equal(api.replacements.at(-1).value.sections[0].id, "prompt-section-tone", "bare token normalized to the registered full config.id");
+  } finally { await api.cleanup(); }
+});
+// #endregion TEST_idScheme
 
 // #region TEST_createDuplicate
 /** @purpose Creating a section or profile whose id already exists maps the writer's duplicate guard to a clean 400 — never a 500. */
@@ -563,7 +636,8 @@ test("rename creates the new row, rewrites profile refs, and removes the old row
     await api.call("POST", "/profile/create", { id: "light", title: "Light", sections: [{ id: "tone", order: 1050, scope: "inherit" }] });
     const { status, body } = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "short-tone" });
     assert.equal(status, 200);
-    assert.deepEqual(body, { ok: true, rowId: "prompt-section-short-tone", patchId: "prompt-section-short-tone", id: "short-tone" });
+    // The new id is the FULL prefixed form everywhere (task 4).
+    assert.deepEqual(body, { ok: true, rowId: "prompt-section-short-tone", patchId: "prompt-section-short-tone", id: "prompt-section-short-tone" });
     assert.deepEqual(api.replacements, [], "rename performs no settings.replace calls");
     const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
     const profileEntry = document.contents.items.find((item) => {
@@ -572,8 +646,12 @@ test("rename creates the new row, rewrites profile refs, and removes the old row
     });
     assert.ok(profileEntry, "profile insert row rewritten in place");
     const profileRow = profileEntry.get("insert").items.find((row) => row.get("id") === "prompt-profile-light");
-    assert.deepEqual(profileRow.get("config").get("sections").toJS(document), [{ id: "short-tone", order: 1050, scope: "inherit" }]);
+    assert.deepEqual(profileRow.get("config").get("sections").toJS(document), [{ id: "prompt-section-short-tone", order: 1050, scope: "inherit" }]);
     assert.ok(!document.contents.items.some((item) => item?.get?.("id") === "prompt-profile-light"), "no bare override written for the insert-owned profile");
+    const renamed = document.contents.items
+      .flatMap((item) => (isSeq(item?.get?.("insert")) ? item.get("insert").items : []))
+      .find((row) => row.get("id") === "prompt-section-short-tone");
+    assert.equal(renamed.get("config").get("id"), "prompt-section-short-tone", "renamed config.id is the full new row id");
     const text = await readFile(api.patchPath, "utf8");
     assert.match(text, /prompt-section-short-tone/);
     assert.doesNotMatch(text, /prompt-section-tone\b/);
@@ -609,7 +687,7 @@ test("rename names a foreign profile from configEditor.entries() for its bare ov
     const bare = document.contents.items.find((item) => item?.get?.("id") === "prompt-profile-light");
     assert.ok(bare, "bare override written for the foreign profile");
     assert.equal(bare.get("name"), foreignName, "override carries the real plugin name");
-    assert.deepEqual(bare.get("config").get("sections").toJS(document), [{ id: "short-tone", order: 1050, scope: "inherit" }]);
+    assert.deepEqual(bare.get("config").get("sections").toJS(document), [{ id: "prompt-section-short-tone", order: 1050, scope: "inherit" }]);
   } finally { await api.cleanup(); }
 });
 

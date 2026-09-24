@@ -30,10 +30,19 @@ function plain(value) {
 /** Depth-first walk of the fake element tree (fake createElement output). */
 function walk(el, visit) {
   if (!el || typeof el !== 'object') return;
+  // A `.map()` inside JSX arrives as an ARRAY child: descend into it without
+  // visiting the array itself, otherwise rows rendered by map() are invisible.
+  if (Array.isArray(el)) { for (const child of el) walk(child, visit); return; }
   visit(el);
   for (const child of el.children ?? []) walk(child, visit);
-  const propsChildren = el.props && el.props.children;
-  if (propsChildren && typeof propsChildren === 'object') walk(propsChildren, visit);
+  // Elements also live in element-valued props (Modal `footer`, Menu `anchor`,
+  // an explicit `children` prop): the fake createElement keeps those in props,
+  // never in `children`, so descend into object props that are elements/arrays.
+  for (const value of Object.values(el.props ?? {})) {
+    if (value && typeof value === 'object' && (value.type !== undefined || Array.isArray(value))) {
+      walk(value, visit);
+    }
+  }
 }
 const elementText = (el) => JSON.stringify(el);
 function hasElement(el, predicate) {
@@ -423,8 +432,8 @@ createSectionBtn.props.onClick();
 assert.deepEqual(plain(flowCalls.at(-1)), ['section', { title: 'defaultSectionTitle', body: '' }],
   'create click POSTs the default title payload (locale key resolved at click time)');
 
-// ProfilesTab useState order: creating, confirming, justCreated.
-stateQueue = [false, null, null];
+// ProfilesTab useState order: creating, confirming, justCreated, mutating.
+stateQueue = [false, null, null, false];
 const profTab = loaded.components.ProfilesTab({
   state: tabState, api: {}, reload: noop, t: (k) => k, notify: noop,
   drill: null, setDrill: noop, onOpenSection: noop, setState: noop, createFlow: fakeFlow,
@@ -443,8 +452,8 @@ console.log('PASS tabs: modal-free create buttons wired to the flow with default
 // #endregion SECTION_tabsNoCreateModal
 
 // #region SECTION_sectionFormErrors SectionForm renders the inline error line.
-// SectionForm useState order: title, body, confirmDelete, renameValue, confirmRename, error.
-stateQueue = ['Greeting', 'Be kind.', false, 'sec-1', false, 'saveError internal error'];
+// SectionForm useState order: title, body, confirmDelete, renameValue, confirmRename, error, mutating.
+stateQueue = ['Greeting', 'Be kind.', false, 'sec-1', false, 'saveError internal error', false];
 const formEl = loaded.components.SectionForm({
   section: sectionEntry, state: tabState, api: {}, reload: noop, t: (k) => k, notify: noop,
   onBack: noop, autoFocusTitle: false,
@@ -519,6 +528,267 @@ assert.equal(plan.skipped[0].reason, 'scope subagents-only');
 assert.deepStrictEqual(plain(H.previewPlan({}).plan), [], 'tolerant to an empty response');
 console.log('PASS helpers: idOf, slugify/uniqueSlug, effectiveOrder/planMove, outlineRows, filterSections, previewPlan');
 // #endregion SECTION_helpers
+
+// #region SECTION_refs Section refs carry configId VERBATIM — never a doubled prefix.
+// Contract (host, live): configId IS the full row-id string, prefix included.
+// The client must not prepend or strip anything; the only mangling bug was the
+// client doubling the prefix, so the guards collapse ONLY a doubled prefix.
+assert.equal(H.refIdOf({ rowId: 'prompt-section-x', patchId: 'prompt-section-x', configId: 'prompt-section-x' }), 'prompt-section-x',
+  'refIdOf returns configId verbatim (prefix included)');
+assert.equal(H.refIdOf({ patchId: 'bare-token' }), 'bare-token', 'refIdOf never adds a prefix');
+assert.equal(H.dedupeRowPrefix('prompt-section-prompt-section-first-one'), 'prompt-section-first-one',
+  'doubled section prefix collapses to one');
+assert.equal(H.dedupeRowPrefix('prompt-profile-prompt-profile-a1'), 'prompt-profile-a1',
+  'doubled profile prefix collapses to one');
+assert.equal(H.dedupeRowPrefix('prompt-section-x'), 'prompt-section-x', 'single prefix untouched');
+assert.equal(H.dedupeRowPrefix('123123'), '123123', 'bare id untouched');
+const normalizedRefs = H.normalizeSections([
+  { id: 'prompt-section-prompt-section-first-one', order: 100, scope: 'inherit' },
+  { id: 'prompt-section-01a0d494', order: 200, scope: 'inherit' },
+]);
+assert.ok(!JSON.stringify(normalizedRefs).includes('prompt-section-prompt-section-'),
+  'no profile payload can contain a doubled prompt-section- ref');
+assert.deepStrictEqual(plain(normalizedRefs), [
+  { id: 'prompt-section-first-one', order: 100, scope: 'inherit' },
+  { id: 'prompt-section-01a0d494', order: 200, scope: 'inherit' },
+], 'refs keep the configId string exactly as received');
+const appended = H.addSectionsToRefs([{ id: 'prompt-section-a', order: 100 }], ['prompt-section-b', 'prompt-section-prompt-section-c']);
+assert.deepStrictEqual(plain(appended).map((r) => r.id), ['prompt-section-a', 'prompt-section-b', 'prompt-section-c'],
+  'picker ids are appended verbatim (configId), doubled prefix guarded');
+assert.deepStrictEqual(plain(appended).map((r) => r.order), [100, 200, 300], 'appended refs step +100');
+// outlineRows resolves a prefixed ref against a configId-keyed map.
+const prefixedOutline = H.outlineRows(
+  { sections: [{ id: 'prompt-section-x', order: 10 }] },
+  new Map([['prompt-section-x', { configId: 'prompt-section-x', title: 'X', body: 'hi' }]]),
+  {});
+assert.equal(prefixedOutline[0].kind, 'ours', 'prefixed (configId) ref resolves — not a broken row');
+console.log('PASS refs: configId verbatim, doubled-prefix guard, picker/outline keyed by configId');
+// #endregion SECTION_refs
+
+// #region SECTION_mutationFlow Duplicate/delete optimistic + poll + reconcile + restore.
+(async () => {
+  const prior = {
+    profiles: [{ rowId: 'prompt-profile-p1', patchId: 'prompt-profile-p1', configId: 'prompt-profile-p1', title: 'P1', sections: [] }],
+    sections: [], builtinOrders: {},
+  };
+  const makeRecorder = () => {
+    const events = [];
+    return {
+      events,
+      state: (s) => events.push(['state', s]),
+      notify: (m) => events.push(['notify', m]),
+      pending: (b) => events.push(['pending', b]),
+    };
+  };
+
+  // DELETE: /state still lists the row for the first reads (the HMR
+  // recomposition race), then agrees.
+  let reads = 0;
+  const delLog = makeRecorder();
+  const delResult = await loaded.makeMutationFlow({
+    api: {
+      profileDelete: async () => {},
+      loadState: async () => { reads += 1; return reads < 3 ? prior : { ...prior, profiles: [] }; },
+    },
+    t: (k) => k, notify: delLog.notify,
+    reload: async () => {},
+    getState: () => prior,
+    onState: delLog.state,
+    onPending: delLog.pending,
+    pollInterval: 1, pollDeadline: 20,
+  }).run({
+    mutate: async () => {},
+    optimistic: (p) => ({ ...p, profiles: [] }),
+    agree: (polled) => polled.profiles.length === 0,
+  });
+  assert.equal(delResult.ok, true, 'delete resolves ok once /state agrees');
+  assert.ok(reads >= 3, 'polled /state until the row disappeared');
+  const delStates = delLog.events.filter((e) => e[0] === 'state').map((e) => e[1]);
+  assert.equal(delStates[0].profiles.length, 0, 'optimistic state already hides the deleted row');
+  assert.equal(delStates.at(-1).profiles.length, 0, 'polled reconciled state also hides it');
+  assert.equal(delLog.events.filter((e) => e[0] === 'pending').map((e) => e[1]).join(''), 'truefalse',
+    'pending flag brackets the flight (controls disabled while in flight)');
+
+  // DUPLICATE: create response inserted optimistically, poll until mounted.
+  const withCopy = {
+    ...prior,
+    profiles: [...prior.profiles, { rowId: 'prompt-profile-p1-copy', patchId: 'prompt-profile-p1-copy', configId: 'prompt-profile-p1-copy', title: 'P1 (copy)', sections: [] }],
+  };
+  let dupReads = 0;
+  const dupLog = makeRecorder();
+  const dupResult = await loaded.makeMutationFlow({
+    api: {
+      profileCreate: async (v) => ({ rowId: 'prompt-profile-p1-copy', patchId: 'prompt-profile-p1-copy', configId: 'prompt-profile-p1-copy', ...v }),
+      loadState: async () => { dupReads += 1; return dupReads < 2 ? prior : withCopy; },
+    },
+    t: (k) => k, notify: dupLog.notify,
+    reload: async () => {},
+    getState: () => prior,
+    onState: dupLog.state,
+    pollInterval: 1, pollDeadline: 20,
+  }).run({
+    mutate: async () => ({ rowId: 'prompt-profile-p1-copy', patchId: 'prompt-profile-p1-copy', configId: 'prompt-profile-p1-copy', title: 'P1 (copy)', sections: [] }),
+    optimistic: (p, created) => ({ ...p, profiles: [...p.profiles, loaded.optimisticEntry('profile', created)] }),
+    agree: (polled, created) => (polled.profiles ?? []).some((x) => x.configId === created.configId),
+  });
+  assert.equal(dupResult.ok, true, 'duplicate resolves ok');
+  assert.ok(dupReads >= 2, 'polled /state until the copy appeared');
+  const dupStates = dupLog.events.filter((e) => e[0] === 'state').map((e) => e[1]);
+  assert.equal(dupStates[0].profiles.length, 2, 'optimistic state already renders the copy');
+  assert.equal(dupStates[0].profiles[1].title, 'P1 (copy)', 'optimistic row carries the create response');
+
+  // FAILURE: server error restores the prior state and surfaces the message.
+  const failLog = makeRecorder();
+  const serverError = () => { const e = new Error('profile/delete: row "x" is registered elsewhere'); e.status = 400; throw e; };
+  const failResult = await loaded.makeMutationFlow({
+    api: { profileDelete: serverError, loadState: async () => prior },
+    t: (k) => k, notify: failLog.notify,
+    reload: async () => {},
+    getState: () => prior,
+    onState: failLog.state,
+    pollInterval: 1, pollDeadline: 5,
+  }).run({
+    mutate: serverError,
+    optimistic: (p) => ({ ...p, profiles: [] }),
+    agree: (polled) => polled.profiles.length === 0,
+  });
+  assert.equal(failResult.ok, false, 'failed delete resolves not-ok');
+  const failStates = failLog.events.filter((e) => e[0] === 'state').map((e) => e[1]);
+  assert.equal(failStates[0].profiles.length, 1, 'prior local state restored on failure');
+  assert.ok(failLog.events.find((e) => e[0] === 'notify')[1].includes('registered elsewhere'),
+    'server error text reaches the notify');
+
+  // BUSY guard: a second run while in flight is a no-op.
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const busyFlow = loaded.makeMutationFlow({
+    api: { loadState: async () => prior },
+    t: (k) => k, notify: () => {}, reload: async () => {},
+    getState: () => prior, pollInterval: 1, pollDeadline: 5,
+  });
+  const firstRun = busyFlow.run({ mutate: () => gate, agree: () => true });
+  const secondRun = busyFlow.run({ mutate: async () => {}, agree: () => true });
+  assert.equal((await secondRun).busy, true, 'concurrent run reports busy (control stays disabled)');
+  release();
+  assert.equal((await firstRun).ok, true);
+  console.log('PASS mutation flow: optimistic insert/remove, poll until /state agrees, restore+server message on failure, busy guard');
+})();
+// #endregion SECTION_mutationFlow
+
+// #region SECTION_rename Rename id: pre-filled with configId, sent VERBATIM, drill follows the new id.
+(async () => {
+  const renameCalls = [];
+  const renamedState = {
+    profiles: [],
+    sections: [{ rowId: 'prompt-section-123123', patchId: 'prompt-section-123123', configId: 'prompt-section-123123', title: 'Greeting', body: '', usedIn: [], source: 'user' }],
+    builtinOrders: {},
+  };
+  const renameApi = {
+    sectionRename: async (rowId, id) => { renameCalls.push([rowId, id]); },
+    loadState: async () => renamedState,
+  };
+  const statePushes = [];
+  const renamed = [];
+  // User typed the BARE token: sent as-is — the host owns prefixing.
+  // SectionForm useState order: title, body, confirmDelete, renameValue, confirmRename, error, mutating.
+  stateQueue = ['Greeting', 'Be kind.', false, '123123', true, '', false];
+  const formEl = loaded.components.SectionForm({
+    section: { rowId: 'prompt-section-f01aa4a5', patchId: 'prompt-section-f01aa4a5', configId: 'prompt-section-f01aa4a5', title: 'Greeting', body: 'Be kind.', usedIn: [], source: 'user' },
+    state: renamedState, api: renameApi, reload: async () => {}, t: (k) => k, notify: () => {},
+    onBack: () => {}, onRenamed: (id) => renamed.push(id), setState: (s) => statePushes.push(s),
+    autoFocusTitle: false,
+  });
+  stateQueue = [];
+  let dialog = null;
+  walk(formEl, (n) => { if (n.type && n.type.name === 'ConfirmDialog') dialog = n; });
+  assert.ok(dialog, 'rename ConfirmDialog rendered');
+  const input = dialog.props.extraChildren;
+  assert.equal(input.props.value, '123123', 'rename input is pre-filled with the current configId');
+  const modal = dialog.type(dialog.props);
+  let confirmBtn = null;
+  walk(modal, (n) => { if ((n.type?.name === 'Button' || n.type === primitives.Button) && elementText(n).includes('confirm') && n.props.onClick) confirmBtn = n; });
+  assert.ok(confirmBtn, 'confirm button found');
+  await confirmBtn.props.onClick();
+  assert.deepStrictEqual(plain(renameCalls), [['prompt-section-f01aa4a5', '123123']],
+    'rename sends the typed id VERBATIM (no client-side prefix, no slugify)');
+  assert.equal(renamed[0], 'prompt-section-123123',
+    'drill follows the STORED new configId (the host canonicalizes the bare token to prompt-section-123123)');
+  // User pasted a DOUBLED prefix: collapsed, not stripped.
+  renameCalls.length = 0;
+  // The host stores the canonical single-prefix id, so the polled state must
+  // carry THAT configId or the flow would poll to its deadline.
+  const renamedState2 = {
+    profiles: [],
+    sections: [{ rowId: 'prompt-section-abc', patchId: 'prompt-section-abc', configId: 'prompt-section-abc', title: 'G', body: '', usedIn: [], source: 'user' }],
+    builtinOrders: {},
+  };
+  const renameApi2 = {
+    sectionRename: async (rowId, id) => { renameCalls.push([rowId, id]); },
+    loadState: async () => renamedState2,
+  };
+  stateQueue = ['Greeting', 'Be kind.', false, 'prompt-section-prompt-section-abc', true, '', false];
+  const form2 = loaded.components.SectionForm({
+    section: { rowId: 'prompt-section-s2', patchId: 'prompt-section-s2', configId: 'prompt-section-s2', title: 'G', body: '', usedIn: [], source: 'user' },
+    state: renamedState2, api: renameApi2, reload: async () => {}, t: (k) => k, notify: () => {},
+    onBack: () => {}, onRenamed: () => {}, setState: () => {},
+    autoFocusTitle: false,
+  });
+  stateQueue = [];
+  let dialog2 = null;
+  walk(form2, (n) => { if (n.type && n.type.name === 'ConfirmDialog') dialog2 = n; });
+  const modal2 = dialog2.type(dialog2.props);
+  let confirm2 = null;
+  walk(modal2, (n) => { if ((n.type?.name === 'Button' || n.type === primitives.Button) && elementText(n).includes('confirm') && n.props.onClick) confirm2 = n; });
+  await confirm2.props.onClick();
+  assert.deepStrictEqual(plain(renameCalls), [['prompt-section-s2', 'prompt-section-abc']],
+    'a doubled prefix typed by the user collapses to a single one');
+  console.log('PASS rename id: pre-filled configId, verbatim bare id sent, doubled-prefix guard, drill follows new id');
+})();
+// #endregion SECTION_rename
+
+// #region SECTION_disabledControls Every row-lifecycle mutation disables its control while in flight.
+// ProfilesTab with mutating=true: duplicate/delete icon buttons + create disabled.
+stateQueue = [false, null, null, true];
+const busyProfTab = loaded.components.ProfilesTab({
+  state: tabState, api: {}, reload: noop, t: (k) => k, notify: noop,
+  drill: null, setDrill: noop, onOpenSection: noop, setState: noop, createFlow: fakeFlow,
+});
+stateQueue = [];
+const profIconButtons = [];
+walk(busyProfTab, (n) => {
+  if (n.type === 'button' && typeof n.props['aria-label'] === 'string'
+    && ['duplicate', 'deleteLabel'].includes(n.props['aria-label'])) profIconButtons.push(n);
+});
+assert.ok(profIconButtons.length >= 2, 'profile row duplicate/delete icon buttons rendered');
+assert.ok(profIconButtons.every((b) => b.props.disabled === true),
+  'duplicate + delete disabled while a mutation is in flight');
+const busyCreate = profButtonsUnused(busyProfTab);
+assert.equal(busyCreate, true, 'profile create button disabled while mutating');
+function profButtonsUnused(el) {
+  let btn = null;
+  walk(el, (n) => { if ((n.type?.name === 'Button' || n.type === primitives.Button) && elementText(n).includes('newProfile')) btn = n; });
+  return btn?.props.disabled === true;
+}
+// SectionForm with mutating=true: duplicate/delete/rename disabled.
+stateQueue = ['Greeting', 'Be kind.', false, 'sec-1', false, '', true];
+const busyForm = loaded.components.SectionForm({
+  section: sectionEntry, state: tabState, api: {}, reload: noop, t: (k) => k, notify: noop,
+  onBack: noop, setState: noop, autoFocusTitle: false,
+});
+stateQueue = [];
+const formIcons = [];
+walk(busyForm, (n) => {
+  if (n.type === 'button' && typeof n.props['aria-label'] === 'string'
+    && ['duplicate', 'deleteLabel'].includes(n.props['aria-label'])) formIcons.push(n);
+});
+assert.ok(formIcons.length >= 2 && formIcons.every((b) => b.props.disabled === true),
+  'section duplicate + delete disabled while a mutation is in flight');
+let renameBtn = null;
+walk(busyForm, (n) => { if ((n.type?.name === 'Button' || n.type === primitives.Button) && elementText(n).includes('renameId')) renameBtn = n; });
+assert.equal(renameBtn.props.disabled, true, 'rename-id button disabled while a mutation is in flight');
+console.log('PASS disabled controls: duplicate/delete/rename/create disabled while their flow is in flight');
+// #endregion SECTION_disabledControls
+
 
 // #region SECTION_tokens Theme tokens: every --dsw-alias-* used must be a real shipped token.
 const usedTokens = [...new Set([...code.matchAll(/--dsw-alias-[a-z0-9-]+/g)].map((m) => m[0]))];
