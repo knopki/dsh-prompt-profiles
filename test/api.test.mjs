@@ -12,6 +12,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument, isSeq } from "yaml";
@@ -286,7 +287,7 @@ test("section update replaces the whole config through settings.replace", async 
     assert.deepEqual(body, { ok: true, rowId: "prompt-section-tone", patchId: "prompt-section-tone", emits: true });
     assert.deepEqual(api.replacements, [{
       ns: "prompt-section-tone",
-      value: { id: "tone", title: "New", body: "Shorter." },
+      value: { title: "New", body: "Shorter." },
       expected: 7,
     }]);
     assert.equal(api.mutations.length, 0, "no per-op mutate calls anymore");
@@ -353,6 +354,145 @@ test("unknown rowIds answer 404 with the error envelope, not 500", async () => {
   } finally { await api.cleanup(); }
 });
 // #endregion TEST_update
+
+// #region TEST_liveBugEmpty400
+/**
+ * @purpose Live bug (empty 400 on every update): reproduce against a
+ *   settings stub that enforces the REAL dsh-settings@0.1.7-rc.1 rules —
+ *   `SettingsForms.write()` runs `validatePaths(next, volatileForm(schema))`
+ *   and throws `Config field "<key>" is not volatile` for every replace()
+ *   payload key that the row Config does not mark `.volatile()`. The
+ *   section/profile row Configs (lib/section.js, lib/profile.js) mark only
+ *   title/body and title/sections volatile; `id` is inherited. The stub also
+ *   COMPOSES the accepted write onto the insert row's config exactly like
+ *   `mergeLayers(base, input)` so the persisted result can be asserted.
+ */
+function realRulesSettings({ patchPath, composed }) {
+  const VOLATILE = new Set(["title", "body", "sections", "default", "lastByWorkspace"]);
+  return {
+    describe: () => [{ ns: "prompt-profiles", revision: 7 }],
+    mutate: async () => {},
+    replace: async (ns, value) => {
+      for (const key of Object.keys(value)) {
+        // mirrors: throw new Error(`Config field "${key}" is not volatile`)
+        if (!VOLATILE.has(key)) throw new Error(`Config field "${key}" is not volatile`);
+      }
+      // mirrors mergeLayers(base, input): shallow for these flat configs,
+      // arrays replace wholesale.
+      const document = parseDocument(readFileSync(patchPath, "utf8"), parseOptions);
+      const row = document.contents.items
+        .flatMap((item) => (isSeq(item?.get?.("insert")) ? item.get("insert").items : []))
+        .find((candidate) => candidate?.get?.("id") === ns);
+      const base = row ? row.get("config").toJS(document) : {};
+      composed.push({ ns, value, base, merged: { ...base, ...value } });
+    },
+  };
+}
+
+test("live payloads succeed under real dsh-settings volatile rules and keep the inherited id", async () => {
+  const composed = [];
+  const dir = await mkdtemp(join(tmpdir(), "dsh-pp-live-"));
+  const patchPath = join(dir, "cordis.patch.yml");
+  await writeFile(patchPath, [
+    "- insert:",
+    "  - id: prompt-section-new-section",
+    "    name: \"@knopki/dsh-prompt-profiles/section\"",
+    "    config: {id: new-section, title: New section, body: ''}",
+    "- insert:",
+    "  - id: prompt-profile-new-profile",
+    "    name: \"@knopki/dsh-prompt-profiles/profile\"",
+    "    config: {id: new-profile, title: New profile, sections: []}",
+  ].join("\n"), { mode: 0o600 });
+  const api = await harness({
+    sections: [{ id: "new-section", title: "New section", body: "", rowId: "prompt-section-new-section", source: "user" }],
+    profiles: [{ id: "new-profile", title: "New profile", sections: [], rowId: "prompt-profile-new-profile", source: "user" }],
+    settings: realRulesSettings({ patchPath, composed }),
+  });
+  try {
+    // EXACT captured live requests:
+    const section = await api.call("POST", "/section/update", {
+      rowId: "prompt-section-new-section",
+      value: { title: "Тестовая секция 3", body: "Тестовая инструкция" },
+    });
+    assert.equal(section.status, 200, JSON.stringify(section.body));
+    assert.deepEqual(section.body, { ok: true, rowId: "prompt-section-new-section", patchId: "prompt-section-new-section", emits: true });
+    assert.deepEqual(composed[0].value, { title: "Тестовая секция 3", body: "Тестовая инструкция" }, "only volatile fields are replaced — no id key");
+    assert.equal(composed[0].merged.id, "new-section", "composed config still carries the inherited id");
+    assert.equal(composed[0].merged.title, "Тестовая секция 3");
+
+    const profile = await api.call("POST", "/profile/update", {
+      rowId: "prompt-profile-new-profile",
+      value: { title: "123", sections: [] },
+    });
+    assert.equal(profile.status, 200, JSON.stringify(profile.body));
+    assert.deepEqual(composed[1].value, { title: "123", sections: [] });
+    assert.equal(composed[1].merged.id, "new-profile");
+    assert.deepEqual(composed[1].merged.sections, []);
+    assert.equal(api.logs.length, 0, "no failures logged on the happy path");
+  } finally {
+    await api.cleanup();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/** @purpose A settings layer refusing a non-volatile key now answers a readable 400 (previously an opaque 500/empty body). */
+test("a non-volatile write attempt from the settings layer maps to a readable 400", async () => {
+  const api = await harness({
+    sections: [userSection],
+    settings: {
+      describe: () => [{ ns: "prompt-profiles", revision: 7 }],
+      mutate: async () => {},
+      replace: async () => { throw new Error('Config field "id" is not volatile'); },
+    },
+  });
+  try {
+    const { status, body } = await api.call("POST", "/section/update", { rowId: "prompt-section-tone", value: { title: "T", body: "b" } });
+    assert.equal(status, 400);
+    assert.match(body.error.message, /is not volatile/);
+    assert.equal(api.logs.length, 1);
+    assert.match(api.logs[0].details.error, /is not volatile/);
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose Task 3: a thrown NON-Error (plain string) still yields a readable message, one log line, and never an empty body. */
+test("a thrown non-Error string produces a readable 500, one log line, and a non-empty message", async () => {
+  const api = await harness({
+    sections: [userSection],
+    settings: {
+      describe: () => [{ ns: "prompt-profiles", revision: 7 }],
+      mutate: async () => {},
+      replace: async () => { throw "boom-string"; }, // eslint-disable-line no-throw-literal
+    },
+  });
+  try {
+    const { status, body } = await api.call("POST", "/section/update", { rowId: "include:prompt-section-tone", value: { title: "T", body: "b" } });
+    assert.equal(status, 500);
+    assert.equal(body.error.message, "internal error: boom-string");
+    assert.ok(body.error.message.length > 0);
+    assert.equal(api.logs.length, 1, "exactly one log line");
+    assert.equal(api.logs[0].level, "error");
+    assert.equal(api.logs[0].details.route, "POST /section/update");
+    assert.equal(api.logs[0].details.rowId, "include:prompt-section-tone");
+    assert.equal(api.logs[0].details.patchId, "prompt-section-tone");
+    assert.equal(api.logs[0].details.error, "boom-string");
+  } finally { await api.cleanup(); }
+  // Even `throw undefined` keeps the envelope non-empty.
+  const api2 = await harness({
+    sections: [userSection],
+    settings: {
+      describe: () => [{ ns: "prompt-profiles", revision: 7 }],
+      mutate: async () => {},
+      replace: async () => { throw undefined; }, // eslint-disable-line no-throw-literal
+    },
+  });
+  try {
+    const thrown = await api2.call("POST", "/section/update", { rowId: "prompt-section-tone", value: { title: "T", body: "b" } });
+    assert.equal(thrown.status, 500);
+    assert.equal(thrown.body.error.message, "internal error: undefined");
+    assert.equal(api2.logs.length, 1);
+  } finally { await api2.cleanup(); }
+});
+// #endregion TEST_liveBugEmpty400
 
 // #region TEST_delete
 /** @purpose Delete removes user rows physically and disables bundle rows; the QUALIFIED rowId works (task a). */
@@ -561,7 +701,7 @@ test("route failures are logged with route, rowId, normalized patchId, and the e
   try {
     const boom = await api2.call("POST", "/section/update", { rowId: "include:prompt-section-tone", value: { title: "T", body: "b" } });
     assert.equal(boom.status, 500);
-    assert.deepEqual(boom.body, { error: { message: "internal error" } });
+    assert.deepEqual(boom.body, { error: { message: "internal error: settings failed" } });
     const failure = api2.logs[0];
     assert.equal(failure.level, "error");
     assert.equal(failure.details.route, "POST /section/update");
