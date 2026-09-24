@@ -55,13 +55,13 @@ function fakeResponse() {
  * @purpose Compose one API instance over fakes plus a temp patch file and
  *   return a `call(method, path, body)` driver.
  */
-async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets } = {}) {
+async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, settings: settingsOverride } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "dsh-pp-api-"));
   const patchPath = join(dir, "cordis.patch.yml");
   await writeFile(patchPath, "# comment\n[]\n", { mode: 0o600 });
   const mutations = [];
   let revision = 7;
-  const settings = {
+  const settings = settingsOverride ?? {
     describe: () => [{ ns: "prompt-profiles", revision }],
     mutate: async (ns, ops, expected) => {
       mutations.push({ ns, ops, expected });
@@ -222,6 +222,36 @@ test("rename creates the new row, rewrites profile refs, and removes the old row
     const text = await readFile(api.patchPath, "utf8");
     assert.match(text, /prompt-section-short-tone/);
     assert.doesNotMatch(text, /prompt-section-tone\b/);
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose A SETTINGS_CONFLICT inside the rename batch maps to 409 (not 500),
+ *   keeps the shared {error:{message}} envelope, and leaves the patch file
+ *   byte-identical (withPatchBatch rollback). */
+test("rename maps SETTINGS_CONFLICT to 409 and rolls the patch file back", async () => {
+  const before = "# comment\n[]\n"; // harness's initial patch file, byte-for-byte
+  const seen = [];
+  const api = await harness({
+    sections: [userSection],
+    profiles: [userProfile],
+    settings: {
+      // Profile row carries its own revision; the mutate rejects the rename
+      // write as stale after the batch already inserted the new row.
+      describe: () => [{ ns: "prompt-profiles", revision: 7 }, { ns: "prompt-profile-light", revision: 3 }],
+      mutate: async (ns, ops, expected) => {
+        seen.push({ ns, expected });
+        throw Object.assign(new Error("stale"), { code: "SETTINGS_CONFLICT" });
+      },
+    },
+  });
+  try {
+    const { status, body } = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "short-tone" });
+    assert.equal(status, 409);
+    assert.deepEqual(Object.keys(body), ["error"]);
+    assert.deepEqual(Object.keys(body.error), ["message"]);
+    assert.equal(typeof body.error.message, "string");
+    assert.deepEqual(seen, [{ ns: "prompt-profile-light", expected: 3 }]);
+    assert.equal(await readFile(api.patchPath, "utf8"), before);
   } finally { await api.cleanup(); }
 });
 // #endregion TEST_rename

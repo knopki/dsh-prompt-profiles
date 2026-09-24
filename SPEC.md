@@ -264,7 +264,8 @@ const promptProfilesDomain = defineDomain({
 
 | Метод | Назначение |
 |---|---|
-| `GET /__dsh-prompt-profiles/state` | `{profiles, sections, builtinOrders, default, lastByWorkspace, revision}` |
+| `GET /__dsh-prompt-profiles/state` | `{profiles, sections, builtinOrders, default, lastByWorkspace, revision}`; включает `modes: [{id,title,complete}]` (агент-пресеты) |
+| `GET /__dsh-prompt-profiles/preview?profileId=` | собранный предпросмотр профиля: секции с order/интерполяцией, `skipped` с причинами; 404 на неизвестный профиль |
 | `POST /__dsh-prompt-profiles/section/create` | writer: `insert`-строка `.../section` |
 | `POST /__dsh-prompt-profiles/section/update` | `ctx.settings.mutate(rowId, ops, revision)` |
 | `POST /__dsh-prompt-profiles/section/delete` | своя строка → удалить; чужая → `disabled: true` |
@@ -450,6 +451,8 @@ Sections, Preview. Внутри таба drill-down: список → форма
 | битый YAML профильного патча | ломается загрузка профиля (цена выбора config как хранилища); writer всегда валидирует запись и держит бэкап на время батч-операций |
 | mirror не распарсился | варнинг, работа на захардкоженной копии |
 | `ctx.settings` недоступен (не web-профиль) | пикер и редактор не монтируются; рантайм-разрешение профиля продолжает работать |
+| rename при скрытом дубликате профиля | ссылки переписываются только у зарегистрированных (winning) профилей; скрытый дубль хранит старый id секции → деградация skip+warn (§7, «ссылается на отсутствующую секцию») |
+| пункт `Manage profiles…` в чипе | остаётся выключенным: проверенного клиентского API навигации в Settings нет в дистрибутиве (открытие секции настроек из стороннего плагина требует shell-level контракта); зафиксировано как известное ограничение, не баг |
 
 ---
 
