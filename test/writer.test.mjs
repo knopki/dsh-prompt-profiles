@@ -323,3 +323,39 @@ test("renameSectionRow inserts the new row, rewrites profile refs, and drops the
   }
 });
 // #endregion TEST_gateRmw
+
+// #region TEST_leadingComment
+/** @purpose A file-leading comment attached to the removed FIRST entry must
+ *  survive a rename/remove: it re-attaches to the next surviving entry, or to
+ *  the document itself when none remain (verify-fixes-glm defect 4). */
+test("rename and removeRow keep the file-leading comment of a removed first entry", async () => {
+  const header = "# File-leading header comment:\n# keep me across renames.\n";
+  const firstEntry = (rowId, id) => `- insert:\n    - id: ${rowId}\n      name: "@knopki/dsh-prompt-profiles/section"\n      config:\n        id: ${id}\n        title: T\n        body: B\n`;
+  const { dir, patchPath } = await workspace(header + firstEntry("prompt-section-tone", "tone") + firstEntry("prompt-section-other", "other"));
+  try {
+    await renameSectionRow({
+      patchPath,
+      row: { id: "prompt-section-short-tone", name: SECTION_NAME, config: { id: "short-tone", title: "T", body: "B" } },
+      oldRowId: "prompt-section-tone", oldName: SECTION_NAME, bundleOwned: false, profileUpdates: [],
+    });
+    const after = await readFile(patchPath, "utf8");
+    assert.match(after, /# File-leading header comment:/, "leading comment survives the rename");
+    assert.match(after, /# keep me across renames\./);
+    const document = parseDocument(after, parseOptions);
+    // The comment now leads the FIRST surviving entry (or the document).
+    const carried = document.contents.items[0].commentBefore ?? document.contents.commentBefore;
+    assert.match(String(carried), /keep me across renames/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  // Sole entry: the comment becomes a document-level comment.
+  const { dir: dir2, patchPath: patchPath2 } = await workspace(header + firstEntry("prompt-section-tone", "tone"));
+  try {
+    await removeRow({ patchPath: patchPath2, rowId: "prompt-section-tone" });
+    const after = await readFile(patchPath2, "utf8");
+    assert.match(after, /keep me across renames/, "comment survives removing the only entry");
+  } finally {
+    await rm(dir2, { recursive: true, force: true });
+  }
+});
+// #endregion TEST_leadingComment

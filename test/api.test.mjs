@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseDocument } from "yaml";
+import { parseDocument, isSeq } from "yaml";
 import { registerApi } from "../lib/api.js";
 import { resolveProfileId } from "../lib/resolve.js";
 
@@ -56,7 +56,7 @@ function fakeResponse() {
  * @purpose Compose one API instance over fakes plus a temp patch file and
  *   return a `call(method, path, body)` driver.
  */
-async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, settings: settingsOverride } = {}) {
+async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, entries, settings: settingsOverride } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "dsh-pp-api-"));
   const patchPath = join(dir, "cordis.patch.yml");
   await writeFile(patchPath, "# comment\n[]\n", { mode: 0o600 });
@@ -89,7 +89,7 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
   const ctx = {
     webServer: { register: (route) => { routes.set(route.path, route.handler); return () => routes.delete(route.path); } },
     settings,
-    configEditor: { documentPath: patchPath },
+    configEditor: entries ? { documentPath: patchPath, entries } : { documentPath: patchPath },
   };
   if (agentPresets !== undefined) ctx.agentPresets = agentPresets;
   const dispose = registerApi(ctx, { service });
@@ -172,6 +172,27 @@ test("section and profile create append insert rows to the patch", async () => {
 });
 // #endregion TEST_create
 
+// #region TEST_createDuplicate
+/** @purpose Creating a section or profile whose id already exists maps the
+ *  writer's duplicate guard to a clean 400 — never a 500 (verify-fixes-glm
+ *  defect 1); the file gains no second row. */
+test("section and profile create with an existing id answer 400 with the error envelope", async () => {
+  const api = await harness();
+  try {
+    await api.call("POST", "/section/create", { id: "tone", title: "Tone", body: "B" });
+    const duplicateSection = await api.call("POST", "/section/create", { id: "tone", title: "Again", body: "B2" });
+    assert.equal(duplicateSection.status, 400);
+    assert.match(duplicateSection.body.error.message, /already exists/);
+    await api.call("POST", "/profile/create", { id: "light", title: "Light", sections: [] });
+    const duplicateProfile = await api.call("POST", "/profile/create", { id: "light", title: "Again", sections: [] });
+    assert.equal(duplicateProfile.status, 400);
+    assert.match(duplicateProfile.body.error.message, /already exists/);
+    const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
+    assert.equal(document.contents.items.length, 2, "no duplicate rows written (one section, one profile)");
+  } finally { await api.cleanup(); }
+});
+// #endregion TEST_createDuplicate
+
 // #region TEST_update
 /** @purpose Existing-row edits go through settings.mutate with the sent revision. */
 test("section update routes through settings.mutate with ops and revision", async () => {
@@ -214,25 +235,70 @@ test("delete removes a user insert row; a bundle row gets a bare disabled overri
 // #endregion TEST_delete
 
 // #region TEST_rename
-/** @purpose Rename is ONE writer commit: new insert row, profile refs rewritten as
- *  override rows in the same document, old row gone — no settings.mutate inside
- *  the batch (astra finding C: hmr transactions cannot be nested). */
+/** @purpose Rename is ONE writer commit: new insert row, referencing profile
+ *  rows rewritten in the same document, old row gone — no settings.mutate
+ *  inside the batch (astra finding C: hmr transactions cannot be nested).
+ *  A profile that lives in this patch as an insert is safe to rewrite even
+ *  when configEditor.entries() cannot name it (config is updated in place). */
 test("rename creates the new row, rewrites profile refs, and removes the old row in one commit", async () => {
   const api = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
     await api.call("POST", "/section/create", { id: "tone", title: "Tone", body: "Be brief." });
+    // Put the profile row into the patch itself: an unnameable insert row is
+    // still safe (writer updates its config in place, name never matched).
+    await api.call("POST", "/profile/create", { id: "light", title: "Light", sections: [{ id: "tone", order: 1050, scope: "inherit" }] });
     const { status, body } = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "short-tone" });
     assert.equal(status, 200);
     assert.deepEqual(body, { ok: true, rowId: "prompt-section-short-tone", id: "short-tone" });
     assert.deepEqual(api.mutations, [], "rename performs no settings.mutate calls");
     const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
-    const profileRow = document.contents.items.find((item) => item?.get?.("id") === "prompt-profile-light");
-    assert.ok(profileRow, "profile override row written");
-    assert.equal(profileRow.get("name"), "@knopki/dsh-prompt-profiles/profile");
+    const profileEntry = document.contents.items.find((item) => {
+      const insert = item?.get?.("insert");
+      return isSeq(insert) && insert.items.some((row) => row.get("id") === "prompt-profile-light");
+    });
+    assert.ok(profileEntry, "profile insert row rewritten in place");
+    const profileRow = profileEntry.get("insert").items.find((row) => row.get("id") === "prompt-profile-light");
     assert.deepEqual(profileRow.get("config").get("sections").toJS(document), [{ id: "short-tone", order: 1050, scope: "inherit" }]);
+    assert.ok(!document.contents.items.some((item) => item?.get?.("id") === "prompt-profile-light"), "no bare override written for the insert-owned profile");
     const text = await readFile(api.patchPath, "utf8");
     assert.match(text, /prompt-section-short-tone/);
     assert.doesNotMatch(text, /prompt-section-tone\b/);
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose A referencing profile from a LOWER layer (no insert row here) is
+ *  rewritten as a bare override carrying its REAL plugin name taken from
+ *  configEditor.entries() — a guessed name would be skipped by the loader. */
+test("rename names a foreign profile from configEditor.entries() for its bare override", async () => {
+  const foreignName = "@foreign/bundle/profile";
+  const api = await harness({
+    sections: [userSection], profiles: [userProfile],
+    entries: () => [{ options: { id: "prompt-profile-light", name: foreignName } }],
+  });
+  try {
+    await api.call("POST", "/section/create", { id: "tone", title: "Tone", body: "Be brief." });
+    const { status } = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "short-tone" });
+    assert.equal(status, 200);
+    const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
+    const bare = document.contents.items.find((item) => item?.get?.("id") === "prompt-profile-light");
+    assert.ok(bare, "bare override written for the foreign profile");
+    assert.equal(bare.get("name"), foreignName, "override carries the real plugin name");
+    assert.deepEqual(bare.get("config").get("sections").toJS(document), [{ id: "short-tone", order: 1050, scope: "inherit" }]);
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose When a referencing profile can be named NOWHERE (no entries, not
+ *  an insert in this patch), the rename is refused with 409 instead of
+ *  writing a bare override the loader would silently skip. */
+test("rename is refused when a referencing profile cannot be named safely", async () => {
+  const api = await harness({ sections: [userSection], profiles: [userProfile] });
+  try {
+    await api.call("POST", "/section/create", { id: "tone", title: "Tone", body: "Be brief." });
+    const before = await readFile(api.patchPath, "utf8");
+    const { status, body } = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "short-tone" });
+    assert.equal(status, 409);
+    assert.match(body.error.message, /could not name every referencing profile/);
+    assert.equal(await readFile(api.patchPath, "utf8"), before, "file untouched by the refused rename");
   } finally { await api.cleanup(); }
 });
 
@@ -253,7 +319,12 @@ test("rename rolls the patch file back byte-identically when a batch step fails"
   } finally { await api.cleanup(); }
   // Real mid-batch failure: the new row id collides with an EXISTING patch row
   // (the duplicate guard fires after the batch started reading — file untouched).
-  const api2 = await harness({ sections: [userSection], profiles: [userProfile] });
+  // entries() names the profile so the pre-batch safety refusal does not
+  // preempt this rollback scenario.
+  const api2 = await harness({
+    sections: [userSection], profiles: [userProfile],
+    entries: () => [{ options: { id: "prompt-profile-light", name: "@knopki/dsh-prompt-profiles/profile" } }],
+  });
   try {
     await api2.call("POST", "/section/create", { id: "taken", title: "Taken", body: "x" });
     const before2 = await readFile(api2.patchPath, "utf8");
