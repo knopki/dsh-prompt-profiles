@@ -99,6 +99,13 @@ mode (пресет агента) может работать в разных п�
 `~/.dsh/profiles/web/cordis.patch.yml` (профильный слой применяется после всех слоёв бандлов,
 поэтому обновление бандла их не затирает).
 
+Id созданных из UI строк — короткий случайный токен (8 hex-символов из `crypto.randomUUID`),
+одинаковый в обеих частях: строка `prompt-section-<token>` и её `config.id: <token>`. Раньше id
+выводился из slug заголовка (например, `prompt-section-new-section` с `config.id: new-section`),
+что читалось как два разных id и могло collide-ить со строками чужих бандлов. Явный `id` от
+вызывающей стороны по-прежнему принимается (обратная совместимость, проверяется как slug). Существующие
+строки, созданные ранее, НЕ мигрируют и сохраняют свои slug-идентификаторы.
+
 Строки, пришедшие из бандлов, не переписываются: правка такой строки из UI даёт bare-override
 (без `insert`) в профильном слое, «удаление» — `disabled: true` в том же слое.
 
@@ -266,7 +273,7 @@ const promptProfilesDomain = defineDomain({
 |---|---|
 | `GET /__dsh-prompt-profiles/state` | `{profiles, sections, builtinOrders, default, lastByWorkspace, revision}`; включает `modes: [{id,title,complete}]` (агент-пресеты) |
 | `GET /__dsh-prompt-profiles/preview?profileId=` | собранный предпросмотр профиля: секции с order/интерполяцией, `skipped` с причинами; 404 на неизвестный профиль |
-| `POST /__dsh-prompt-profiles/section/create` | writer: `insert`-строка `.../section` |
+| `POST /__dsh-prompt-profiles/section/create` | writer: `insert`-строка `.../section`; ответ `{rowId, patchId, configId, title, body, emits}`, где `patchId = rowId = prompt-section-<token>`, `configId = <token>` — один случайный 8-hex токен (см. §3); коллизии с существующими row-id/config.id регенерируются |
 | `POST /__dsh-prompt-profiles/section/update` | `ctx.settings.mutate(rowId, ops, revision)` |
 | `POST /__dsh-prompt-profiles/section/delete` | своя строка → удалить; чужая → `disabled: true` |
 | `POST /__dsh-prompt-profiles/section/rename` | один writer-commit: новая строка → ссылки в профилях → старая строка; 409, если ссылающийся профиль нельзя безопасно именовать (см. §7) |

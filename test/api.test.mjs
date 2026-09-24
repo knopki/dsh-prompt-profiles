@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument, isSeq } from "yaml";
-import { registerApi, toPatchId } from "../lib/api.js";
+import { registerApi, toPatchId, tokenSource } from "../lib/api.js";
 import { resolveProfileId } from "../lib/resolve.js";
 
 const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value) => value }] };
@@ -218,39 +218,74 @@ test("section and profile create append insert rows and return rowId + patchId +
   try {
     const section = await api.call("POST", "/section/create", { title: "Tone", body: "Be brief." });
     assert.equal(section.status, 200);
-    assert.deepEqual(section.body, {
-      ok: true, rowId: "prompt-section-tone", patchId: "prompt-section-tone", configId: "tone",
-      title: "Tone", body: "Be brief.", emits: true,
-    });
-    const profile = await api.call("POST", "/profile/create", { title: "Light", sections: [{ id: "tone", order: 1050 }] });
-    assert.deepEqual(profile.body, {
-      ok: true, rowId: "prompt-profile-light", patchId: "prompt-profile-light", configId: "light",
-      title: "Light", sections: [{ id: "tone", order: 1050 }],
-    });
+    assert.match(section.body.configId, /^[0-9a-f]{8}$/);
+    assert.equal(section.body.rowId, `prompt-section-${section.body.configId}`);
+    assert.equal(section.body.patchId, section.body.rowId);
+    assert.equal(section.body.title, "Tone");
+    assert.equal(section.body.body, "Be brief.");
+    const profile = await api.call("POST", "/profile/create", { title: "Light", sections: [{ id: section.body.configId, order: 1050 }] });
+    assert.equal(profile.body.rowId, `prompt-profile-${profile.body.configId}`);
+    assert.equal(profile.body.title, "Light");
     const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
     const inserts = document.contents.items.filter((item) => item?.get?.("insert"));
-    assert.deepEqual(inserts.map((item) => item.get("insert").items[0].get("id")), ["prompt-section-tone", "prompt-profile-light"]);
+    const ids = inserts.map((item) => item.get("insert").items[0].get("id")).sort();
+    assert.deepEqual(ids, [`prompt-profile-${profile.body.configId}`, `prompt-section-${section.body.configId}`].sort());
   } finally { await api.cleanup(); }
 });
 
-/** @purpose The server generates unique slug ids: ASCII slugs, Cyrillic → numeric fallback (live bug 2's `prompt-section-1`), collision → -2 suffix. */
-test("create generates the slug id server-side and avoids collisions", async () => {
-  const api = await harness({ sections: [userSection] });
+/** @purpose Create ids are short random tokens (SPEC §3/§5.5): identical token part in rowId and configId, no dependence on the title. */
+test("create generates random token ids shared by rowId and configId, unique across creates", async (t) => {
+  const api = await harness();
   try {
-    const cyrillic = await api.call("POST", "/section/create", { title: "Тестовая секция", body: "x" });
-    assert.equal(cyrillic.status, 200);
-    assert.equal(cyrillic.body.configId, "section-1");
-    assert.equal(cyrillic.body.rowId, "prompt-section-section-1");
-    assert.equal(cyrillic.body.patchId, "prompt-section-section-1");
-    const again = await api.call("POST", "/section/create", { title: "Тестовая секция", body: "y" });
-    assert.equal(again.body.configId, "section-2");
-    // "tone" is a REGISTERED section id → slug gets a -2 suffix, never a duplicate
-    const clash = await api.call("POST", "/section/create", { title: "Tone", body: "z" });
-    assert.equal(clash.body.configId, "tone-2");
-    // default title allowed
-    const untitled = await api.call("POST", "/section/create", { body: "b" });
-    assert.equal(untitled.status, 200);
-    assert.equal(untitled.body.title, "Section");
+    const section = await api.call("POST", "/section/create", { title: "Тестовая секция", body: "x" });
+    assert.equal(section.status, 200);
+    assert.match(section.body.configId, /^[0-9a-f]{8}$/);
+    assert.equal(section.body.rowId, `prompt-section-${section.body.configId}`);
+    assert.equal(section.body.patchId, section.body.rowId);
+    assert.equal(section.body.title, "Тестовая секция");
+
+    const profile = await api.call("POST", "/profile/create", { title: "Light", sections: [] });
+    assert.match(profile.body.configId, /^[0-9a-f]{8}$/);
+    assert.equal(profile.body.rowId, `prompt-profile-${profile.body.configId}`);
+
+    // two consecutive creates never share a token
+    const again = await api.call("POST", "/section/create", { body: "b" });
+    assert.notEqual(again.body.configId, section.body.configId);
+    assert.equal(again.body.title, "Section", "default title kept");
+
+    const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
+    const ids = document.contents.items.map((item) => item.get("insert")?.items?.[0]?.get("id")).filter(Boolean);
+    assert.deepEqual(ids.sort(), [
+      `prompt-profile-${profile.body.configId}`,
+      `prompt-section-${again.body.configId}`,
+      `prompt-section-${section.body.configId}`,
+    ].sort());
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose A forced token collision (stubbed random source + pre-seeded patch row) regenerates instead of erroring. */
+test("create regenerates the token on collision with an existing row id or config id", async (t) => {
+  const api = await harness();
+  // Pre-seed the patch with rows carrying the doomed token.
+  await writeFile(api.patchPath, [
+    "# comment",
+    "- insert:",
+    "    - id: prompt-section-deadbeef",
+    "      name: '@knopki/dsh-prompt-profiles/section'",
+    "      config: { id: deadbeef, title: Taken, body: x }",
+  ].join("\n"), { mode: 0o600 });
+  const original = tokenSource.next;
+  const queue = ["deadbeef", "deadbeef", "cafebabe"];
+  tokenSource.next = () => queue.shift() ?? "ffffffff";
+  t.after(() => { tokenSource.next = original; });
+  try {
+    const created = await api.call("POST", "/section/create", { title: "Fresh", body: "y" });
+    assert.equal(created.status, 200);
+    assert.equal(created.body.configId, "cafebabe", "colliding tokens regenerated, not an error");
+    assert.equal(created.body.rowId, "prompt-section-cafebabe");
+    const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
+    const ids = document.contents.items.map((item) => item?.get?.("insert")?.items?.[0]?.get("id")).filter(Boolean);
+    assert.deepEqual(ids.sort(), ["prompt-section-cafebabe", "prompt-section-deadbeef"]);
   } finally { await api.cleanup(); }
 });
 // #endregion TEST_create
@@ -607,7 +642,7 @@ test("rename rolls the patch file back byte-identically when a batch step fails"
     entries: () => [{ options: { id: "prompt-profile-light", name: "@knopki/dsh-prompt-profiles/profile" } }],
   });
   try {
-    await api2.call("POST", "/section/create", { title: "Taken", body: "x" });
+    await api2.call("POST", "/section/create", { id: "taken", title: "Taken", body: "x" });
     const before2 = await readFile(api2.patchPath, "utf8");
     const failed = await api2.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "taken" });
     assert.equal(failed.status, 400, "duplicate section id rejected");
