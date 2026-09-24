@@ -137,7 +137,27 @@ vm.runInNewContext(code, { window: { __ModuleLoader__: { load: (module) => { loa
 assert.doesNotMatch(code, /(?<![a-zA-Z])Toast\s*\(/, 'client never calls Toast() as a function');
 assert.doesNotMatch(code, /(?<![a-zA-Z])Menu\s*\(/, 'client never calls Menu() as a function');
 const dict = { en: { nav: 'Prompt profiles' } };
-const ctx = {
+// #region SECTION_strictCtx
+// ACTIVATION GUARD: the plugin object must declare exactly the services its
+// apply() touches. The fake ctx is built FROM the declared inject list — a
+// Proxy answers only those names and throws on anything else, so an
+// undeclared ctx.<service> access (the class of bug that made web boot fail
+// with "1 entry did not activate") fails this file, not the browser.
+assert.ok(loaded.inject && Array.isArray(loaded.inject), 'plugin declares an inject array');
+assert.deepStrictEqual(plain(loaded.inject), ['slots', 'locale'],
+  'inject must declare exactly the services apply() uses: slots + locale');
+function makeStrictCtx(services) {
+  return new Proxy({}, {
+    get(_target, prop) {
+      if (typeof prop === 'symbol') return undefined;
+      if (Object.prototype.hasOwnProperty.call(services, prop)) return services[prop];
+      throw new Error(
+        `ctx.${String(prop)} accessed but not declared in plugin inject [${loaded.inject.join(', ')}]`
+        + ' — add it to inject or stop using it (Cordis leaves undeclared services unreachable on ctx)');
+    },
+  });
+}
+const ctx = makeStrictCtx({
   locale: {
     register: (ns, d) => { assert.equal(ns, 'promptProfiles'); dict.en = { ...dict.en, ...d.en }; },
     bind: (ns) => (key) => dict.en[key] ?? key,
@@ -146,9 +166,13 @@ const ctx = {
     inject: (name, callback) => { callback(); },
     register: (options, component) => registrations.push({ name: options.name, options, component }),
   },
-};
+});
 const registrations = [];
 loaded.apply(ctx);
+// The strict ctx must reject an undeclared service with a clear error (self-test).
+assert.throws(() => makeStrictCtx({}).remote, /not declared in plugin inject/,
+  'strict ctx names the missing declaration');
+// #endregion SECTION_strictCtx
 assert.equal(registrations.length, 2, 'chip + settings.section registrations');
 
 // #region SECTION_chip Chip registration, null gates, and REAL menu contract.
