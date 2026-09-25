@@ -13,10 +13,12 @@
  *   gateway requires (`Service "…" has no visible typertRemote binding`
  *   without it).
  * @scope
- *  - Descriptor construction (input/result zod 4 strict schemas, memoized
- *    `create` factories), the `PromptProfilesRemote` service (delegation to
- *    the shared operations), and `registerRemote` (plugin fiber + typert
- *    contribution + loud lifecycle logs).
+ *  - Descriptor construction now lives in the ONE shared contract
+ *    (src/shared/remote-contract.ts — the client mounts the same shape);
+ *    this file owns the HOST half: the run adapters (CONST_hostRunners),
+ *    the `PromptProfilesRemote` service (delegation to the shared
+ *    operations), and `registerRemote` (plugin fiber + typert contribution +
+ *    loud lifecycle logs).
  *  - NOT: operation logic (lib/operations.ts — ONE implementation shared
  *    with the Fetch routes), the HTTP envelope (lib/api.ts), the client-side
  *    mirrored contribution (src/client, phase 2 client half).
@@ -62,194 +64,39 @@
  */
 
 import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
-import { z } from "zod";
 import { createOperations, ApiError } from "./operations.ts";
+import {
+  TYPERT_PACKAGE, REMOTE_NAMESPACE, REMOTE_SERVICE_KEY, METHOD_SPECS,
+  buildRemoteDescriptors,
+} from "../shared/remote-contract.ts";
 
-// #region CONST_identity
-/** Typert package identity (the plugin's npm name, like every contribution). */
-export const TYPERT_PACKAGE = "@knopki/dsh-prompt-profiles";
-/** Wire namespace of every endpoint (`promptProfiles/<method>`). */
-export const REMOTE_NAMESPACE = "promptProfiles";
-/** Cordis service key of the delegating remote service (see @rationale). */
-export const REMOTE_SERVICE_KEY = "promptProfilesRemote";
-// #endregion CONST_identity
+export { TYPERT_PACKAGE, REMOTE_NAMESPACE, REMOTE_SERVICE_KEY };
 
-// #region FUNC_memoCreate
+// #region CONST_hostRunners
 /**
- * Memoize one zod schema factory: the registry calls `codec.create()` per
- * decode, and rebuilding a schema on every call is pure waste. Mirrors the
- * generated descriptors' memoized factories (`dsh-goal/lib/typert.host.js`).
- */
-function memoCreate(build) {
-  let cached;
-  return () => (cached ??= build());
-}
-// #endregion FUNC_memoCreate
-
-// #region CONST_resultSchemas
-/**
- * Shared strict result building blocks. Row views are open-shaped by design
- * (registry views evolve), so entries are JSON records; the recursive
- * plain-JSON guard plus the enclosing strictObject still pin every result
- * structure (no extra top-level field, no missing field, no wrong type).
- */
-const jsonRow = () => z.record(z.string(), z.unknown());
-const jsonRows = () => z.array(jsonRow());
-const sectionRef = () => z.strictObject({ id: z.string(), order: z.number(), scope: z.string().optional() });
-// #endregion CONST_resultSchemas
-
-// #region CONST_methodSpecs
-/**
- * THE method table: one entry per Remote method, each naming its input and
- * result strict zod schema and delegating to the shared operations. This
- * table is the single source both the descriptors (below) and the service
- * methods (CLASS_PromptProfilesRemote) are generated from — a method cannot
- * exist on one side and not the other.
+ * Host-side adapters: one per METHOD_SPECS entry, delegating each Remote
+ * method to the ONE shared operation set (same deps contract as the Fetch
+ * routes). The schemas/descriptors live in the shared contract; only the
+ * dispatch behaviour is host-specific.
  *
- * `state` accepts the session hints the MIGRATION 2b contract reserves for
- * the client half ({sessionId?, cwd?, workspaceId?}); the current operation
- * ignores them (state is global, exactly like GET /state today).
+ * `defaultSet` adapts onto the shared implementation: the operation keeps
+ * the HTTP `/default` body contract (`{default: id|""}`); `profileId: ""`
+ * means "none", exactly like the HTTP route.
  */
-const METHOD_SPECS = [
-  {
-    method: "state",
-    line: 115,
-    input: () => z.strictObject({
-      sessionId: z.string().optional(),
-      cwd: z.string().optional(),
-      workspaceId: z.string().optional(),
-    }),
-    result: () => z.strictObject({
-      profiles: jsonRows(),
-      sections: jsonRows(),
-      builtinOrders: z.record(z.string(), z.number()),
-      modes: z.array(z.strictObject({ id: z.string(), title: z.string(), complete: z.boolean() })),
-      default: z.string(),
-      lastByWorkspace: z.record(z.string(), z.string()),
-      revision: z.number().nullable(),
-    }),
-    run: (ops, input) => ops.state(input),
-  },
-  {
-    method: "preview",
-    line: 134,
-    input: () => z.strictObject({ profileId: z.string(), cwd: z.string().optional() }),
-    result: () => z.strictObject({
-      profileId: z.string(),
-      title: z.string(),
-      sections: jsonRows(),
-      skipped: z.array(z.strictObject({ id: z.string(), title: z.string(), reason: z.string() })),
-      variables: z.record(z.string(), z.string().nullable()),
-    }),
-    run: (ops, input) => ops.preview(input),
-  },
-  {
-    method: "sectionCreate",
-    line: 147,
-    input: () => z.strictObject({
-      id: z.string().optional(),
-      title: z.string().optional(),
-      body: z.string().optional(),
-    }),
-    result: () => z.strictObject({
-      rowId: z.string(),
-      patchId: z.string(),
-      configId: z.string(),
-      title: z.string(),
-      body: z.string(),
-      emits: z.boolean(),
-    }),
-    run: (ops, input) => ops.sectionCreate(input),
-  },
-  {
-    method: "sectionUpdate",
-    line: 165,
-    input: () => z.strictObject({
-      rowId: z.string(),
-      value: z.strictObject({ title: z.string(), body: z.string() }),
-      revision: z.number().optional(),
-    }),
-    result: () => z.strictObject({ rowId: z.string(), patchId: z.string(), emits: z.boolean() }),
-    run: (ops, input) => ops.sectionUpdate(input),
-  },
-  {
-    method: "sectionDelete",
-    line: 176,
-    input: () => z.strictObject({ rowId: z.string() }),
-    result: () => z.strictObject({ disabled: z.boolean() }),
-    run: (ops, input) => ops.sectionDelete(input),
-  },
-  {
-    method: "sectionRename",
-    line: 183,
-    input: () => z.strictObject({ rowId: z.string(), id: z.string() }),
-    result: () => z.strictObject({
-      rowId: z.string(),
-      patchId: z.string(),
-      id: z.string(),
-      affectedProfiles: z.array(z.strictObject({ profileId: z.string(), title: z.string() })),
-    }),
-    run: (ops, input) => ops.sectionRename(input),
-  },
-  {
-    method: "profileCreate",
-    line: 195,
-    input: () => z.strictObject({
-      id: z.string().optional(),
-      title: z.string().optional(),
-      sections: z.array(sectionRef()).optional(),
-    }),
-    result: () => z.strictObject({
-      rowId: z.string(),
-      patchId: z.string(),
-      configId: z.string(),
-      title: z.string(),
-      sections: z.array(sectionRef()),
-    }),
-    run: (ops, input) => ops.profileCreate(input),
-  },
-  {
-    method: "profileUpdate",
-    line: 212,
-    input: () => z.strictObject({
-      rowId: z.string(),
-      value: z.strictObject({ title: z.string(), sections: z.array(sectionRef()).optional() }),
-      revision: z.number().optional(),
-    }),
-    result: () => z.strictObject({ rowId: z.string(), patchId: z.string() }),
-    run: (ops, input) => ops.profileUpdate(input),
-  },
-  {
-    method: "profileDelete",
-    line: 223,
-    input: () => z.strictObject({ rowId: z.string(), revision: z.number().optional() }),
-    result: () => z.strictObject({ disabled: z.boolean() }),
-    run: (ops, input) => ops.profileDelete(input),
-  },
-  {
-    method: "last",
-    line: 230,
-    input: () => z.strictObject({
-      workspaceId: z.string().optional(),
-      cwd: z.string().optional(),
-      profileId: z.string(),
-      revision: z.number().optional(),
-    }),
-    result: () => z.strictObject({ ok: z.literal(true) }),
-    run: (ops, input) => ops.last(input),
-  },
-  {
-    method: "defaultSet",
-    line: 242,
-    input: () => z.strictObject({ profileId: z.string(), revision: z.number().optional() }),
-    result: () => z.strictObject({ ok: z.literal(true) }),
-    // Adapter onto the shared implementation: the operation keeps the HTTP
-    // `/default` body contract (`{default: id|""}`); `profileId: ""` means
-    // "none", exactly like the HTTP route.
-    run: (ops, input) => ops.defaultSet({ default: input.profileId, revision: input.revision }),
-  },
-];
-// #endregion CONST_methodSpecs
+const HOST_RUNNERS = {
+  state: (ops, input) => ops.state(input),
+  preview: (ops, input) => ops.preview(input),
+  sectionCreate: (ops, input) => ops.sectionCreate(input),
+  sectionUpdate: (ops, input) => ops.sectionUpdate(input),
+  sectionDelete: (ops, input) => ops.sectionDelete(input),
+  sectionRename: (ops, input) => ops.sectionRename(input),
+  profileCreate: (ops, input) => ops.profileCreate(input),
+  profileUpdate: (ops, input) => ops.profileUpdate(input),
+  profileDelete: (ops, input) => ops.profileDelete(input),
+  last: (ops, input) => ops.last(input),
+  defaultSet: (ops, input) => ops.defaultSet({ default: input.profileId, revision: input.revision }),
+};
+// #endregion CONST_hostRunners
 
 // #region FUNC_assertPlainJson
 /**
@@ -291,10 +138,11 @@ function assertPlainJson(value, method, ancestors = new Set()) {
 
 // #region FUNC_remoteInvocations
 /**
- * Build the hand-written invocation descriptors (one per METHOD_SPECS entry),
- * in the exact field shape the 2a spike proved against the live rc.2
- * registry: `{ id, service, namespace, method, invocation: { kind: 'direct'
- * }, parameters: [{ name, wire, source: 'json', codec }], result, sourceLocation }`.
+ * The host descriptors, built from the ONE shared method table
+ * (src/shared/remote-contract.ts — the client half mounts the same shape).
+ * The builder reproduces the exact field shape the 2a spike proved against
+ * the live rc.2 registry, including this file's historical sourceLocation
+ * lines, so the committed host descriptors do not change in any field.
  *
  * @purpose Give `ctx.typert.register` a contribution the strict gateway
  *   accepts without any generator pipeline, keeping the plugin independently
@@ -302,34 +150,7 @@ function assertPlainJson(value, method, ancestors = new Set()) {
  * @returns {Array<object>} fresh descriptor array (safe to register once).
  */
 export function remoteInvocations() {
-  return METHOD_SPECS.map((spec) => ({
-    id: `${TYPERT_PACKAGE}#${REMOTE_NAMESPACE}/${spec.method}`,
-    service: REMOTE_SERVICE_KEY,
-    namespace: REMOTE_NAMESPACE,
-    method: spec.method,
-    invocation: { kind: "direct" },
-    parameters: [{
-      name: "input",
-      wire: "input",
-      source: "json",
-      codec: {
-        mode: "strict",
-        typeSymbol: `${TYPERT_PACKAGE}#${cap(spec.method)}Input`,
-        create: memoCreate(spec.input),
-      },
-    }],
-    result: {
-      mode: "strict",
-      typeSymbol: `${TYPERT_PACKAGE}#${cap(spec.method)}Result`,
-      create: memoCreate(spec.result),
-    },
-    sourceLocation: { file: "src/host/remote.ts", line: spec.line, column: 1 },
-  }));
-}
-
-/** `sectionCreate` → `SectionCreate` (type-symbol segment for the codec). */
-function cap(name) {
-  return name[0].toUpperCase() + name.slice(1);
+  return buildRemoteDescriptors("host");
 }
 // #endregion FUNC_remoteInvocations
 
@@ -383,15 +204,16 @@ export class PromptProfilesRemote extends TypertRemoteService {
 
     // #region METHOD_invoke
     /**
-     * ONE dispatch path for every method: run the shared operation, normalize
-     * `undefined` to `{ ok: true }` (the HTTP envelope semantics), enforce
-     * JSON-safety and the strict result schema. Business errors (ApiError)
-     * propagate unchanged so the gateway reports a Remote failure with the
-     * operation's own status semantics preserved in the message.
+     * ONE dispatch path for every method: run the shared operation (via the
+     * HOST_RUNNERS adapter), normalize `undefined` to `{ ok: true }` (the
+     * HTTP envelope semantics), enforce JSON-safety and the strict result
+     * schema. Business errors (ApiError) propagate unchanged so the gateway
+     * reports a Remote failure with the operation's own status semantics
+     * preserved in the message.
      */
     const invoke = async (method, input) => {
       const spec = dispatch.get(method);
-      const value = await spec.run(ops, input);
+      const value = await HOST_RUNNERS[method](ops, input);
       const result = value === undefined ? { ok: true } : value;
       assertPlainJson(result, method);
       const parsed = spec.result().safeParse(result);

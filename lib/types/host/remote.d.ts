@@ -11,10 +11,12 @@
  *   gateway requires (`Service "…" has no visible typertRemote binding`
  *   without it).
  * @scope
- *  - Descriptor construction (input/result zod 4 strict schemas, memoized
- *    `create` factories), the `PromptProfilesRemote` service (delegation to
- *    the shared operations), and `registerRemote` (plugin fiber + typert
- *    contribution + loud lifecycle logs).
+ *  - Descriptor construction now lives in the ONE shared contract
+ *    (src/shared/remote-contract.ts — the client mounts the same shape);
+ *    this file owns the HOST half: the run adapters (CONST_hostRunners),
+ *    the `PromptProfilesRemote` service (delegation to the shared
+ *    operations), and `registerRemote` (plugin fiber + typert contribution +
+ *    loud lifecycle logs).
  *  - NOT: operation logic (lib/operations.ts — ONE implementation shared
  *    with the Fetch routes), the HTTP envelope (lib/api.ts), the client-side
  *    mirrored contribution (src/client, phase 2 client half).
@@ -59,17 +61,14 @@
  * #endregion moduleContract
  */
 import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
-/** Typert package identity (the plugin's npm name, like every contribution). */
-export declare const TYPERT_PACKAGE = "@knopki/dsh-prompt-profiles";
-/** Wire namespace of every endpoint (`promptProfiles/<method>`). */
-export declare const REMOTE_NAMESPACE = "promptProfiles";
-/** Cordis service key of the delegating remote service (see @rationale). */
-export declare const REMOTE_SERVICE_KEY = "promptProfilesRemote";
+import { TYPERT_PACKAGE, REMOTE_NAMESPACE, REMOTE_SERVICE_KEY } from "../shared/remote-contract.ts";
+export { TYPERT_PACKAGE, REMOTE_NAMESPACE, REMOTE_SERVICE_KEY };
 /**
- * Build the hand-written invocation descriptors (one per METHOD_SPECS entry),
- * in the exact field shape the 2a spike proved against the live rc.2
- * registry: `{ id, service, namespace, method, invocation: { kind: 'direct'
- * }, parameters: [{ name, wire, source: 'json', codec }], result, sourceLocation }`.
+ * The host descriptors, built from the ONE shared method table
+ * (src/shared/remote-contract.ts — the client half mounts the same shape).
+ * The builder reproduces the exact field shape the 2a spike proved against
+ * the live rc.2 registry, including this file's historical sourceLocation
+ * lines, so the committed host descriptors do not change in any field.
  *
  * @purpose Give `ctx.typert.register` a contribution the strict gateway
  *   accepts without any generator pipeline, keeping the plugin independently
@@ -100,7 +99,7 @@ export declare function remoteInvocations(): {
         create: () => any;
     };
     sourceLocation: {
-        file: string;
+        file: any;
         line: number;
         column: number;
     };

@@ -202,12 +202,16 @@ const React = {
 };
 const code = fs.readFileSync(require('node:path').join(__dirname, '../lib/client.js'), 'utf8');
 new vm.Script(code, { filename: 'lib/client.js' });
-vm.runInNewContext(code, {
+// The sandbox is kept reachable so a single test can observe ITS OWN requests
+// (swap sandbox.fetch for a local recorder) without sharing the global
+// fetchCalls list with interleaving later sections.
+const sandbox = {
   window: { __ModuleLoader__: { load: (module) => { loaded = module.factory((name) => name === 'react' ? React : primitives); } } },
   // The create-flow poll needs real timers inside the vm realm.
   setTimeout, clearTimeout,
   fetch: fetchStub,
-});
+};
+vm.runInNewContext(code, sandbox);
 // The client must never invoke Toast/Menu as plain functions (invalid hook call).
 assert.doesNotMatch(code, /(?<![a-zA-Z])Toast\s*\(/, 'client never calls Toast() as a function');
 assert.doesNotMatch(code, /(?<![a-zA-Z])Menu\s*\(/, 'client never calls Menu() as a function');
@@ -221,8 +225,8 @@ const dict = { en: { nav: 'Prompt profiles' } };
 // undeclared ctx.<service> access (the class of bug that made web boot fail
 // with "1 entry did not activate") fails this file, not the browser.
 assert.ok(loaded.inject && Array.isArray(loaded.inject), 'plugin declares an inject array');
-assert.deepStrictEqual(plain(loaded.inject), ['slots', 'locale'],
-  'inject must declare exactly the services apply() uses: slots + locale');
+assert.deepStrictEqual(plain(loaded.inject), ['slots', 'locale', 'remote'],
+  'inject must declare exactly the services apply() uses: slots + locale + remote (Remote mount)');
 function makeStrictCtx(services) {
   return new Proxy({}, {
     get(_target, prop) {
@@ -248,9 +252,19 @@ const ctx = makeStrictCtx({
     inject: (name, callback) => { callback(); },
     register: (options, component) => registrations.push({ name: options.name, options, component }),
   },
+  // The Remote surface is mounted through ctx.effect; the shim only records
+  // the effect (never flushes it for the mount), and the stub $mount answers
+  // a loud rejection so any flushed mount settles the fallback EXPLICITLY
+  // (no silent fetch race, no hanging readyApi promise).
+  remote: { $mount: () => Promise.reject(new Error('shim: no real Remote service')) },
+  effect: (fn) => { effectQueue.push(fn); },
 });
 const registrations = [];
 loaded.apply(ctx);
+// Flush ONLY the queued effects so far (the Remote mount): the stub $mount
+// rejects loudly, the mount outcome settles, and the fetch fallback becomes
+// the EXPLICIT degraded state every later data path uses — no silent race.
+flushEffects();
 // The strict ctx must reject an undeclared service with a clear error (self-test).
 assert.throws(() => makeStrictCtx({}).remote, /not declared in plugin inject/,
   'strict ctx names the missing declaration');
@@ -346,16 +360,33 @@ assert.ok(!chipText.includes('profile:'), 'the "profile:" prefix is gone');
 assert.ok(!chipText.includes('▾'), 'the text glyph is gone (the chevron is an icon)');
 
 // The choice must ALWAYS be delivered: workspaceId when known, else the cwd.
-// (`request`/`choose` call fetch/pick synchronously before their first await,
-// so these assertions need no await and cannot interleave with the harness.)
-fetchCalls.length = 0;
-fetchHeaders.length = 0;
-chip.options.inject('sid').pick({ profileId: 'light', cwd: '/work/repo' });
-assert.deepStrictEqual(plain(fetchCalls.at(-1)),
-  ['/api/__dsh-prompt-profiles/last', { cwd: '/work/repo', profileId: 'light' }],
-  'POST /last carries profileId + cwd when no workspaceId is known, under the /api/ route base');
-assert.equal(fetchHeaders.at(-1)['content-type'], 'application/json',
-  'writes declare JSON — the host CSRF layer requires content-type on every non-GET');
+// `pick` now goes through readyApi() (Remote preferred, fetch only after a
+// settled failed mount), so the assertion awaits the pick promise and records
+// the requests on a LOCAL sink — the awaited microtasks interleave with later
+// top-level sections that reuse/clear the shared fetchCalls list.
+(async () => {
+  const local = [];
+  const localHeaders = [];
+  const originalFetch = sandbox.fetch;
+  sandbox.fetch = (url, options) => {
+    local.push([url, options?.body ? JSON.parse(options.body) : null]);
+    localHeaders.push(options?.headers ?? {});
+    return fetchStub(url, options);
+  };
+  try {
+    await chip.options.inject('sid').pick({ profileId: 'light', cwd: '/work/repo' });
+  } finally {
+    sandbox.fetch = originalFetch;
+  }
+  // Microtask drain: the awaited pick settles in the same drain as pending
+  // loadState calls from LATER top-level sections, so filter to /last.
+  const lastEntries = local.filter(([url]) => url === '/api/__dsh-prompt-profiles/last');
+  assert.deepStrictEqual(plain(lastEntries),
+    [['/api/__dsh-prompt-profiles/last', { cwd: '/work/repo', profileId: 'light' }]],
+    'after a FAILED Remote mount the fetch fallback POSTs exactly ONE /last with profileId + cwd under the /api/ route base');
+  assert.equal(localHeaders[local.findIndex(([url]) => url === '/api/__dsh-prompt-profiles/last')]['content-type'], 'application/json',
+    'writes declare JSON — the host CSRF layer requires content-type on every non-GET');
+})();
 const picks = [];
 stateQueue = [{
   profiles: [{ rowId: 'prompt-profile-light', patchId: 'profile-light', configId: 'light', title: 'Light', sections: [] }],

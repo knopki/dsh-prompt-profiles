@@ -6,16 +6,20 @@
  * @scope Client UI only: conversation chip + settings.section page; NOT the
  *   host API implementation (lib/api.js owns the endpoints).
  * @invariants Chip renders only on a blank session with profiles present;
- *   every mutation goes through the Fetch routes under
- *   /api/__dsh-prompt-profiles (the platform's Connection mechanism, which
- *   requires the /api/ prefix) with a
- *   debounced autosave (no Save button); writes send the unqualified
- *   `patchId` in the `rowId` field with WHOLE-object `value` (no path ops);
+ *   data flows PREFER the Typert Remote surface (ctx.remote.$mount inside a
+ *   Cordis effect + ctx.inject(['remote.promptProfiles']) — see
+ *   REMOTE_mount); the /api/__dsh-prompt-profiles fetch routes remain only
+ *   as the TEMPORARY fallback for a failed Remote mount (loud, never
+ *   silent; deleted in phase 2c). Mutations use a debounced autosave (no
+ *   Save button); writes send the unqualified `patchId` in the `rowId`
+ *   field with WHOLE-object `value` (no path ops);
  *   creation has NO modal — POST a default title, poll /state until the new
  *   patchId appears, then drill into the edit view with the title focused
  *   and selected. Pure helpers and the create/save flow factories are
  *   exported on the module object for the shim test.
- * @dependencies USES: same-origin /api/__dsh-prompt-profiles endpoints; React and
+ * @dependencies USES: the Typert Remote service (ctx.remote, provided by the
+ *   platform's api-gateway client row) and, only as the temporary fallback,
+ *   the same-origin /api/__dsh-prompt-profiles endpoints; React and
  *   @deepseek-ai/dsh-client-ui-primitives from the baseline module table.
  * @rationale The loader wrapper (window.__ModuleLoader__.load) is supplied by
  *   build.mjs (esbuild banner/footer); this module uses createElement only.
@@ -31,6 +35,10 @@ const {
 } = require("@deepseek-ai/dsh-client-ui-primitives");
 const h = React.createElement;
 const NS = "promptProfiles";
+// The client half of the Remote surface (phase 2b): the mirrored contribution
+// (same descriptors as the host, from the ONE shared contract) and the call
+// helpers/facade over the injected `remote.promptProfiles` namespace service.
+const remoteClient = require("./remote.ts");
 const messages = {
   // chip
   none: "None", untitled: "(no title)",
@@ -609,9 +617,80 @@ const makeApi = (req) => ({
   profileUpdate: (patchId, value) => req("profile/update", post({ rowId: patchId, value })),
   profileDelete: (patchId) => req("profile/delete", post({ rowId: patchId })),
   setDefault: (value) => req("default", post({ default: value })),
+  last: (choice) => req("last", post({
+    workspaceId: choice?.workspaceId, cwd: choice?.cwd, profileId: choice?.profileId,
+  })),
 });
 const clientApi = makeApi(request);
 // #endregion FUNC_clientApi
+
+// #region REMOTE_mount
+/**
+ * @purpose Own the Remote transport preference: the plugin mounts its
+ *   contribution through `ctx.remote.$mount` inside a Cordis effect (disposed
+ *   with the plugin), then swaps the active api facade to the Remote one via
+ *   `ctx.inject(['remote.promptProfiles'], ...)` — the namespace service is
+ *   NOT reachable bare. Until the mount settles, every data path awaits
+ *   `remoteSettled`, so a call issued before mount never silently uses the
+ *   fetch fallback; the fetch facade remains only as the TEMPORARY fallback
+ *   (deleted in phase 2c) for a mount that FAILED, and a failure is logged
+ *   loudly, never silent.
+ * @invariants
+ *  - Remote is strictly preferred: after a successful mount no data path
+ *    touches fetch; before the mount settles, calls WAIT rather than race.
+ *  - A failed mount is loud (logger.error/console.error with the stage) and
+ *    leaves the fetch facade active — an explicit degradation, not a silent
+ *    fallback.
+ */
+let activeApi = clientApi;
+let remoteSettled = Promise.resolve(false);
+/** Await the Remote mount outcome, then hand back the api to use. */
+const readyApi = async () => { await remoteSettled; return activeApi; };
+/** The api at call time (settings-section inject); prefers Remote once mounted. */
+const getActiveApi = () => activeApi;
+
+// #region FUNC_mountRemote
+/**
+ * @purpose Mount the client contribution inside a Cordis effect: $mount,
+ *   then ctx.inject on the namespace; both disposers run when the plugin
+ *   fiber dies, so the namespace service disappears with the plugin.
+ * @param {object} ctx - the plugin context (inject includes `remote`).
+ * @returns {void}
+ */
+function mountRemote(ctx) {
+  let settle;
+  remoteSettled = new Promise((resolve) => { settle = resolve; });
+  const loud = (stage, error) => {
+    const details = { stage, error: error?.message ?? String(error) };
+    try { (ctx.logger?.error ?? console.error)("prompt-profiles client: Remote mount failed; fetch fallback stays active", details); } catch (_) { /* diagnostics only */ }
+    settle(false);
+  };
+  ctx.effect(() => {
+    let disposeMount = () => {};
+    let disposeInject = () => {};
+    void (async () => {
+      try {
+        disposeMount = await ctx.remote.$mount(remoteClient.clientContribution) ?? (() => {});
+        // Both keys declared: 'remote' for the service itself and the dotted
+        // namespace key — scope.remote.promptProfiles resolves only under
+        // this inject (proven pattern; bare access throws "without inject").
+        disposeInject = ctx.inject(["remote", "remote.promptProfiles"], (scope) => {
+          activeApi = remoteClient.makeRemoteApi(scope);
+          settle(true);
+          return () => {};
+        }) ?? (() => {});
+      } catch (error) {
+        loud("$mount", error);
+      }
+    })();
+    return async () => {
+      try { disposeInject(); } catch (_) { /* already gone */ }
+      try { await disposeMount(); } catch (_) { /* already gone */ }
+    };
+  });
+}
+// #endregion FUNC_mountRemote
+// #endregion REMOTE_mount
 
 // #region FUNC_useNotifier
 /**
@@ -836,7 +915,8 @@ function PromptProfileChip(props) {
   const { notify, banner } = useNotifier();
   React.useEffect(() => {
     let live = true;
-    const load = () => request("state")
+    const load = () => readyApi()
+      .then((api) => api.loadState())
       .then((value) => { if (live) setState(value); })
       .catch((err) => {
         if (live) notify(errText(err) ? `${t("loadError")} ${errText(err)}`.trim() : t("loadError"));
@@ -901,7 +981,7 @@ function PromptProfileChip(props) {
     else if (cwd) choice.cwd = cwd;
     try {
       await pick(choice);
-      const refreshed = await request("state");
+      const refreshed = await (await readyApi()).loadState();
       setState(refreshed);
     } catch (err) {
       setState(previous);
@@ -1031,7 +1111,9 @@ async function runSave(fn, reload, t, notify, onError) {
     notifyProfilesChanged();
     return true;
   } catch (err) {
-    if (err && err.status === 409) {
+    // Conflict either way it arrives: HTTP status 409 (fetch fallback) or the
+    // Remote envelope's stale-revision message (no status crosses the wire).
+    if (remoteClient.isRemoteConflict(err)) {
       try {
         await reload();
         await fn();
@@ -1900,24 +1982,29 @@ function PromptProfilesSection(props) {
 // #endregion COMPONENT_PromptProfilesSection
 
 module.exports = {
-  // apply() touches exactly these two services at registration time:
-  // ctx.locale.register/bind and ctx.slots.inject/register. In Cordis a
-  // service is reachable on ctx only when declared here — with an empty
-  // list apply() threw (undefined ctx.slots/ctx.locale) and web boot
-  // reported "1 entry did not activate".
-  inject: ["slots", "locale"],
+  // apply() touches exactly these services at registration time:
+  // ctx.locale.register/bind, ctx.slots.inject/register and (inside a Cordis
+  // effect) ctx.remote.$mount. In Cordis a service is reachable on ctx only
+  // when declared here — with an empty list apply() threw (undefined
+  // ctx.slots/ctx.locale) and web boot reported "1 entry did not activate".
+  inject: ["slots", "locale", "remote"],
   helpers,
   // Test seams (also reusable building blocks): the API facade factory,
   // the modal-free create flow, the optimistic+poll mutation flow, the
-  // whole-object save runner, and the tab components for shim-level
-  // render assertions.
+  // whole-object save runner, the Remote client helpers, and the tab
+  // components for shim-level render assertions.
   makeApi, makeCreateFlow, makeMutationFlow, runSave, findEntry, optimisticEntry,
+  remote: remoteClient,
+  getActiveApi, readyApi,
   components: { ProfilesTab, SectionsTab, SectionForm, ProfileOutline, PreviewTab },
   apply(ctx) {
     ctx.locale.register(NS, { en: messages, ru, zh });
     // The service owns per-key English fallback; the low-level request
     // fallback uses its binder so that string is localizable too.
     if (typeof ctx.locale.bind === "function") boundT = ctx.locale.bind(NS);
+    // Remote first: mount the contribution in an effect so it is disposed
+    // with the plugin; data paths wait for the outcome (REMOTE_mount).
+    if (typeof ctx.effect === "function") mountRemote(ctx);
     ctx.slots.inject("conversation.input.left", () => ctx.slots.register({
       name: "conversation.input.left",
       id: "prompt-profile",
@@ -1925,13 +2012,9 @@ module.exports = {
       locale: NS,
       inject: (sessionId) => ({
         // `choice` is {profileId, workspaceId?, cwd?}: the host keys `last`
-        // by workspace id when known, else by the Session cwd. JSON.stringify
-        // drops the absent fields.
-        pick: (choice) => request("last", {
-          method: "POST", body: JSON.stringify({
-            workspaceId: choice?.workspaceId, cwd: choice?.cwd, profileId: choice?.profileId,
-          }),
-        }),
+        // by workspace id when known, else by the Session cwd. Remote is
+        // preferred; fetch is only the pre-2c fallback for a failed mount.
+        pick: (choice) => readyApi().then((api) => api.last(choice)),
         sessionId,
       }),
     }, PromptProfileChip));
@@ -1943,7 +2026,7 @@ module.exports = {
         order: 25,
         label: () => (bound ? bound("nav") : messages.en.nav),
         locale: NS,
-        inject: () => ({ api: clientApi }),
+        inject: () => ({ api: getActiveApi() }),
       }, PromptProfilesSection);
     });
   },

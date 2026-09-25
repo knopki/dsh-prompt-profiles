@@ -36,7 +36,8 @@
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.mjs",
-    "check": "pnpm run typecheck && pnpm run test && pnpm run build"
+    "test:remote": "vitest run",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run test:remote && pnpm run build"
   },
   "dsh": {
     "bundle": {
