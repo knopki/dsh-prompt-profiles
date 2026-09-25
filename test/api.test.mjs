@@ -432,6 +432,112 @@ test("connection.admit fences every route and fails closed", async () => {
 });
 // #endregion TEST_auth
 
+// #region TEST_reload
+/** @purpose Test stand for HMR reloads: a webServer that throws on duplicate exact routes (like dsh-host-webserver) plus a minimal API context. */
+function reloadStand({ failPaths = [] } = {}) {
+  const table = new Map();
+  const logs = [];
+  const webServer = {
+    register({ kind, path, handler }) {
+      if (failPaths.includes(path)) throw new Error(`register refused ${path}`);
+      if (table.has(path)) throw new Error(`webserver: duplicate ${kind} route "${path}"`);
+      table.set(path, handler);
+      return () => table.delete(path);
+    },
+  };
+  const service = {
+    config: { default: { get: () => "" }, lastByWorkspace: { get: () => ({}) } },
+    sections: () => [], profiles: () => [], usedIn: () => [],
+    builtinOrders: () => ({}), builtinOrdersByName: () => ({}),
+  };
+  const ctx = {
+    webServer,
+    settings: { describe: () => [{ ns: "prompt-profiles", revision: 1 }], mutate: async () => {}, replace: async () => {} },
+    configEditor: { documentPath: "/nonexistent-dsh-reload/cordis.patch.yml" },
+    get: () => undefined,
+    logger: {},
+  };
+  const log = {
+    info: (message, details) => logs.push({ level: "info", message, details }),
+    warn: (message, details) => logs.push({ level: "warn", message, details }),
+    error: (message, details) => logs.push({ level: "error", message, details }),
+  };
+  const drive = async (path, method = "GET", body) => {
+    const handler = table.get(`/__dsh-prompt-profiles${path}`);
+    if (!handler) return 404;
+    const request = fakeRequest(method, path, body);
+    const { response, state } = fakeResponse();
+    const pending = handler(request, response);
+    request.deliver();
+    await pending;
+    await state.finished;
+    return state.statusCode;
+  };
+  return { table, logs, ctx, service, log, drive };
+}
+
+/** @purpose (а) duplicate mount degrades with an error log; the orderly HMR sequence (dispose → remount) is clean. */
+test("RELOAD: a duplicate mount degrades loudly, an orderly dispose+remount is clean", async () => {
+  const stand = reloadStand();
+  const api = (name) => registerApi(stand.ctx, { service: stand.service, log: stand.log });
+  const dispose1 = api("first");
+  const paths = [...stand.table.keys()].sort();
+  assert.ok(paths.length > 0, "routes registered");
+  // Mounting again WITHOUT disposing: every route is a duplicate at the server
+  // level, but the wrapper must not throw and must not clobber the live table.
+  const disposeStale = api("second");
+  assert.deepEqual([...stand.table.keys()].sort(), paths, "live routes untouched");
+  assert.ok(stand.logs.some((entry) => entry.level === "error" && /route registration failed/.test(entry.message)),
+    "duplicate registration logged at error level");
+  // Orderly HMR: dispose old routes, then mount again.
+  dispose1();
+  assert.equal(stand.table.size, 0, "unmounted");
+  const dispose2 = api("third");
+  assert.deepEqual([...stand.table.keys()].sort(), paths, "same routes after remount, no duplicates");
+  disposeStale(); // must be a no-op: it owns nothing
+  dispose2();
+});
+
+/** @purpose (б) after unmount the route answers 404; after remount it answers 200. */
+test("RELOAD: routes 404 while unmounted and 200 again after remount", async () => {
+  const stand = reloadStand();
+  const dispose1 = registerApi(stand.ctx, { service: stand.service, log: stand.log });
+  assert.equal(await stand.drive("/state"), 200, "mounted");
+  dispose1();
+  assert.equal(await stand.drive("/state"), 404, "unmounted: the path left the table");
+  const dispose2 = registerApi(stand.ctx, { service: stand.service, log: stand.log });
+  assert.equal(await stand.drive("/state"), 200, "remounted");
+  const info = stand.logs.filter((entry) => entry.level === "info").map((entry) => entry.message);
+  assert.ok(info.includes("prompt-profiles api: mounted"), "mounted info logged");
+  assert.ok(info.includes("prompt-profiles api: unmounted"), "unmounted info logged");
+  dispose2();
+});
+
+/** @purpose (в) one failing registration must not kill the mount. */
+test("RELOAD: one failing route registration leaves the rest mounted and logs the path", async () => {
+  const stand = reloadStand({ failPaths: ["/__dsh-prompt-profiles/section/create"] });
+  const dispose = registerApi(stand.ctx, { service: stand.service, log: stand.log });
+  const failure = stand.logs.find((entry) => /route registration failed/.test(entry.message));
+  assert.ok(failure, "failure logged");
+  assert.equal(failure.level, "error");
+  assert.equal(failure.details.path, "/__dsh-prompt-profiles/section/create");
+  assert.ok(stand.table.has("/__dsh-prompt-profiles/state"), "other routes still registered");
+  assert.equal(await stand.drive("/state"), 200);
+  assert.equal(await stand.drive("/section/create", "POST", { title: "T", body: "B" }), 404, "the failed route is absent");
+  dispose();
+  assert.equal(stand.table.size, 0, "the disposer still removes every route it did register");
+});
+
+/** @purpose (г) the disposer removes exactly its own routes. */
+test("RELOAD: the disposer removes only the routes it registered", async () => {
+  const stand = reloadStand();
+  const dispose = registerApi(stand.ctx, { service: stand.service, log: stand.log });
+  stand.table.set("/someone-else", () => {});
+  dispose();
+  assert.deepEqual([...stand.table.keys()], ["/someone-else"], "foreign route survives");
+});
+// #endregion TEST_reload
+
 /** @purpose H5: a pending ref counts ONLY for a real, live, config-bearing SECTION row; profile/foreign/disabled/config-less ids are 400. */
 test("pending section refs require a real live section row in the patch", async () => {
   const api = await harness({ profiles: [], sections: [] });
