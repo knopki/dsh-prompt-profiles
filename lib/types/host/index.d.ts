@@ -7,8 +7,9 @@
  * @scope
  *  - Expose the registry as `ctx.promptProfiles`, load the mirror lazily,
  *    seal each agent's first assembled prompt in a durable storage domain,
- *    resolve row provenance from the profile patch, and serve the SPEC §5.5
- *    HTTP API on web surfaces.
+ *    resolve row provenance from the profile patch, serve the SPEC §5.5
+ *    HTTP API on web surfaces, and mount the Typert Remote surface
+ *    (namespace `promptProfiles`) when the `typert` service exists.
  *  - NOT: section/profile row registration (lib/section.js, lib/profile.js),
  *    patch-file mutation mechanics (lib/writer.js), route handlers
  *    (lib/api.js).

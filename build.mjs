@@ -45,6 +45,8 @@ const hostEntries = [
   'src/host/section.ts',
   'src/host/profile.ts',
   'src/host/api.ts',
+  'src/host/operations.ts',
+  'src/host/remote.ts',
   'src/host/resolve.ts',
   'src/host/writer.ts',
   'src/host/registry.ts',

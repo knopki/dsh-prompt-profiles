@@ -9,8 +9,9 @@
  * @scope
  *  - Expose the registry as `ctx.promptProfiles`, load the mirror lazily,
  *    seal each agent's first assembled prompt in a durable storage domain,
- *    resolve row provenance from the profile patch, and serve the SPEC §5.5
- *    HTTP API on web surfaces.
+ *    resolve row provenance from the profile patch, serve the SPEC §5.5
+ *    HTTP API on web surfaces, and mount the Typert Remote surface
+ *    (namespace `promptProfiles`) when the `typert` service exists.
  *  - NOT: section/profile row registration (lib/section.js, lib/profile.js),
  *    patch-file mutation mechanics (lib/writer.js), route handlers
  *    (lib/api.js).
@@ -55,6 +56,7 @@ import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
 import { resolveProfileId, resolveWorkspaceKeys, buildSnapshot, planInsertion, isSubagent, isFork, sealSnapshot, retryingCache } from "./resolve.ts";
 import { provenance, setWriteGate } from "./writer.ts";
 import { registerApi } from "./api.ts";
+import { registerRemote } from "./remote.ts";
 
 // #region CONST_promptProfilesDomain
 /**
@@ -173,6 +175,32 @@ export class PromptProfilesPlugin extends Service {
       }
     }, 200);
     noConnectionTimer.unref?.();
+    // TYPERT REMOTE (phase 2b): the `typert` registry service is OPTIONAL —
+    // a profile without it (older DSH, stripped host) keeps the Fetch routes
+    // and everything else; the missing Remote surface is reported LOUDLY
+    // after the settle window instead of silently (same pattern as the
+    // connection case above, and for the same reason: "Running, zero
+    // endpoints, empty log" must never happen again).
+    let noTypertTimer = null;
+    ctx.inject(["typert"], (child) =>
+      child.effect(() => {
+        if (noTypertTimer !== null) {
+          clearTimeout(noTypertTimer);
+          noTypertTimer = null;
+        }
+        return registerRemote(child, { service: this });
+      }),
+    );
+    noTypertTimer = setTimeout(() => {
+      noTypertTimer = null;
+      try {
+        if (ctx.get?.("typert")) return;
+        ctx.logger?.error?.("prompt-profiles remote: mounted ZERO remote endpoints (typert service absent; HTTP routes unaffected)", {});
+      } catch {
+        // diagnostics only
+      }
+    }, 200);
+    noTypertTimer.unref?.();
     ctx.logger?.debug?.("prompt-profiles service mounted", {
       default: config.default,
       lastByWorkspaceKeys: Object.keys(config.lastByWorkspace ?? {}),

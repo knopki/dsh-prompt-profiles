@@ -7,7 +7,10 @@
  *   fibers, and mounts the bundle's real ESM entry (`lib/index.js`).
  * @scope node:test + @deepseek-ai/cordis from the bundle's own node_modules
  *   (peerDependency — never added to package.json) with stub service
- *   implementations; NOT the real dsh-web/host composition.
+ *   implementations, the REAL dsh-typert-registry, and (for the Remote
+ *   dispatch tests) the REAL dsh-api-gateway TypertGatewayService invoked
+ *   host-side through invokeRpc; NOT the real dsh-web/host composition and
+ *   NOT the HTTP/WebSocket carrier.
  * @invariants The API depends ONLY on `webServer`: with webServer present the
  *   routes MUST register even when settings/configEditor/connection/
  *   agentPresets/workspaceRegistry are missing (reads degrade, mutations 503);
@@ -16,13 +19,32 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PromptProfilesPlugin } from "../lib/index.js";
 import { API_ROUTE_BASE } from "../lib/api.js";
+import { tokenSource } from "../lib/operations.js";
 import * as sectionRow from "../lib/section.js";
 import * as profileRow from "../lib/profile.js";
+
+let TypertRegistry = null;
+let typertRegistryError = null;
+try {
+  ({ TypertRegistry } = await import("@deepseek-ai/dsh-typert-registry"));
+} catch (error) {
+  typertRegistryError = error;
+}
+const missingTypert = typertRegistryError === null ? false : `@deepseek-ai/dsh-typert-registry not resolvable: ${typertRegistryError.message}`;
+
+let TypertGatewayService = null;
+let gatewayError = null;
+try {
+  ({ TypertGatewayService } = await import("@deepseek-ai/dsh-api-gateway"));
+} catch (error) {
+  gatewayError = error;
+}
+const missingGateway = gatewayError === null ? false : `@deepseek-ai/dsh-api-gateway not resolvable: ${gatewayError.message}`;
 
 let Context = null;
 let cordisError = null;
@@ -234,3 +256,129 @@ test("real Cordis: ctx.get for absent services, and every optional read is guard
   await fiber.dispose();
 });
 // #endregion TEST_ctxGet
+
+// #region TEST_typertRemote
+/** @purpose Await an async mount side effect (typert inject callback, contribution commit) with a timeout instead of a fixed sleep. */
+async function waitFor(predicate, { timeoutMs = 2000, label = "condition" } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`waitFor timed out on ${label}`);
+}
+
+/** @purpose Real typert registry + real plugin: the Remote contribution registers via ctx.typert.register, all strict endpoints are locally visible, and disposing the plugin withdraws them. */
+test("real typert registry: contribution registers, 11 strict endpoints visible, dispose withdraws", { skip: missingCordis || missingTypert }, async () => {
+  const patch = await makePatch();
+  const host = stubHost(["connection", "settings", "configEditor", "storageDomain", "workspaceRegistry", "agentPresets"], { patchPath: patch.path });
+  await host.stubs.await();
+  const registryFiber = host.ctx.plugin(TypertRegistry);
+  await registryFiber.await();
+  assert.equal(typeof host.ctx.typert.register, "function", "the real registry exposes ctx.typert.register");
+  const fiber = await mountPlugin(host.ctx);
+  await waitFor(() => host.ctx.typert.local.get("promptProfiles/state") !== undefined, { label: "promptProfiles/state endpoint" });
+  const endpoints = host.ctx.typert.local.list().map((descriptor) => `${descriptor.namespace}/${descriptor.method}`);
+  const ours = endpoints.filter((endpoint) => endpoint.startsWith("promptProfiles/"));
+  assert.deepEqual(ours.sort(), [
+    "promptProfiles/defaultSet",
+    "promptProfiles/last",
+    "promptProfiles/preview",
+    "promptProfiles/profileCreate",
+    "promptProfiles/profileDelete",
+    "promptProfiles/profileUpdate",
+    "promptProfiles/sectionCreate",
+    "promptProfiles/sectionDelete",
+    "promptProfiles/sectionRename",
+    "promptProfiles/sectionUpdate",
+    "promptProfiles/state",
+  ], "exactly the 11 phase-2b endpoints are registered");
+  assert.ok(host.logs.some((entry) => entry.level === "info" && /remote: mounted/.test(entry.message) && entry.details?.methods === 11), "remote mount logged at info with 11 methods");
+  await fiber.dispose();
+  assert.equal(host.ctx.typert.local.get("promptProfiles/state"), undefined, "plugin disposal withdraws the strict endpoints");
+  await registryFiber.dispose();
+  await patch.cleanup();
+});
+
+/** @purpose Without a typert service the plugin still mounts (HTTP untouched) and the missing Remote surface is reported at error level. */
+test("real Cordis: no typert service degrades loudly (error log), HTTP routes unaffected", { skip: missingCordis }, async () => {
+  const host = stubHost(["connection", "settings", "configEditor"]);
+  await host.stubs.await();
+  const fiber = await mountPlugin(host.ctx);
+  assert.ok(host.routes.size >= 10, `HTTP routes still register without typert (got ${host.routes.size})`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const zero = host.logs.find((entry) => entry.level === "error" && /remote: mounted ZERO remote endpoints/.test(entry.message));
+  assert.ok(zero, "missing typert reported at error level after the settle window");
+  await fiber.dispose();
+});
+
+/** @purpose REAL gateway dispatch: strict codecs reject malformed input (missing/extra/wrong-type) without touching the patch; a valid call mutates it exactly like the HTTP path; business errors surface as Remote failures. */
+test("real gateway: strict rejection leaves the patch untouched; a valid Remote call matches the HTTP path byte-for-byte", { skip: missingCordis || missingTypert || missingGateway }, async () => {
+  const patchA = await makePatch();
+  const patchB = await makePatch();
+  const hostA = stubHost(["connection", "settings", "configEditor", "storageDomain", "workspaceRegistry", "agentPresets"], { patchPath: patchA.path });
+  const hostB = stubHost(["connection", "settings", "configEditor", "storageDomain", "workspaceRegistry", "agentPresets"], { patchPath: patchB.path });
+  await hostA.stubs.await();
+  await hostB.stubs.await();
+  const fiberA = await mountPlugin(hostA.ctx);
+  const registryFiber = hostB.ctx.plugin(TypertRegistry);
+  await registryFiber.await();
+  const gatewayFiber = hostB.ctx.plugin(TypertGatewayService, { websocketHeartbeatIntervalMs: 30000, streamInboxBytes: 1048576 });
+  await gatewayFiber.await();
+  const gateway = hostB.ctx.get("typertGateway");
+  assert.ok(gateway, "the real typertGateway service mounted");
+  const fiberB = await mountPlugin(hostB.ctx);
+  await waitFor(() => hostB.ctx.typert.local.get("promptProfiles/sectionCreate") !== undefined, { label: "remote contribution" });
+
+  // --- malformed input: rejected by the STRICT codecs, patch byte-identical.
+  const before = await readFile(patchB.path, "utf8");
+  const wrongArgs = await gateway.invokeRpc("promptProfiles/state", { args: {} });
+  assert.equal(wrongArgs.ok, false, "missing wire field input is a Remote failure");
+  assert.match(wrongArgs.error.message, /missing "input"/);
+  const missingField = await gateway.invokeRpc("promptProfiles/sectionUpdate", { args: { input: {} } });
+  assert.equal(missingField.ok, false, "missing required field rejected");
+  const extraField = await gateway.invokeRpc("promptProfiles/sectionDelete", { args: { input: { rowId: "x", bogus: 1 } } });
+  assert.equal(extraField.ok, false, "extra field rejected");
+  const wrongType = await gateway.invokeRpc("promptProfiles/sectionCreate", { args: { input: { title: 5 } } });
+  assert.equal(wrongType.ok, false, "wrong type rejected");
+  assert.match(wrongType.error.message, /boundary validation|input/i);
+  assert.equal(await readFile(patchB.path, "utf8"), before, "the patch file is byte-identical after every rejection");
+
+  // --- business error surfaces as a Remote failure, not a silent success.
+  const notRegistered = await gateway.invokeRpc("promptProfiles/profileUpdate", { args: { input: { rowId: "ghost", value: { title: "T" } } } });
+  assert.equal(notRegistered.ok, false, "unknown row surfaces as a Remote failure");
+  assert.match(notRegistered.error.message, /is not registered/);
+
+  // --- valid call: same fixture, deterministic token, identical outcome on
+  //     both transports (HTTP on A, Remote through the real gateway on B).
+  const original = tokenSource.next;
+  const fixture = { title: "Tone", body: "Be brief." };
+  // One FIXED token: each host has its own patch, so both creates accept the
+  // same id and the two results/patches are directly comparable.
+  tokenSource.next = () => "deadbe00";
+  try {
+    const http = await hostA.drive("/section/create", "POST", fixture);
+    assert.equal(http.status, 200, JSON.stringify(http.body));
+    const remote = await gateway.invokeRpc("promptProfiles/sectionCreate", { args: { input: fixture } });
+    assert.equal(remote.ok, true, JSON.stringify(remote));
+    const { ok, ...httpResult } = http.body;
+    assert.deepEqual(remote.value, httpResult, "the Remote result equals the HTTP result (minus the ok envelope)");
+    assert.equal(await readFile(patchB.path, "utf8"), await readFile(patchA.path, "utf8"), "both transports produce a byte-identical patch");
+
+    // read paths agree too
+    const httpState = await hostA.drive("/state");
+    const remoteState = await gateway.invokeRpc("promptProfiles/state", { args: { input: {} } });
+    assert.equal(remoteState.ok, true);
+    assert.deepEqual(remoteState.value.sections, httpState.body.sections);
+    assert.equal(remoteState.value.revision, httpState.body.revision);
+  } finally {
+    tokenSource.next = original;
+  }
+  await fiberA.dispose();
+  await fiberB.dispose();
+  await gatewayFiber.dispose();
+  await registryFiber.dispose();
+  await patchA.cleanup();
+  await patchB.cleanup();
+});
+// #endregion TEST_typertRemote

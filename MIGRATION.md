@@ -124,6 +124,16 @@ Acceptance: every UI behaviour currently covered by shim assertions is covered b
 | Rewrite loses hard-won behaviour (sealing, provenance, key candidates) | Behaviour frozen in Phase 1, tests ported first, no logic edits while moving files |
 | Client bundle regression while `dev:web` tooling is absent | `lib/` is built by our own `build.mjs`; verify the served bundle by URL after each build |
 
+## Deferred (agreed with the user: get it working first, then refactor)
+
+Phase 2b moved the operation logic out of `api.ts` into `operations.ts` **without changing its shape**, so the result is the same tangle in a new file (~1270 lines: hand-rolled payload validation, id juggling, read models and side effects interleaved). That was deliberate sequencing, not a design: the user asked to reach a working Remote path first.
+
+The refactor to do afterwards, as its own step:
+
+- **One declarative method table** as the single source of truth: per method a name, a zod args schema, a zod result schema, and a handler. From that table derive the Remote descriptors (collapsing `remote.ts`'s near-identical boilerplate into a generator), the argument validation (replacing the hand-rolled checks), and — until phase 2c removes it — the temporary HTTP routes.
+- **Split the domains**: `ids.ts` (rowId/toPatchId/findRow/new-id normalization), `errors.ts`, `validation.ts` (zod schemas), `state.ts` and `preview.ts` (read models), `sections.ts` and `profiles.ts` (write operations), leaving `operations.ts` as a ~100-line composition.
+- Then remove the `@ts-nocheck` headers from the surviving modules (phase 1, unchanged in intent).
+
 ## Out of scope
 
 - Out-of-tree Typert **generator** pipeline (pinned monorepo staging): hand-written invocations are enough and keep the plugin independently installable.
