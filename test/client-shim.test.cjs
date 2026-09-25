@@ -167,10 +167,14 @@ const cleanupEffects = () => { for (const fn of effectCleanups.splice(0, effectC
 // Record the same-origin fetches the client issues (e.g. POST /last) so the
 // exact request body can be asserted; every call resolves an empty JSON doc.
 const fetchCalls = [];
+// Headers per call, index-parallel with fetchCalls (kept separate so the many
+// existing [url, body] deep-equal assertions stay valid).
+const fetchHeaders = [];
 // The JSON body the next fetch resolves; a test may swap it to script a refresh.
 let fetchResponse = {};
 const fetchStub = (url, options) => {
   fetchCalls.push([url, options?.body ? JSON.parse(options.body) : null]);
+  fetchHeaders.push(options?.headers ?? {});
   const body = typeof fetchResponse === 'function' ? fetchResponse(url, options) : fetchResponse;
   return Promise.resolve({ ok: true, json: async () => body });
 };
@@ -345,10 +349,13 @@ assert.ok(!chipText.includes('▾'), 'the text glyph is gone (the chevron is an 
 // (`request`/`choose` call fetch/pick synchronously before their first await,
 // so these assertions need no await and cannot interleave with the harness.)
 fetchCalls.length = 0;
+fetchHeaders.length = 0;
 chip.options.inject('sid').pick({ profileId: 'light', cwd: '/work/repo' });
 assert.deepStrictEqual(plain(fetchCalls.at(-1)),
-  ['/__dsh-prompt-profiles/last', { cwd: '/work/repo', profileId: 'light' }],
-  'POST /last carries profileId + cwd when no workspaceId is known');
+  ['/api/__dsh-prompt-profiles/last', { cwd: '/work/repo', profileId: 'light' }],
+  'POST /last carries profileId + cwd when no workspaceId is known, under the /api/ route base');
+assert.equal(fetchHeaders.at(-1)['content-type'], 'application/json',
+  'writes declare JSON — the host CSRF layer requires content-type on every non-GET');
 const picks = [];
 stateQueue = [{
   profiles: [{ rowId: 'prompt-profile-light', patchId: 'profile-light', configId: 'light', title: 'Light', sections: [] }],
@@ -393,6 +400,7 @@ const noKeyMenu = chipNoKeys.children.find((child) => child.type === Menu);
 assert.equal(noKeyMenu.props.anchor.props.title, 'chooseNeedsWorkspace',
   'the blocked chip explains itself (hover title) instead of silently failing');
 fetchCalls.length = 0;
+fetchHeaders.length = 0;
 lastSetState = undefined;
 noKeyMenu.props.onSelect('light');
 assert.deepStrictEqual(plain(picksNoKey), [], 'with no workspaceId AND no cwd the choice is BLOCKED — no pick');
@@ -1932,6 +1940,8 @@ console.log('PASS complete mode: the chip marks a complete:true active mode and 
   // The chip subscribes, debounces, and re-reads /state.
   cleanupEffects();
   effectQueue.length = 0;
+  fetchCalls.length = 0;
+  fetchHeaders.length = 0;
   fetchResponse = initial;
   stateQueue = [initial];
   const chipEl = chip.component({ ...chipStyle });
@@ -1940,7 +1950,13 @@ console.log('PASS complete mode: the chip marks a complete:true active mode and 
   assert.equal(chipMenu.props.anchor.children[0].children[0], 'Light', 'before the change the chip shows the chosen profile');
   flushEffects(); // the initial load + the subscription
   await new Promise((resolve) => setTimeout(resolve, 5));
+  const getIndex = fetchCalls.findIndex(([url]) => String(url).includes('/state'));
+  assert.ok(getIndex >= 0, 'the initial load issues GET /state');
+  assert.equal(fetchHeaders[getIndex]['content-type'], undefined,
+    'GET carries NO content-type (only writes declare JSON)');
+  assert.equal(fetchCalls[getIndex][1], null, 'and no body');
   fetchCalls.length = 0;
+  fetchHeaders.length = 0;
   setStateLog = [];
   fetchResponse = afterDelete; // what the next /state read will return
 
