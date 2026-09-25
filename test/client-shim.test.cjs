@@ -154,12 +154,25 @@ let lastSetState;
 // Every committed state value, in order — needed where a handler sets several
 // pieces of state (the chip sets the optimistic choice, then closes the menu).
 let setStateLog = [];
+// Queued React effects plus their cleanups (see the React.useEffect fake).
+const effectQueue = [];
+const effectCleanups = [];
+const flushEffects = () => {
+  for (const fn of effectQueue.splice(0, effectQueue.length)) {
+    const cleanup = fn();
+    if (typeof cleanup === 'function') effectCleanups.push(cleanup);
+  }
+};
+const cleanupEffects = () => { for (const fn of effectCleanups.splice(0, effectCleanups.length)) fn(); };
 // Record the same-origin fetches the client issues (e.g. POST /last) so the
 // exact request body can be asserted; every call resolves an empty JSON doc.
 const fetchCalls = [];
+// The JSON body the next fetch resolves; a test may swap it to script a refresh.
+let fetchResponse = {};
 const fetchStub = (url, options) => {
   fetchCalls.push([url, options?.body ? JSON.parse(options.body) : null]);
-  return Promise.resolve({ ok: true, json: async () => ({}) });
+  const body = typeof fetchResponse === 'function' ? fetchResponse(url, options) : fetchResponse;
+  return Promise.resolve({ ok: true, json: async () => body });
 };
 const React = {
   createElement: (type, props, ...children) => {
@@ -177,7 +190,9 @@ const React = {
       setStateLog.push(lastSetState);
     }];
   },
-  useEffect: () => {},
+  // Effects are QUEUED, never run implicitly (existing renders stay side-effect
+  // free); a test that needs a subscription flushes them explicitly.
+  useEffect: (fn) => { effectQueue.push(fn); },
   useRef: (value) => ({ current: value }),
   useCallback: (fn) => fn,
 };
@@ -1895,7 +1910,69 @@ const unknownMode = chipWithMode('ghost-mode', [{ id: 'minimal', title: 'minimal
 assert.equal(unknownMode.warning, null, 'a preset missing from /state modes → no marker (never guess)');
 console.log('PASS complete mode: the chip marks a complete:true active mode and stays calm otherwise');
 // #endregion SECTION_completeMode
+// #region SECTION_chipRefresh Live-refresh of the chip after settings mutations.
+(async () => {
+  const light = { rowId: 'prompt-profile-light', patchId: 'profile-light', configId: 'light', title: 'Light', sections: [] };
+  const main = { rowId: 'prompt-profile-main', patchId: 'profile-main', configId: 'main', title: 'Main', sections: [] };
+  const initial = { profiles: [light, main], sections: [], builtinOrders: {}, default: 'main', lastByWorkspace: { '/work/repo': 'light' } };
+  const afterDelete = { ...initial, profiles: [main] };
+
+  // (a) The production settings flow fires the signal on a successful mutation.
+  const fired = [];
+  const unsubscribeSpy = H.subscribeProfilesChanged((seq) => fired.push(seq));
+  await loaded.makeMutationFlow({
+    api: { profileDelete: async () => {}, loadState: async () => afterDelete },
+    t: (k) => k, notify: () => {}, reload: async () => {},
+    getState: () => initial, onState: () => {}, onPending: () => {},
+    pollInterval: 1, pollDeadline: 20,
+  }).run({ mutate: async () => {}, optimistic: (p) => ({ ...p, profiles: [main] }), agree: (s) => s.profiles.length === 1 });
+  assert.ok(fired.length >= 1, 'a successful settings mutation fires the profiles-changed signal');
+  unsubscribeSpy();
+
+  // The chip subscribes, debounces, and re-reads /state.
+  cleanupEffects();
+  effectQueue.length = 0;
+  fetchResponse = initial;
+  stateQueue = [initial];
+  const chipEl = chip.component({ ...chipStyle });
+  stateQueue = [];
+  const chipMenu = chipEl.children.find((child) => child.type === Menu);
+  assert.equal(chipMenu.props.anchor.children[0].children[0], 'Light', 'before the change the chip shows the chosen profile');
+  flushEffects(); // the initial load + the subscription
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  fetchCalls.length = 0;
+  setStateLog = [];
+  fetchResponse = afterDelete; // what the next /state read will return
+
+  // (b) A burst of mutations collapses into ONE debounced re-read.
+  H.notifyProfilesChanged();
+  H.notifyProfilesChanged();
+  H.notifyProfilesChanged();
+  assert.equal(fetchCalls.filter(([url]) => String(url).includes('/state')).length, 0,
+    'no request is issued before the debounce elapses');
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  const stateFetches = fetchCalls.filter(([url]) => String(url).includes('/state'));
+  assert.equal(stateFetches.length, 1, 'a burst of mutations produces exactly ONE /state re-read');
+  assert.ok(setStateLog.some((s) => s && Array.isArray(s.profiles) && s.profiles.length === 1),
+    'the chip committed the fresh /state');
+  cleanupEffects();
+
+  // (c) Re-rendered from the refreshed state: no deleted name, no deleted item.
+  stateQueue = [afterDelete];
+  const refreshed = chip.component({ ...chipStyle });
+  stateQueue = [];
+  const refreshedMenu = refreshed.children.find((child) => child.type === Menu);
+  const label = refreshedMenu.props.anchor.children[0].children[0];
+  assert.equal(label, 'Main', 'the vanished id falls back to the default (host-resolver parity)');
+  assert.notEqual(label, 'Light', 'the deleted profile name is gone from the trigger');
+  assert.deepStrictEqual(plain(refreshedMenu.props.items).map((i) => i.id), ['none', 'main'],
+    'and the deleted profile is gone from the menu');
+  console.log('PASS chip refresh: settings mutations signal a debounced /state re-read; deleted profiles leave trigger and menu');
+})();
+// #endregion SECTION_chipRefresh
+
 // Final line LAST: the async flow sections above settle within a few ms (1 ms
-// poll intervals, capped tries), so a short timer keeps the output ordered
-// without ever being able to hang the file.
-setTimeout(() => console.log('ALL OK'), 50);
+// poll intervals, capped tries) and the chip-refresh section awaits a debounce
+// window, so this timer is comfortably longer than both without ever being able
+// to hang the file.
+setTimeout(() => console.log('ALL OK'), 400);
