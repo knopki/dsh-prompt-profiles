@@ -6,7 +6,7 @@
   "main": "lib/index.js",
   "exports": {
     ".": {
-      "types": "./lib/types/host/index.d.ts",
+      "types": "./lib/types/host/entrypoints/plugin.d.ts",
       "default": "./lib/index.js"
     },
     "./client": {
@@ -14,15 +14,15 @@
       "default": "./lib/client.js"
     },
     "./section": {
-      "types": "./lib/types/host/section.d.ts",
+      "types": "./lib/types/host/entrypoints/section.d.ts",
       "default": "./lib/section.js"
     },
     "./profile": {
-      "types": "./lib/types/host/profile.d.ts",
+      "types": "./lib/types/host/entrypoints/profile.d.ts",
       "default": "./lib/profile.js"
     },
     "./remote": {
-      "types": "./lib/types/host/remote.d.ts",
+      "types": "./lib/types/host/entrypoints/remote.d.ts",
       "default": "./lib/remote.js"
     },
     "./package.json": "./package.json"

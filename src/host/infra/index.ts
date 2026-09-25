@@ -6,7 +6,7 @@
  *   into the `HostPorts` bag the operation set consumes.
  * @scope
  *  - Re-exports of the adapters in this directory and `createHostPorts`.
- *  - NOT: use cases (host/operations.ts) or the port interfaces themselves
+ *  - NOT: use cases (host/application/) or the port interfaces themselves
  *    (host/application/ports.ts).
  * @invariants
  *  - Optional services are read at CALL time, so a late-appearing service is

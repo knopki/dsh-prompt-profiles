@@ -8,9 +8,6 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { builtinOrdersByName } from "../lib/infra/builtin-orders.js";
-import { retryingCache, sealSnapshot } from "../lib/infra/session-snapshots.js";
-import { resolveWorkspaceKeys } from "../lib/infra/workspace-adapter.js";
 import {
   buildSnapshot,
   interpolateSealedText,
@@ -19,7 +16,10 @@ import {
   planInsertion,
   resolveProfileId,
   sectionSkipReason,
-} from "../lib/resolve.js";
+} from "../lib/application/assembler.js";
+import { builtinOrdersByName } from "../lib/infra/builtin-orders.js";
+import { retryingCache, sealSnapshot } from "../lib/infra/session-snapshots.js";
+import { resolveWorkspaceKeys } from "../lib/infra/workspace-adapter.js";
 
 const orders = builtinOrdersByName();
 const sections = new Map([

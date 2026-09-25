@@ -14,7 +14,7 @@
  *    loading, the hardcoded fallback table, and the verified
  *    SECTION_ORDERS-key -> assembled-section-name mapping.
  *  - NOT: consuming the mirror (infra/loader-registry.ts), serving it
- *    (host/index.ts).
+ *    (host/entrypoints/plugin.ts).
  * @invariants
  *  - `BUILTIN_ORDERS` is deeply frozen; nothing may mutate the fallback table.
  *  - `parseBuiltinOrders` never executes source text; it only regex-scans it,

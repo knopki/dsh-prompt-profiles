@@ -7,8 +7,9 @@
  * @scope
  *  - The retrying storage open, the decide-once/persist-durable-first sealing
  *    policy, and the in-memory pin that survives a storage outage.
- *  - NOT: what a snapshot contains (domain + host/resolve.ts) or the record
- *    schema (host/index.ts owns the prompt_profiles domain definition).
+ *  - NOT: what a snapshot contains (domain + host/application/assembler.ts) or
+ *    the record schema (host/entrypoints/plugin.ts owns the prompt_profiles
+ *    domain definition).
  * @invariants
  *  - A persisted record is NEVER rebuilt from live configuration — an EMPTY
  *    one included, so a session that started without a profile stays

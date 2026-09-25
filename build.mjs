@@ -32,30 +32,31 @@ const hostBanner = {
 };
 
 // Phase 0 keeps one ESM entry per host module because the node:test suite
-// imports them by path (`../lib/<name>.js`). Only index/section/profile are
-// package exports.
+// imports them by path (`../lib/<name>.js`). Only index/section/profile/remote
+// are package exports; the entry names are explicit, so moving a source file
+// into host/application/ or host/entrypoints/ cannot move its built artifact.
 //
 // `splitting` is required, not cosmetic: without it each entry inlines its own
 // copy of builtin-orders/registry/writer/resolve, and the suite's identity
 // assertions (`assert.equal(result.orders, BUILTIN_ORDERS)`) fail because two
 // bundles hand out two distinct objects. Shared modules go to lib/chunk-*.js,
 // so every entry sees one instance — exactly like the pre-Phase-0 module graph.
-const hostEntries = [
-  "src/host/index.ts",
-  "src/host/domain/index.ts",
-  "src/host/infra/index.ts",
-  "src/host/infra/patch-writer.ts",
-  "src/host/infra/loader-registry.ts",
-  "src/host/infra/builtin-orders.ts",
-  "src/host/infra/session-snapshots.ts",
-  "src/host/infra/settings-adapter.ts",
-  "src/host/infra/workspace-adapter.ts",
-  "src/host/section.ts",
-  "src/host/profile.ts",
-  "src/host/operations.ts",
-  "src/host/remote.ts",
-  "src/host/resolve.ts",
-];
+const hostEntries = {
+  index: "src/host/entrypoints/plugin.ts",
+  section: "src/host/entrypoints/section.ts",
+  profile: "src/host/entrypoints/profile.ts",
+  remote: "src/host/entrypoints/remote.ts",
+  "application/index": "src/host/application/index.ts",
+  "application/assembler": "src/host/application/assembler.ts",
+  "domain/index": "src/host/domain/index.ts",
+  "infra/index": "src/host/infra/index.ts",
+  "infra/patch-writer": "src/host/infra/patch-writer.ts",
+  "infra/loader-registry": "src/host/infra/loader-registry.ts",
+  "infra/builtin-orders": "src/host/infra/builtin-orders.ts",
+  "infra/session-snapshots": "src/host/infra/session-snapshots.ts",
+  "infra/settings-adapter": "src/host/infra/settings-adapter.ts",
+  "infra/workspace-adapter": "src/host/infra/workspace-adapter.ts",
+};
 
 // Start from a clean lib/: esbuild names chunks by content hash, so a changed
 // source leaves the previous chunk-*.js files behind as unreferenced orphans

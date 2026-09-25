@@ -10,7 +10,7 @@
  *  - Identity constants, the METHOD_SPECS table over the domain payload
  *    schemas (src/host/domain/validation.ts), the memoized codec factories and
  *    buildRemoteDescriptors(face).
- *  - NOT: the host-side run adapters (src/host/remote.ts), argument business
+ *  - NOT: the host-side run adapters (src/host/entrypoints/remote.ts), argument business
  *    rules (domain/validation.ts payload variants), and the client mount/call
  *    helpers (src/client/remote.ts).
  * @invariants
@@ -102,7 +102,11 @@ export const METHOD_SPECS: readonly MethodSpec[] = [
 ];
 // #endregion CONST_methodSpecs
 
-/** Source-location file each face reports in its descriptors. */
+/**
+ * Source-location file each face reports in its descriptors. These strings are
+ * committed DATA (the locations the descriptors were first published from), not
+ * live source positions: they stay byte-identical across refactors.
+ */
 const FACE_FILES: Record<string, string> = {
   host: "src/host/remote.ts",
   client: "src/client/remote.ts",

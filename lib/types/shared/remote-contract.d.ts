@@ -10,7 +10,7 @@
  *  - Identity constants, the METHOD_SPECS table over the domain payload
  *    schemas (src/host/domain/validation.ts), the memoized codec factories and
  *    buildRemoteDescriptors(face).
- *  - NOT: the host-side run adapters (src/host/remote.ts), argument business
+ *  - NOT: the host-side run adapters (src/host/entrypoints/remote.ts), argument business
  *    rules (domain/validation.ts payload variants), and the client mount/call
  *    helpers (src/client/remote.ts).
  * @invariants

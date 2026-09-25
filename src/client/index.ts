@@ -4,7 +4,7 @@
  * @purpose Let users choose a prompt profile before a session's first turn and
  *   manage profiles/sections from a settings page.
  * @scope Client UI only: conversation chip + settings.section page; NOT the
- *   host operations (src/host/operations.ts).
+ *   host operations (src/host/application/).
  * @invariants Chip renders only on a blank session with profiles present;
  *   every data path goes through the Typert Remote surface (ctx.remote.$mount
  *   inside a Cordis effect + ctx.inject(['remote.promptProfiles']) — see

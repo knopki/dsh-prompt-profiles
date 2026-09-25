@@ -610,7 +610,7 @@ test("differential: 68 operation cases match the pre-refactor build byte for byt
     const baselineDomain = await import(pathToFileURL(join(baselineDir, "lib", "domain", "index.js")).href);
     const baselineOps = await import(pathToFileURL(join(baselineDir, "lib", "operations.js")).href);
     const currentDomain = await import(pathToFileURL(join(REPO, "lib", "domain", "index.js")).href);
-    const currentOps = await import(pathToFileURL(join(REPO, "lib", "operations.js")).href);
+    const currentOps = await import(pathToFileURL(join(REPO, "lib", "application", "index.js")).href);
     const currentInfra = await import(pathToFileURL(join(REPO, "lib", "infra", "index.js")).href);
 
     const oldSide = await loadSide(

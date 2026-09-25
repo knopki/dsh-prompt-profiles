@@ -23,9 +23,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createOperations, tokenSource } from "../lib/application/index.js";
 import { PromptProfilesPlugin } from "../lib/index.js";
 import { createHostPorts } from "../lib/infra/index.js";
-import { createOperations, tokenSource } from "../lib/operations.js";
 import * as profileRow from "../lib/profile.js";
 import * as sectionRow from "../lib/section.js";
 

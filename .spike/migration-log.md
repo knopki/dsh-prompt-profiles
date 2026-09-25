@@ -711,3 +711,118 @@ settings-writing cases; actual 38/30/18/13).
 - Two consecutive `pnpm run build` runs produce a byte-identical `lib/`
   (sha256 34efeadd6878284b50d76ddc389a8cb421ec724a654fb96db89797284a28db73 over
   the sorted file set).
+
+## Refactor B3 — application and entrypoints
+
+Goal: finish the host layering — the use cases into `src/host/application/`,
+the drivers into `src/host/entrypoints/`, `operations.ts` deleted, and every
+`@ts-nocheck` header removed from the host — with behaviour frozen.
+
+### Final host tree (26 files / 5291 lines)
+
+- `domain/` (7 files / 970) — unchanged: model 140, ids 180, errors 116,
+  ordering 149, refs 128, validation 237, barrel 20.
+- `application/` (8 files / 1816):
+  - `ports.ts` 207 — unchanged interfaces.
+  - `env.ts` 379 — NEW: the shared use-case environment (payload helpers
+    `titleOrDefault`/`explicitRowId`, `patchIdOf`, `sectionTargets`,
+    `pendingSectionIds`, `idsInUse`, `registeredConfigIds`, `resolveSection`/
+    `resolveProfile`, `profileSelectable`, settings replace and
+    `mutateWithRetry` on the one write lock, `deleteRow`, `mapDuplicate`,
+    `mapSettingsError`).
+  - `state.ts` 147 — the read model + the agent-preset mode scan.
+  - `preview.ts` 172 — the illustrative preview.
+  - `sections.ts` 197 — section create/update/delete/rename.
+  - `profiles.ts` 281 — profile create/update/delete, `defaultSet`, `last`,
+    reference cleanup and stale-key pruning.
+  - `assembler.ts` 353 — the sealing/assembly use case: `resolveProfileId`,
+    `isSubagent`/`isFork`, `interpolateSealedText`, `buildSnapshot` (all moved
+    from the deleted `resolve.ts`) plus `createPromptAssembler(ports)`, which
+    owns workspace keys, the once-per-session seal and the ordered splice.
+  - `index.ts` 80 — the `OperationSet` shape and `createOperations(ports)`.
+- `infra/` (7 files / 1596) — unchanged adapters (patch-writer 613,
+  builtin-orders 344, loader-registry 194, session-snapshots 165, index 135,
+  workspace-adapter 105, settings-adapter 40).
+- `entrypoints/` (4 files / 909):
+  - `plugin.ts` 401 — the Cordis plugin (config, `promptProfiles` service,
+    mirror, assembly listener, Remote mount, `prompt_profiles` domain).
+  - `remote.ts` 300 — the Typert Remote surface (thin mapping from
+    `METHOD_SPECS` to the use cases).
+  - `section.ts` 96 / `profile.ts` 112 — the loader rows.
+
+### Deleted
+
+- `src/host/operations.ts` (990) — its two halves now live in
+  `application/env.ts` + the four use-case modules; `createOperations` is
+  `application/index.ts`.
+- `src/host/resolve.ts` (195) — selection, interpolation and the snapshot
+  builder move to `application/assembler.ts`.
+- `src/host/index.ts` (474) → `entrypoints/plugin.ts`;
+  `src/host/remote.ts` (322) → `entrypoints/remote.ts`;
+  `src/host/section.ts` / `src/host/profile.ts` → `entrypoints/`.
+- The `deps.resolve` mutation is gone: `renameSection` receives the
+  environment and calls `env.resolveSection`.
+
+### Deviations (kept deliberately)
+
+- The task listed `state/preview/sections/profiles/assembler/index` as an
+  "e.g."; the shared use-case environment is a real eighth module
+  (`application/env.ts`), so `sections.ts` and `profiles.ts` can share
+  validation, row addressing and the settings/mutate path without a value
+  cycle through the factory.
+- `assembler.ts` takes its own small `AssemblerPorts` (registry, orders,
+  workspaces, snapshots, log) instead of the whole `HostPorts`: sealing needs
+  the per-fiber snapshot adapter the plugin builds inside the injection, not
+  the operation ports.
+- `src/shared/remote-contract.ts` still owns the method table and was NOT
+  retyped; `FACE_FILES.host` stays the committed string `src/host/remote.ts`
+  because the descriptor `sourceLocation.file` is published DATA, not a live
+  path.
+- Built entry names are stable (`lib/index.js`, `lib/section.js`,
+  `lib/profile.js`, `lib/remote.js`); `build.mjs` now names entries explicitly
+  and adds `lib/application/{index,assembler}.js` for the node suite, so the
+  package exports' `default` paths are unchanged (only the `types` paths moved
+  to `lib/types/host/entrypoints/*`).
+- Narrow casts used where the platform type genuinely is not expressible here
+  (each carries a one-line reason in the source): the hand-written Typert
+  contribution registers without the generated `model`
+  (`as unknown as TypertContribution`); the opened storage domain is cast to
+  the adapter's `StorageDomainHandle` (its table is generic per spec);
+  `system-prompt/assemble` is read through a local listener view because its
+  event type lives in a package this bundle does not depend on (the runtime
+  call stays `ctx.on`); `settings`, `workspaceRegistry`, `profileContext` and
+  `promptProfiles` are read through narrow local service views.
+- The two schemastery row/plugin `Config` schemas are marked `@internal`
+  (stripped from `lib/types`) because the volatile output type is not
+  declaration-portable (TS2883 without it). Their declaration surface is
+  unchanged: the pre-B3 `index.d.ts`/`profile.d.ts` did not declare `Config`
+  either (`section.d.ts` still does).
+
+### `@ts-nocheck`
+
+- REMOVED in this step: `operations.ts` (deleted), `index.ts`, `remote.ts`,
+  `section.ts`, `profile.ts`. Host `@ts-nocheck` count is now **zero**.
+- LEFT: `src/client/index.ts` and `src/client/remote.ts` — the client half is
+  Phase 3 (TSX rewrite), untouched by B3.
+
+### Behaviour gate (the differential bench)
+
+`test/differential.test.mjs` still replays its 68 cases against the pre-B2
+build (`git archive 4ce8c7c lib`) over the same fake host: status, result
+JSON, patch bytes, settings replace/mutate calls and diagnostics identical
+everywhere, zero diffs; the coverage pins hold (38/30/18/13). The bench now
+loads the current side from `lib/application/index.js`.
+
+### Sizes and verification
+
+- Host sources: 21 files / 4917 lines → 26 files / 5291 (application +1609,
+  entrypoints +909, operations −990, resolve −195; domain and infra
+  unchanged).
+- `lib/`: 86 files / 5 905 191 B → 91 files / 5 925 496 B; `lib/client.js`
+  byte-identical (914 628 B); `lib/index.js` 14 640 → 10 313 B.
+- `pnpm run typecheck` clean, `pnpm run lint` clean, `pnpm test` 125/125
+  (124 behavioural + the bench), `node --test test/smoke-cordis.test.mjs` 8/8,
+  `node test/client-shim.test.cjs` ALL OK, `pnpm run test:remote` 4/4.
+- Two consecutive `pnpm run build` runs produce a byte-identical `lib/`
+  (sha256 aba78a55dc98a4e9e18c5788c41179619bd46b1f3873697919c3da65861b5585 over
+  the sorted file set).

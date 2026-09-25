@@ -19,11 +19,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { isSeq, parseDocument } from "yaml";
+import { resolveProfileId } from "../lib/application/assembler.js";
+import { createOperations, tokenSource } from "../lib/application/index.js";
 import { errorMessage } from "../lib/domain/index.js";
 import { BUILTIN_ORDERS, builtinOrdersByName as nameBuiltinOrders } from "../lib/infra/builtin-orders.js";
 import { createHostPorts } from "../lib/infra/index.js";
-import { createOperations, tokenSource } from "../lib/operations.js";
-import { resolveProfileId } from "../lib/resolve.js";
 
 const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value) => value }] };
 
