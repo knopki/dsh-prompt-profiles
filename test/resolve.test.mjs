@@ -7,7 +7,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolveProfileId, buildSnapshot, planInsertion, isSubagent, isFork, sealSnapshot, retryingCache, interpolateSealedText } from "../lib/resolve.js";
+import { resolveProfileId, resolveWorkspaceKey, buildSnapshot, planInsertion, isSubagent, isFork, sealSnapshot, retryingCache, interpolateSealedText } from "../lib/resolve.js";
 import { builtinOrdersByName } from "../lib/builtin-orders.js";
 
 const orders = builtinOrdersByName();
@@ -40,6 +40,29 @@ test("workspace choice wins; dangling choice resets to live default then null", 
 });
 // #endregion TEST_resolution
 
+// #region TEST_workspaceKey
+/** @purpose /last and the assembler MUST derive the same key. */
+test("resolveWorkspaceKey prefers session membership, then the ASYNC path id, then cwd/workspaceId", async () => {
+  const registry = {
+    list: () => [{ id: "ws-session", sessionIds: ["s1"] }, { id: "ws-other", sessionIds: ["s2"] }],
+    resolveByPath: async (path) => (path === "/known" ? { id: "ws-known" } : undefined),
+  };
+  // 1. session membership (the id the client chip writes)
+  assert.equal(await resolveWorkspaceKey({ workspaceRegistry: registry, session: { id: "s2" }, cwd: "/known" }), "ws-other");
+  // 2. no membership → the awaited resolveByPath id (missing await was the bug)
+  assert.equal(await resolveWorkspaceKey({ workspaceRegistry: registry, session: { id: "s3" }, cwd: "/known" }), "ws-known");
+  // 3. path unknown to the registry → the raw cwd fallback key
+  assert.equal(await resolveWorkspaceKey({ workspaceRegistry: registry, session: { id: "s3" }, cwd: "/unknown" }), "/unknown");
+  // 4. no cwd → the explicit workspace id, else ""
+  assert.equal(await resolveWorkspaceKey({ workspaceRegistry: registry, workspaceId: "ws-client" }), "ws-client");
+  assert.equal(await resolveWorkspaceKey({}), "");
+  // 5. a throwing/absent registry degrades to cwd, never rejects
+  const boom = { list: () => { throw new Error("nope"); }, resolveByPath: async () => { throw new Error("nope"); } };
+  assert.equal(await resolveWorkspaceKey({ workspaceRegistry: boom, session: { id: "s1" }, cwd: "/x" }), "/x");
+  assert.equal(await resolveWorkspaceKey({ workspaceRegistry: { resolveByPath: () => ({ id: "ws-plain" }) }, cwd: "/x" }), "ws-plain");
+});
+// #endregion TEST_workspaceKey
+
 // #region TEST_scope
 /** @purpose Lock in the four main/child/fork classifications and empty/unknown/disabled section behavior. */
 test("scope matrix: root, ordinary child, seeded child, seeded root", () => {
@@ -65,6 +88,39 @@ test("snapshot copies text, keeps profile order, and excludes blank, unknown and
   sections.get("inherited").body = "Always";
 });
 // #endregion TEST_scope
+
+// #region TEST_skipDiagnostics
+/** @purpose buildSnapshot reports WHY each reference was dropped, and a throwing diagnostics sink cannot break sealing. */
+test("buildSnapshot reports skip reasons without letting the sink break sealing", () => {
+  const skips = [];
+  const snapshot = buildSnapshot({
+    profile: { id: "p", sections: [
+      { id: "main", order: 1, scope: "main-only" },
+      { id: "missing", order: 2 },
+      { id: "disabled", order: 3 },
+      { id: "blank", order: 4 },
+      { id: "inherited", order: 5 },
+    ] },
+    sectionsById: sections,
+    isSubagent: true,
+    onSkip: (skip) => skips.push(skip),
+    warn: () => {},
+  });
+  assert.deepEqual(snapshot.sections.map((row) => row.id), ["inherited"]);
+  assert.deepEqual(skips, [
+    { id: "main", reason: "scope main-only in a subagent" },
+    { id: "missing", reason: "section not found" },
+    { id: "disabled", reason: "section disabled" },
+    { id: "blank", reason: "empty body" },
+  ]);
+  // A throwing diagnostics sink never breaks the sealed decision.
+  const robust = buildSnapshot({
+    profile: { id: "p", sections: [{ id: "inherited", order: 1 }] },
+    sectionsById: sections, onSkip: () => { throw new Error("sink down"); }, warn: () => {},
+  });
+  assert.deepEqual(robust.sections.map((row) => row.id), ["inherited"]);
+});
+// #endregion TEST_skipDiagnostics
 
 // #region TEST_insertion
 /** @purpose Pin present-built-in anchors, absent anchors, stable ties, and low-order placement (BASE indices). */
@@ -259,6 +315,32 @@ test("storage outage pins the decision in memory; retry persists the SAME snapsh
   const third = await sealSnapshot({ sessionId: "s", memo, openTable, createSnapshot: build, warn: (m) => warnings.push(m) });
   assert.equal(third, first);
   assert.deepEqual(records.get("s"), first, "pinned snapshot persisted after recovery");
+});
+
+/** @purpose An EMPTY result is not a decision: it is re-evaluated so a chip choice made after an unprofiled turn still activates; an ACTIVE one stays pinned. */
+test("empty snapshots are not pinned; a profile chosen later activates once", async () => {
+  const records = new Map();
+  const memo = new Map();
+  const table = { get: (id) => records.get(id), put: async (id, snapshot) => { records.set(id, snapshot); } };
+  const openTable = async () => table;
+  let chosen = null;
+  const build = () => ({ profileId: chosen, sections: chosen ? [{ id: "x", title: "X", order: 1, text: "t" }] : [] });
+  // Pre-seed an EMPTY record — exactly what the live key mismatch persisted.
+  records.set("s", { profileId: null, sections: [] });
+  const empty = await sealSnapshot({ sessionId: "s", memo, openTable, createSnapshot: build });
+  assert.deepEqual(empty.sections, []);
+  assert.equal(memo.has("s"), false, "empty decisions are never memoized");
+  assert.deepEqual(records.get("s"), { profileId: null, sections: [] }, "empty record left as-is, not re-persisted");
+  // The chip now resolves: the NEXT assembly adopts the profile and persists it.
+  chosen = "light";
+  const active = await sealSnapshot({ sessionId: "s", memo, openTable, createSnapshot: build });
+  assert.equal(active.profileId, "light");
+  assert.equal(active.sections.length, 1);
+  assert.deepEqual(records.get("s"), active, "the active decision upgrades the empty record (durable-first)");
+  // An ACTIVE decision stays pinned even if the live choice changes.
+  chosen = "other";
+  const again = await sealSnapshot({ sessionId: "s", memo, openTable, createSnapshot: build });
+  assert.equal(again, active);
 });
 // #endregion TEST_pinnedDecision
 

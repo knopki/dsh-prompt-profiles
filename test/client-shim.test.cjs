@@ -131,6 +131,7 @@ const primitives = Object.fromEntries([
   Menu, MenuItemButton, Toast, Tooltip, SegmentedTabs, Checkbox, Modal,
   passthrough('Tag'), passthrough('Input'), passthrough('Button'),
   ...['IconChevronUpOutlineMedium', 'IconChevronDownOutlineMedium', 'IconChevronsUpDownOutlineRegular',
+    'IconChevronDownOutlineRegular',
     'IconChevronLeftOutlineMedium', 'IconEditOutlineRegular', 'IconCopyOutlineRegular',
     'IconTrashOutlineRegular', 'IconPlusOutlineRegular', 'IconSearchOutlineRegular',
     'IconWarningOutlineRegular'].map((name) => [name, passthrough(name)]),
@@ -150,6 +151,13 @@ assert.throws(() => Toast({ text: 'x' }), /not a function/, 'fake Toast is not c
 let loaded;
 let stateQueue = [];
 let lastSetState;
+// Record the same-origin fetches the client issues (e.g. POST /last) so the
+// exact request body can be asserted; every call resolves an empty JSON doc.
+const fetchCalls = [];
+const fetchStub = (url, options) => {
+  fetchCalls.push([url, options?.body ? JSON.parse(options.body) : null]);
+  return Promise.resolve({ ok: true, json: async () => ({}) });
+};
 const React = {
   createElement: (type, props, ...children) => {
     if (type && typeof type.validate === 'function') type.validate({ ...props, children: children[0] });
@@ -173,6 +181,7 @@ vm.runInNewContext(code, {
   window: { __ModuleLoader__: { load: (module) => { loaded = module.factory((name) => name === 'react' ? React : primitives); } } },
   // The create-flow poll needs real timers inside the vm realm.
   setTimeout, clearTimeout,
+  fetch: fetchStub,
 });
 // The client must never invoke Toast/Menu as plain functions (invalid hook call).
 assert.doesNotMatch(code, /(?<![a-zA-Z])Toast\s*\(/, 'client never calls Toast() as a function');
@@ -231,23 +240,92 @@ assert.equal(chip.component({ ...base, useSession: (select) => select({ blank: t
 // With loaded state on a blank session the chip renders — and its Menu element
 // must satisfy the installed contract (open/anchor/onClose/items) at creation.
 // Entries now carry the frozen /state id triple (rowId/patchId/configId).
+const chipStyle = {
+  sessionId: 'sid',
+  useSession: (select) => select({ blank: true }),
+  useWorkspaces: (select) => select({ items: [] }),
+  useSessions: (select) => select({ byId: { sid: { cwd: '/work/repo' } } }),
+  t: (key) => key,
+  pick: () => Promise.resolve({}),
+};
 stateQueue = [{
   profiles: [{ rowId: 'prompt-profile-light', patchId: 'profile-light', configId: 'light', title: 'Light', sections: [] }],
-  sections: [], builtinOrders: {}, default: null, lastByWorkspace: {},
+  sections: [], builtinOrders: {}, default: 'light', lastByWorkspace: {},
 }];
-const chipEl = chip.component({ ...base, useSession: (select) => select({ blank: true }) });
+const chipEl = chip.component({ ...chipStyle });
 stateQueue = [];
 assert.ok(chipEl, 'blank session with profiles renders the chip');
 const chipMenu = chipEl.children.find((child) => child.type === Menu);
 assert.ok(chipMenu, 'chip renders a Menu element');
 assert.equal(chipMenu.props.open, false, 'chip Menu is owner-controlled via open');
 assert.ok(chipMenu.props.anchor, 'chip Menu carries the anchor trigger');
-assert.equal(chipMenu.props.items[1].id, 'light', 'menu rows key on the unqualified configId');
-assert.equal(chipMenu.props.items.at(-1).disabled, true, 'manage row is the disabled data entry');
-assert.ok(chipMenu.props.items.some((entry) => entry.type === 'separator'), 'separator is a data entry, not an hr child');
-// The disabled Manage item must carry a localized explanation (dictionary check:
-// the disabled data row cannot carry a title, so the string lives in the locale).
-assert.ok(dict.en.manageUnavailable, 'manageUnavailable locale string registered');
+// Menu = `none` + the profiles ONLY: the "Manage profiles…" entry is deleted
+// (a third-party plugin has no Settings-navigation API in this version).
+assert.deepStrictEqual(plain(chipMenu.props.items), [
+  { id: 'none', label: 'none' },
+  { id: 'light', label: 'Light' },
+], 'menu items are exactly `none` + the profiles — no separator, no manage row');
+assert.ok(!chipMenu.props.items.some((entry) => entry.id === 'manage' || entry.type === 'separator'),
+  'no manage/separator data entries remain');
+assert.equal(chipMenu.props.selectedId, 'light');
+assert.equal(dict.en.manage, undefined, 'the `manage` locale string is gone');
+assert.equal(dict.en.manageUnavailable, undefined, 'the `manageUnavailable` locale string is gone');
+assert.equal(dict.en.profile, undefined, 'the `profile:` prefix locale string is gone');
+
+// Appearance: the anchor button mirrors the installed composer controls
+// (`conversation.input.permission` / model-selector `.trigger`).
+const chipButton = chipMenu.props.anchor.children[0];
+assert.equal(chipButton.type, 'button', 'anchor is a real button');
+assert.equal(chipButton.props.style.height, '28px', 'composer control height (h28)');
+assert.equal(chipButton.props.style.borderRadius, '24px', 'composer capsule radius (r24)');
+assert.equal(chipButton.props.style.padding, '0 4px 0 8px', 'composer control padding');
+assert.equal(chipButton.props.style.gap, '4px');
+assert.equal(chipButton.props.style.fontSize, '13px');
+assert.equal(chipButton.props.style.fontWeight, 500);
+assert.equal(chipButton.props.style.lineHeight, '20px');
+assert.equal(chipButton.props.style.display, 'inline-flex');
+assert.equal(chipButton.props.style.border, 'none');
+assert.equal(chipButton.props.style.background, 'transparent');
+assert.equal(chipButton.props.style.color, 'var(--dsw-alias-label-secondary)');
+const chipText = elementText(chipButton);
+assert.ok(chipText.includes('Light'), 'the button shows the profile NAME');
+assert.ok(!chipText.includes('profile:'), 'the "profile:" prefix is gone');
+assert.ok(!chipText.includes('▾'), 'the text glyph is replaced by the installed chevron icon');
+assert.ok(hasElement(chipButton, (n) => n.type === primitives.IconChevronDownOutlineRegular),
+  'the button ends with the installed chevron icon');
+
+// The choice must ALWAYS be delivered: workspaceId when known, else the cwd.
+// (`request`/`choose` call fetch/pick synchronously before their first await,
+// so these assertions need no await and cannot interleave with the harness.)
+fetchCalls.length = 0;
+chip.options.inject('sid').pick({ profileId: 'light', cwd: '/work/repo' });
+assert.deepStrictEqual(plain(fetchCalls.at(-1)),
+  ['/__dsh-prompt-profiles/last', { cwd: '/work/repo', profileId: 'light' }],
+  'POST /last carries profileId + cwd when no workspaceId is known');
+const picks = [];
+stateQueue = [{
+  profiles: [{ rowId: 'prompt-profile-light', patchId: 'profile-light', configId: 'light', title: 'Light', sections: [] }],
+  sections: [], builtinOrders: {}, default: 'light', lastByWorkspace: {},
+}];
+const chipWithPick = chip.component({ ...chipStyle, pick: (choice) => { picks.push(choice); return Promise.resolve({}); } });
+stateQueue = [];
+chipWithPick.children.find((child) => child.type === Menu).props.onSelect('light');
+assert.deepStrictEqual(plain(picks), [{ profileId: 'light', cwd: '/work/repo' }],
+  'choose ALWAYS delivers {profileId, cwd} even when workspaceId is unknown');
+const picksNoCwd = [];
+stateQueue = [{
+  profiles: [{ rowId: 'prompt-profile-light', patchId: 'profile-light', configId: 'light', title: 'Light', sections: [] }],
+  sections: [], builtinOrders: {}, default: 'light', lastByWorkspace: {},
+}];
+const chipNoKeys = chip.component({
+  ...chipStyle,
+  useSessions: (select) => select({ byId: {} }),
+  pick: (choice) => { picksNoCwd.push(choice); return Promise.resolve({}); },
+});
+stateQueue = [];
+chipNoKeys.children.find((child) => child.type === Menu).props.onSelect('light');
+assert.deepStrictEqual(plain(picksNoCwd), [{ profileId: 'light' }],
+  'with neither workspaceId nor cwd the choice still reaches the host (profileId)');
 console.log('PASS loader syntax; slot conversation.input.left / prompt-profile / order 10');
 console.log('PASS inject(sessionId) provides sessionId and pick callback');
 console.log('PASS component returns null for non-blank session and empty profile state');
@@ -494,15 +572,21 @@ assert.equal(H.uniqueSlug('light', { light: 1 }), 'light-2');
 assert.equal(H.uniqueSlug('light', new Set(['light', 'light-2'])), 'light-3');
 assert.match(H.uniqueSlug('Light tone!', new Set()), /^[a-z0-9][a-z0-9-]*$/);
 
-// planReorder — drag & drop order math. NO built-in +0.5 half-step anywhere.
-assert.deepStrictEqual(plain(H.planReorder([100, 200, 300], 0, 1)), [200, 250, 300], 'drop onto the next row: midpoint between the new neighbours');
-assert.deepStrictEqual(plain(H.planReorder([100, 200, 300], 2, 1)), [100, 150, 200], 'drop onto the previous row: midpoint');
-assert.deepStrictEqual(plain(H.planReorder([100, 200], 1, 0)), [99, 100], 'becoming first: upper - 1');
-assert.deepStrictEqual(plain(H.planReorder([100, 200], 0, 1)), [200, 201], 'becoming last: lower + 1');
-assert.deepStrictEqual(plain(H.planReorder([100, 300], 1, 0)), [99, 100], 'end move is ±1 even when a built-in shares the order (no +0.5 renormalisation)');
-assert.equal(H.planReorder([100, 200], 0, 0), null, 'dropping a row onto itself is a no-op');
-assert.equal(H.planReorder([100, 200], 3, 0), null, 'out-of-range source is a no-op');
-assert.equal(H.planReorder([100, 200], 0, 9), null, 'out-of-range target is a no-op');
+// insertionOrders — the DnD insertion boundaries. Built-in orders are valid
+// neighbours; broken refs carry no order; NO built-in +0.5 anywhere.
+const irows = [
+  { kind: 'builtin', order: 100 },
+  { kind: 'ours', order: 100 },
+  { kind: 'ours', order: 200 },
+];
+assert.deepStrictEqual(plain(H.insertionOrders(irows)), [99, 100, 150, 201],
+  'one boundary per gap (above first, between rows, below last); built-ins participate');
+assert.deepStrictEqual(plain(H.insertionOrders([{ kind: 'ours', order: 500 }])), [499, 501],
+  'a lone row still has a boundary above (±1) and below (±1)');
+assert.deepStrictEqual(plain(H.insertionOrders([{ kind: 'broken', order: 7 }, { kind: 'ours', order: 100 }])), [99, 99, 101],
+  'a broken ref carries no order, so both its gaps resolve against the next ordered row (before it)');
+assert.deepStrictEqual(plain(H.insertionOrders([])), [100], 'an empty outline has one boundary');
+assert.equal(typeof H.planReorder, 'undefined', 'the row-to-row helper is GONE with the row-target model');
 assert.equal(typeof H.effectiveOrder, 'undefined', 'the client +0.5 helper is GONE (equal orders are normal)');
 assert.equal(typeof H.planMove, 'undefined', 'the arrow-move helper is GONE with the ↑↓ buttons');
 
@@ -558,7 +642,7 @@ assert.deepStrictEqual(plain(plan).plan[0].names, ['persona-prefix', 'plan:polic
 assert.equal(plan.plan[1].text, 'Be brief.');
 assert.equal(plan.skipped[0].reason, 'scope subagents-only');
 assert.deepStrictEqual(plain(H.previewPlan({}).plan), [], 'tolerant to an empty response');
-console.log('PASS helpers: idOf, slugify/uniqueSlug, planReorder, outlineRows, filterSections, previewPlan, save gate, used-in/source');
+console.log('PASS helpers: idOf, slugify/uniqueSlug, insertionOrders, outlineRows, filterSections, previewPlan, save gate, used-in/source');
 // #endregion SECTION_helpers
 
 // #region SECTION_refs Section refs carry configId VERBATIM — never a doubled prefix.
@@ -786,9 +870,10 @@ const busyProfTab = loaded.components.ProfilesTab({
   drill: null, setDrill: noop, onOpenSection: noop, setState: noop, createFlow: fakeFlow,
 });
 stateQueue = [];
+const isButton = (n) => n.type === primitives.Button || n.type?.name === 'Button';
 const profIconButtons = [];
 walk(busyProfTab, (n) => {
-  if (n.type === 'button' && typeof n.props['aria-label'] === 'string'
+  if (isButton(n) && typeof n.props['aria-label'] === 'string'
     && ['duplicate', 'deleteLabel'].includes(n.props['aria-label'])) profIconButtons.push(n);
 });
 assert.ok(profIconButtons.length >= 2, 'profile row duplicate/delete icon buttons rendered');
@@ -810,7 +895,7 @@ const busyForm = loaded.components.SectionForm({
 stateQueue = [];
 const formIcons = [];
 walk(busyForm, (n) => {
-  if (n.type === 'button' && typeof n.props['aria-label'] === 'string'
+  if (isButton(n) && typeof n.props['aria-label'] === 'string'
     && ['duplicate', 'deleteLabel'].includes(n.props['aria-label'])) formIcons.push(n);
 });
 assert.ok(formIcons.length >= 2 && formIcons.every((b) => b.props.disabled === true),
@@ -839,19 +924,13 @@ stateQueue = [];
 assert.ok(hasElement(emptyForm, (n) => elementText(n).includes('titleRequired')),
   'an empty title shows the soft in-form hint (no server round-trip)');
 let backBtn = null;
-let backTip = null;
-walk(emptyForm, (n) => {
-  if (n.type === 'button' && n.props?.['aria-label'] === 'back') backBtn = n;
-  if (n.type === Tooltip && n.props?.label === 'back') backTip = n;
-});
-assert.ok(backBtn, 'back is a real button with an accessible label');
-assert.ok(backTip, 'back is wrapped in a Tooltip carrying the same label');
-assert.ok(backBtn.children.every((child) => typeof child !== 'string'),
-  'back renders the icon ONLY — no visible "← back" text');
+walk(emptyForm, (n) => { if (isButton(n) && n.props?.['aria-label'] === 'back') backBtn = n; });
+assert.ok(backBtn, 'back is the installed Button primitive with an accessible label');
+assert.equal(backBtn.props.variant, 'outline', 'back reuses the Add-section outline shape (no hand-rolled 18×18 box)');
+assert.equal(backBtn.props.size, 'sm', 'back uses the compact standard size');
+assert.ok(backBtn.props.icon, 'back keeps its icon via the Button `icon` slot');
+assert.equal(backBtn.props.title, 'back', 'back keeps its accessible title/aria-label');
 assert.ok(!elementText(emptyForm).includes('← back'), 'the old "← back" label is gone from the tree');
-assert.equal(backBtn.props.style.alignItems, 'center', 'back icon is vertically centred');
-assert.equal(backBtn.props.style.justifyContent, 'center');
-assert.equal(backBtn.props.style.lineHeight, 0);
 let titleInput = null;
 walk(emptyForm, (n) => {
   if (!titleInput && n.type === 'input' && n.props && 'onBlur' in n.props && n.props.value === '') titleInput = n;
@@ -921,32 +1000,82 @@ assert.ok(!hasElement(outlineEl, (n) => n.props?.['aria-label'] === '↑' || n.p
   'the ↑↓ move buttons are gone');
 assert.ok(!elementText(outlineEl).includes('+ 0.5') && !elementText(outlineEl).includes('collision'),
   'no +0.5 half-step is displayed (an order equal to a built-in is normal)');
-const dragRows = [];
-walk(outlineEl, (n) => { if (typeof n.props?.onDrop === 'function') dragRows.push(n); });
-assert.equal(dragRows.length, 2, 'both OUR rows are DnD drop targets');
-const rowA = dragRows.find((r) => hasElement(r, (n) => n.type === 'input' && n.props?.value === 100));
-const rowB = dragRows.find((r) => hasElement(r, (n) => n.type === 'input' && n.props?.value === 200));
+// The drop targets are the INSERTION BOUNDARIES (one per gap), so the built-in
+// row's own gaps are valid targets too — built-ins are never dragged.
+const dropZones = [];
+walk(outlineEl, (n) => { if (typeof n.props?.['data-drop-index'] === 'number') dropZones.push(n); });
+assert.deepStrictEqual(plain(dropZones.map((z) => z.props['data-drop-index'])), [0, 1, 2, 3],
+  'one insertion boundary per gap: above the first, between the three rows, below the last');
+assert.ok(dropZones.every((z) => typeof z.props.onDrop === 'function' && typeof z.props.onDragOver === 'function'),
+  'every boundary — including the gaps around the built-in row — is a drop target');
+const ourRows = [];
+walk(outlineEl, (n) => {
+  if (Array.isArray(n.children) && n.children.some((child) => child?.type === 'input' && child.props?.type === 'number')) ourRows.push(n);
+});
+const rowA = ourRows.find((r) => hasElement(r, (n) => n.type === 'input' && n.props?.value === 100));
+const rowB = ourRows.find((r) => hasElement(r, (n) => n.type === 'input' && n.props?.value === 200));
 assert.ok(rowA && rowB, 'each row keeps its numeric order INPUT');
 assert.ok(!hasElement(rowA, (n) => n.type === 'span' && Array.isArray(n.children) && n.children.includes('100')),
   'the order is NOT also rendered as duplicate text — the input replaces it');
 const handle = rowA.children.find((child) => child && child.props && child.props.draggable === true);
-assert.ok(handle, 'the row has a draggable grip');
+const handleB = rowB.children.find((child) => child && child.props && child.props.draggable === true);
+assert.ok(handle && handleB, 'each OUR row has a draggable grip');
 assert.equal(typeof handle.props.onDragStart, 'function', 'the grip starts the drag');
 assert.equal(typeof handle.props.onDragEnd, 'function', 'the grip ends the drag');
+// The built-in row has no draggable grip anywhere in its subtree.
+let builtinRow = null;
+walk(outlineEl, (n) => {
+  if (!builtinRow && Array.isArray(n.children)
+    && n.children.some((c) => c && c.type === 'span' && c.props?.flex === 1 && Array.isArray(c.children) && c.children.includes('plan:policy'))) {
+    builtinRow = n;
+  }
+});
+assert.ok(builtinRow, 'the built-in row renders');
+assert.ok(!hasElement(builtinRow, (n) => n.props?.draggable === true),
+  'built-in rows are NOT draggable — they are only drop neighbours');
 const idxInput = rowA.children.findIndex((child) => child?.type === 'input');
 const idxTitle = rowA.children.findIndex((child) => child?.type === 'span' && child.props?.style?.flex === 1);
 const idxScope = rowA.children.findIndex((child) => child?.type === Menu);
 const idxEdit = rowA.children.findIndex((child) => child?.type === Tooltip && child.props?.label === 'openInSectionTab');
 assert.ok(idxInput > -1 && idxTitle > idxInput, 'order input sits where the old text was, left of the title');
 assert.ok(idxScope > idxTitle && idxEdit > idxScope, 'scope is pinned right, immediately before the edit button');
-// Functional drop: dragging sec-a onto sec-b recomputes the orders.
+// No hand-sized buttons remain in the row: the icon actions are the Button
+// primitive and the scope selector's Menu anchor is the Button primitive too.
+const rowEditBtn = [];
+walk(outlineEl, (n) => { if (isButton(n) && n.props?.['aria-label'] === 'openInSectionTab') rowEditBtn.push(n); });
+assert.ok(rowEditBtn.length >= 2 && rowEditBtn.every((b) => b.props.variant === 'ghost' && b.props.size === 'sm'),
+  'row icon actions use the installed Button primitive (ghost/sm), not a hand-styled button');
+assert.equal(rowA.children[idxScope].props.anchor.type, primitives.Button,
+  'the scope selector anchor is the installed Button primitive');
+// Functional drop: below the LAST row (its neighbour is our sec-b, order 200).
 const dataTransfer = { effectAllowed: '', payload: '', setData(_k, v) { this.payload = v; }, getData() { return this.payload; } };
 handle.props.onDragStart({ dataTransfer });
 lastSetState = undefined;
-rowB.props.onDrop({ preventDefault() {}, dataTransfer });
+dropZones[3].props.onDrop({ preventDefault() {}, dataTransfer });
 assert.deepStrictEqual(plain(lastSetState).map((r) => [r.id, r.order]),
-  [['sec-a', 200], ['sec-b', 201]],
-  'dropping onto the next row applies the midpoint/±1 scheme with NO +0.5 (sec-b end bumped to +1)');
+  [['sec-a', 201], ['sec-b', 200]],
+  'drop below the last row lands +1 after its order (no +0.5)');
+// Functional drop: above the FIRST row, which is a BUILT-IN (order 100).
+handleB.props.onDragStart({ dataTransfer });
+lastSetState = undefined;
+dropZones[0].props.onDrop({ preventDefault() {}, dataTransfer });
+assert.deepStrictEqual(plain(lastSetState).map((r) => [r.id, r.order]),
+  [['sec-a', 100], ['sec-b', 99]],
+  'drop above the first (built-in) row lands -1 before it — built-in boundaries are usable');
+// Dropping into the dragged row's own two gaps is a no-op.
+handle.props.onDragStart({ dataTransfer });
+lastSetState = undefined;
+dropZones[1].props.onDrop({ preventDefault() {}, dataTransfer });
+assert.equal(lastSetState, null, 'dropping into the dragged row\u2019s own gap is a no-op');
+// "+ Add section": the icon is kept, the plus is removed from the TEXT.
+let addBtn = null;
+walk(outlineEl, (n) => { if (isButton(n) && Array.isArray(n.children) && n.children.includes('addSection')) addBtn = n; });
+assert.ok(addBtn, 'Add-section button rendered');
+assert.equal(addBtn.props.variant, 'outline');
+assert.ok(addBtn.props.icon, 'the + icon is kept via the Button `icon` slot');
+assert.ok(!addBtn.children.some((child) => typeof child === 'string' && child.includes('+')),
+  'the label is "Add section" with NO plus in the text');
+assert.ok(!elementText(outlineEl).includes('+ Add section'), 'the old "+ Add section" string is gone');
 console.log('PASS ui round 2: back icon, autosave gate/hint, used-in titles, source badge, DnD outline (no arrows, no +0.5)');
 // #endregion SECTION_uiRound2
 
@@ -971,7 +1100,7 @@ console.log('PASS ui round 2: back icon, autosave gate/hint, used-in titles, sou
   });
   stateQueue = [];
   let dupBtn = null;
-  walk(form, (n) => { if (n.type === 'button' && n.props?.['aria-label'] === 'duplicate') dupBtn = n; });
+  walk(form, (n) => { if (isButton(n) && n.props?.['aria-label'] === 'duplicate') dupBtn = n; });
   assert.ok(dupBtn, 'duplicate button rendered');
   await dupBtn.props.onClick();
   assert.deepStrictEqual(plain(drills), ['prompt-section-copy'],
@@ -988,6 +1117,7 @@ const realTokens = new Set([
   '--dsw-alias-bg-l1', '--dsw-alias-bg-l2', '--dsw-alias-bg-layer-1', '--dsw-alias-bg-layer-2',
   '--dsw-alias-border-l1', '--dsw-alias-border-l2', '--dsw-alias-border-l3',
   '--dsw-alias-separator-primary',
+  '--dsw-alias-interactive-bg-hover',
   '--dsw-alias-state-warning-primary', '--dsw-alias-state-warn-primary',
   '--dsw-alias-state-error-primary', '--dsw-alias-state-success-primary',
 ]);

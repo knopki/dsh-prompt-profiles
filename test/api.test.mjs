@@ -71,7 +71,7 @@ function fakeResponse() {
  *   return a `call(method, path, body)` driver. The fake settings records
  *   BOTH mutate ops and whole-object replace calls.
  */
-async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, entries, settings: settingsOverride } = {}) {
+async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, entries, workspaceRegistry, settings: settingsOverride } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "dsh-pp-api-"));
   const patchPath = join(dir, "cordis.patch.yml");
   await writeFile(patchPath, "# comment\n[]\n", { mode: 0o600 });
@@ -113,6 +113,9 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
     configEditor: entries ? { documentPath: patchPath, entries } : { documentPath: patchPath },
   };
   if (agentPresets !== undefined) ctx.agentPresets = agentPresets;
+  // Reflect-style optional accessor the host context exposes for
+  // workspaceRegistry (registerApi reads it without injecting it).
+  ctx.get = (name) => (name === "workspaceRegistry" ? workspaceRegistry : undefined);
   const dispose = registerApi(ctx, {
     service,
     log: {
@@ -761,6 +764,34 @@ test("explicit none stored by /last resolves to no profile even with a default s
       defaultId: "light", profileIds: ["light"],
     });
     assert.deepEqual(resolved, { profileId: null, reset: false });
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose /last contract: {workspaceId?, cwd?, profileId} — cwd resolves through the SAME key the assembler uses. */
+test("/last accepts cwd, resolves the workspace key, and rejects an addressless request", async () => {
+  const resolved = [];
+  const api = await harness({
+    profiles: [userProfile],
+    workspaceRegistry: {
+      list: () => [],
+      resolveByPath: async (path) => { resolved.push(path); return path === "/work" ? { id: "ws-resolved" } : undefined; },
+    },
+  });
+  try {
+    // cwd known to the registry → stored under the registry id.
+    assert.equal((await api.call("POST", "/last", { cwd: "/work", profileId: "light" })).status, 200);
+    assert.deepEqual(api.mutations.at(-1).ops[0].value, { "ws-resolved": "light" });
+    // cwd unknown → the raw cwd is the fallback key (what the assembler reads).
+    assert.equal((await api.call("POST", "/last", { cwd: "/loose", profileId: "light" })).status, 200);
+    assert.deepEqual(api.mutations.at(-1).ops[0].value, { "ws-resolved": "light", "/loose": "light" });
+    // explicit none is still an own-property empty string.
+    assert.equal((await api.call("POST", "/last", { cwd: "/work", profileId: "" })).status, 200);
+    assert.deepEqual(api.mutations.at(-1).ops[0].value, { "ws-resolved": "", "/loose": "light" });
+    assert.deepEqual(resolved, ["/work", "/loose", "/work"]);
+    // An unknown profile is a 404; an addressless request is a 400.
+    assert.equal((await api.call("POST", "/last", { cwd: "/work", profileId: "ghost" })).status, 404);
+    assert.equal((await api.call("POST", "/last", { profileId: "light" })).status, 400);
+    assert.equal((await api.call("POST", "/last", { workspaceId: 42, profileId: "light" })).status, 400);
   } finally { await api.cleanup(); }
 });
 // #endregion TEST_defaults

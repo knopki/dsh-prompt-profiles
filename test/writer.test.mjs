@@ -140,15 +140,36 @@ test("insertRow refuses unsafe ids (path separators, traversal, absolute)", asyn
 // #endregion TEST_guards
 
 // #region TEST_provenance
-/** @purpose Prove user (insert) vs bundle (bare override / absent) ownership. */
-test("provenance distinguishes user inserts, bundle overrides, and absent rows", async () => {
+/** @purpose Prove user (insert) vs bundle (bare override) vs unknown (absent) ownership, across every id form a caller may pass. */
+test("provenance distinguishes user inserts, bundle overrides, and unresolved rows", async () => {
   const { dir, patchPath } = await workspace();
   try {
     await insertRow({ patchPath, row: sectionRow("mine") });
     await disableRow({ patchPath, rowId: "bundle-row", name: "some-bundle-plugin" });
+    // Insert row reached by its unqualified id.
     assert.deepEqual(provenance({ patchPath, rowId: "prompt-section-mine" }), { source: "user", inserted: true, overridden: false });
+    // …by the QUALIFIED loader entry id (what the registry passes live).
+    assert.deepEqual(provenance({ patchPath, rowId: "include:prompt-section-mine" }), { source: "user", inserted: true, overridden: false });
+    // …by its config.id (bare token).
+    assert.deepEqual(provenance({ patchPath, rowId: "mine" }), { source: "user", inserted: true, overridden: false });
+    // A bare override row is bundle-provided (we only disabled/overrode it).
     assert.deepEqual(provenance({ patchPath, rowId: "bundle-row" }), { source: "bundle", inserted: false, overridden: true });
-    assert.deepEqual(provenance({ patchPath, rowId: "never-seen" }), { source: "bundle", inserted: false, overridden: false });
+    // A row this patch says nothing about cannot be proven: unknown.
+    assert.deepEqual(provenance({ patchPath, rowId: "never-seen" }), { source: "unknown", inserted: false, overridden: false });
+    assert.throws(() => provenance({ patchPath, rowId: "" }), /non-empty/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/** @purpose Old slug-scheme rows (row id prompt-section-<slug>, config.id <slug>) keep proving as user. */
+test("provenance matches old slug ids in either form", async () => {
+  const { dir, patchPath } = await workspace();
+  try {
+    await insertRow({ patchPath, row: sectionRow("old-slug") });
+    assert.deepEqual(provenance({ patchPath, rowId: "include:prompt-section-old-slug" }), { source: "user", inserted: true, overridden: false });
+    assert.deepEqual(provenance({ patchPath, rowId: "old-slug" }), { source: "user", inserted: true, overridden: false });
+    assert.deepEqual(provenance({ patchPath, rowId: "prompt-section-old-slug" }), { source: "user", inserted: true, overridden: false });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
