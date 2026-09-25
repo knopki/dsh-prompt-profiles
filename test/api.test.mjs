@@ -160,7 +160,7 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
 }
 
 const userSection = { id: "tone", title: "Tone", body: "Be brief.", rowId: "prompt-section-tone", source: "user" };
-const userProfile = { id: "light", title: "Light", sections: [{ id: "tone", order: 1050, scope: "inherit" }], rowId: "prompt-profile-light", source: "user" };
+const userProfile = { id: "light", title: "Light", sections: [{ id: "tone", order: 1050, scope: "inherit" }], rowId: "prompt-profile-light", source: "bundle" };
 // #endregion FUNC_harness
 
 // #region TEST_state
@@ -287,6 +287,39 @@ test("profile create and update reject unknown section refs symmetrically", asyn
   } finally { await api.cleanup(); }
 });
 // #endregion TEST_refConsistency
+
+/** @purpose H5: a pending ref counts ONLY for a real, live, config-bearing SECTION row; profile/foreign/disabled/config-less ids are 400. */
+test("pending section refs require a real live section row in the patch", async () => {
+  const api = await harness({ profiles: [], sections: [] });
+  try {
+    await writeFile(api.patchPath, [
+      "- insert:",
+      "    - id: prompt-section-pending",
+      `      name: "@knopki/dsh-prompt-profiles/section"`,
+      "      config: { id: prompt-section-pending, title: P, body: B }",
+      "- id: prompt-section-nocfg",
+      `  name: "@knopki/dsh-prompt-profiles/section"`,
+      "- id: prompt-section-disabled",
+      `  name: "@knopki/dsh-prompt-profiles/section"`,
+      "  disabled: true",
+      "  config: { id: prompt-section-disabled }",
+      "- id: prompt-section-foreign",
+      '  name: "some-other-plugin"',
+      "  config: { id: prompt-section-foreign }",
+      "- insert:",
+      "    - id: prompt-profile-other",
+      `      name: "@knopki/dsh-prompt-profiles/profile"`,
+      "      config: { id: other }",
+      "",
+    ].join("\n"));
+    const create = (id) => api.call("POST", "/profile/create", { title: "P", sections: [{ id, order: 1 }] });
+    assert.equal((await create("prompt-section-pending")).status, 200, "a real pending section row is accepted");
+    for (const bad of ["prompt-section-nocfg", "prompt-section-disabled", "prompt-section-foreign", "prompt-profile-other"]) {
+      const { status, body } = await create(bad);
+      assert.equal(status, 400, `${bad} must be rejected: ${JSON.stringify(body)}`);
+    }
+  } finally { await api.cleanup(); }
+});
 
 /** @purpose Create ids are short random tokens (SPEC §3/§5.5) carried IDENTICALLY by rowId and configId (full prefixed form), with no dependence on the title. */
 test("create mints one full id used as rowId and configId, unique across creates", async (t) => {
@@ -1054,6 +1087,48 @@ test("a profile deleted during /last key resolution is not resurrected", async (
     assert.match(body.error.message, /not registered/);
     assert.equal(api.mutations.length, 0, "no settings write for a deleted profile");
     assert.deepEqual(api.configValues().lastByWorkspace, {});
+  } finally { await api.cleanup(); }
+});
+/** @purpose B2 residual: a profile whose patch row is already gone must 404 even while the registry still lists it (HMR lag). */
+test("a profile removed from the patch but still in the registry cannot be chosen", async () => {
+  const stale = { ...userProfile, source: "user" }; // a patch-backed row that was removed
+  const api = await harness({ profiles: [stale] });
+  try {
+    const last = await api.call("POST", "/last", { workspaceId: "ws", profileId: "light" });
+    assert.equal(last.status, 404, JSON.stringify(last.body));
+    const def = await api.call("POST", "/default", { default: "light" });
+    assert.equal(def.status, 404, "default validates against the patch too");
+    assert.equal(api.mutations.length, 0, "no write for a vanished profile");
+    assert.deepEqual(api.configValues(), { defaultId: "", lastByWorkspace: {} });
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose B2: the patch row's state wins — a live user row is selectable, a disabled row and a foreign row are not. */
+test("patch rows decide profile validity (live row / disabled row / foreign row)", async () => {
+  const profiles = [
+    { id: "live", title: "Live", sections: [], rowId: "prompt-profile-live", source: "user" },
+    { id: "off", title: "Off", sections: [], rowId: "prompt-profile-off", source: "user" },
+    { id: "foreign", title: "Foreign", sections: [], rowId: "prompt-profile-foreign", source: "user" },
+  ];
+  const api = await harness({ profiles });
+  try {
+    await writeFile(api.patchPath, [
+      "- insert:",
+      "    - id: prompt-profile-live",
+      `      name: "@knopki/dsh-prompt-profiles/profile"`,
+      "      config: { id: live, sections: [] }",
+      "- id: prompt-profile-off",
+      `  name: "@knopki/dsh-prompt-profiles/profile"`,
+      "  disabled: true",
+      "  config: { id: off, sections: [] }",
+      "- id: prompt-profile-foreign",
+      '  name: "some-other-plugin"',
+      "  config: { id: foreign }",
+      "",
+    ].join("\n"));
+    assert.equal((await api.call("POST", "/last", { workspaceId: "w1", profileId: "live" })).status, 200);
+    assert.equal((await api.call("POST", "/last", { workspaceId: "w2", profileId: "off" })).status, 404);
+    assert.equal((await api.call("POST", "/last", { workspaceId: "w3", profileId: "foreign" })).status, 404);
   } finally { await api.cleanup(); }
 });
 // #endregion TEST_defaults
