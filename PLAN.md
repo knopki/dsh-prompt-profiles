@@ -71,8 +71,12 @@
 
 **Делаем:**
 1. Домен `prompt_profiles` (SPEC §5.4) через `ctx.storageDomain`.
-2. Слушатель waterfall `system-prompt/assemble` (SPEC §5.3): разрешение по цепочке
-   `lastByWorkspace → default → ничего`, `buildSnapshot`, запись снапшота при первом шаге сессии,
+2. Слушатель waterfall `system-prompt/assemble` (SPEC §5.3): строит `workspaceKeys` без дублей
+   (членство сессии → `resolveByPath(cwd)` → сырой cwd → workspaceId); выбирает по первому
+   присутствующему ключу `lastByWorkspace` (включая `''` = none; stale id сразу fallback на default),
+   default использует, только если ни одного кандидата нет. `/last` пишет под первым кандидатом,
+   а чтение сохраняет доступ к историческим UUID/path-ключам; path-ключи не удаляются только из-за отсутствия в реестре, поэтому работают и на поверхностях без workspace. Затем `buildSnapshot`, durable-first
+   запись снапшота при первом шаге сессии,
    вставка секций в `assembly.sections` с `prompt-profile:<id>` и порядком из профиля без смещения;
    одинаковые order допустимы, сортировка детерминирована по `(order, позиция в профиле)`, при
    равенстве с присутствующей built-in наша секция вставляется перед ней; фильтрация по `scope` (с учётом результата R5).
