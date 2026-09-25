@@ -1848,6 +1848,53 @@ for (const token of usedTokens) {
 }
 console.log(`PASS theme tokens: ${usedTokens.length} distinct --dsw-alias-* names all exist in the shipped token set`);
 // #endregion SECTION_tokens
+
+// #region SECTION_completeMode Chip warns when the active mode discards sections.
+// The active preset is read from the SAME session projection the composer's
+// preset control uses (`byId[sessionId].projectionValues.agentPreset`), and its
+// `complete` flag comes from /state `modes`.
+const chipWithMode = (agentPreset, modes) => {
+  stateQueue = [{
+    profiles: [{ rowId: 'prompt-profile-light', patchId: 'profile-light', configId: 'light', title: 'Light', sections: [] }],
+    sections: [], builtinOrders: {}, default: 'light', lastByWorkspace: {}, modes,
+  }];
+  const el = chip.component({
+    ...chipStyle,
+    useSessions: (select) => select({ byId: { sid: { cwd: '/work/repo', projectionValues: agentPreset === undefined ? {} : { agentPreset } } } }),
+  });
+  stateQueue = [];
+  const menu = el.children.find((child) => child.type === Menu);
+  const button = menu.props.anchor;
+  let warning = null;
+  walk(button, (n) => { if (n.props && n.props['data-complete-warning'] !== undefined) warning = n; });
+  return { button, warning };
+};
+// complete: true → a marker, a dimmed trigger and the warning tooltip.
+const completeCase = chipWithMode('minimal', [{ id: 'minimal', title: 'minimal', complete: true }]);
+assert.ok(completeCase.warning, 'a complete mode marks the chip with a warning indicator');
+assert.equal(completeCase.warning.props['data-complete-warning'], 'minimal', 'the marker names the active mode');
+assert.ok(completeCase.button.props.title.includes('completeModeWarning'),
+  'the hover hint uses the existing completeModeWarning string (no second sentence)');
+assert.ok(completeCase.button.props.title.includes('minimal'), 'and names the mode');
+assert.ok(completeCase.button.props.style.opacity < 1, 'the trigger is dimmed — the profile is inert');
+assert.equal(completeCase.button.children.length, 3, 'label + warning glyph + chevron');
+assert.equal(completeCase.button.children[0].type, 'span', 'the label stays first');
+assert.equal(completeCase.button.children[1].props['data-complete-warning'], 'minimal', 'the warning sits between label and chevron');
+assert.equal(completeCase.button.children[2].props['aria-hidden'], true, 'the chevron stays last and decorative');
+// complete: false → nothing extra.
+const normalCase = chipWithMode('default', [{ id: 'default', title: 'default', complete: false }]);
+assert.equal(normalCase.warning, null, 'a normal mode adds no warning indicator');
+assert.equal(normalCase.button.props.title, 'menuLabel', 'and the trigger keeps its ordinary tooltip');
+assert.deepStrictEqual(Object.keys(normalCase.button.props.style), ['maxWidth'], 'with no extra style');
+assert.equal(normalCase.button.children.length, 2, 'and just label + chevron');
+// No projection data / no matching mode → silent, no crash.
+const noPreset = chipWithMode(undefined, [{ id: 'minimal', title: 'minimal', complete: true }]);
+assert.equal(noPreset.warning, null, 'no active-preset projection → no marker (nothing to determine the mode from)');
+assert.equal(noPreset.button.children.length, 2, 'and the trigger is untouched');
+const unknownMode = chipWithMode('ghost-mode', [{ id: 'minimal', title: 'minimal', complete: true }]);
+assert.equal(unknownMode.warning, null, 'a preset missing from /state modes → no marker (never guess)');
+console.log('PASS complete mode: the chip marks a complete:true active mode and stays calm otherwise');
+// #endregion SECTION_completeMode
 // Final line LAST: the async flow sections above settle within a few ms (1 ms
 // poll intervals, capped tries), so a short timer keeps the output ordered
 // without ever being able to hang the file.

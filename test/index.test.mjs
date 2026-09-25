@@ -153,7 +153,7 @@ test("assembler resolves the workspace key, seals and logs the decision, and pin
   assert.equal(seal.details.selected, 1);
   assert.equal(seal.details.skipped, 0);
   assert.deepEqual(seal.details.sectionIds, ["cwd-note"]);
-  assert.deepEqual(resolveCalls, [], "path resolver not consulted when membership resolves");
+  assert.deepEqual(resolveCalls, ["/proj"], "the path is collected as a FALLBACK candidate even when membership wins");
   const inserted = logs.find((entry) => entry.message === "prompt-profiles inserted");
   assert.ok(inserted, "insertion order logged");
   assert.deepEqual(inserted.details.inserted, [{ name: "prompt-profile:cwd-note", index: 1 }]);
@@ -214,6 +214,45 @@ test("assembler falls back to the async resolveByPath workspace id", async () =>
   ], "the awaited path-resolved workspace id reaches resolveProfileId");
   const seal = logs.find((entry) => entry.message === "prompt-profiles seal");
   assert.equal(seal.details.workspaceKey, "ws-path");
+  assert.equal(seal.details.profileId, "light");
+});
+
+/** @purpose Compatibility: a legacy PATH-keyed choice reaches a session whose workspace resolves to a UUID (candidates walked in order). */
+test("assembler finds a legacy path-keyed choice under a UUID-resolved workspace", async () => {
+  const logs = [];
+  const records = new Map();
+  const table = { get: (id) => records.get(id), put: async (id, snapshot) => { records.set(id, snapshot); } };
+  let assemble = null;
+  // The choice exists ONLY under the old path key.
+  const config = { default: { get: () => "" }, lastByWorkspace: { get: () => ({ "/proj": "light" }) } };
+  const ctx = stubContext();
+  const service = new plugin(ctx, config);
+  service.registerSection({
+    rowId: "row-tone",
+    config: { id: "tone", title: { get: () => "Tone" }, body: { get: () => "Be brief." } },
+    source: "bundle",
+  });
+  service.registerProfile({
+    rowId: "row-light",
+    config: { id: "light", title: { get: () => "Light" }, sections: { get: () => [{ id: "tone", order: 1050 }] } },
+    source: "bundle",
+  });
+  const assembler = ctx.injections.find(({ deps }) => deps.includes("storageDomain"));
+  assembler.callback({
+    storageDomain: { open: async () => ({ table: () => table, close: async () => {} }) },
+    workspaceRegistry: { list: () => [], resolveByPath: async () => ({ id: "uuid-1" }) },
+    on: (event, handler) => { assemble = handler; return () => {}; },
+    effect: (thunk) => thunk(),
+    logger: { debug() {}, info: (message, details) => logs.push({ message, details }), warn() {} },
+  });
+  const state = { sections: [{ name: "tool:bash", text: "T" }], variables: {} };
+  await assemble(state, { agent: { session: { id: "s-path", header: { cwd: "/proj" } } } }, () => {});
+  assert.deepEqual(state.sections, [
+    { name: "tool:bash", text: "T" },
+    { name: "prompt-profile:tone", text: "Be brief.", interpolate: false },
+  ], "the legacy path choice still reaches the prompt");
+  const seal = logs.find((entry) => entry.message === "prompt-profiles seal");
+  assert.equal(seal.details.workspaceKey, "uuid-1", "diagnostics report the first (UUID) candidate");
   assert.equal(seal.details.profileId, "light");
 });
 

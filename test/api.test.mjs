@@ -833,6 +833,26 @@ test("default and last write through settings.mutate on the main row", async () 
   } finally { await api.cleanup(); }
 });
 
+/** @purpose (в) /last writes under the FIRST candidate: the UUID when the workspace resolves, the raw cwd when it does not. */
+test("/last writes under the UUID when resolvable and under the cwd otherwise", async () => {
+  const api = await harness({
+    profiles: [userProfile],
+    workspaceRegistry: {
+      list: () => [],
+      resolveByPath: async (path) => (path === "/desktop" ? { id: "2af243f0-f678-4ef8-9b9a-f79e4ea5bc75" } : undefined),
+    },
+  });
+  try {
+    assert.equal((await api.call("POST", "/last", { cwd: "/desktop", profileId: "light" })).status, 200);
+    assert.deepEqual(api.configValues().lastByWorkspace, { "2af243f0-f678-4ef8-9b9a-f79e4ea5bc75": "light" },
+      "new choices key on the workspace UUID, never on a path");
+    assert.equal((await api.call("POST", "/last", { cwd: "/loose", profileId: "light" })).status, 200);
+    assert.deepEqual(api.configValues().lastByWorkspace,
+      { "2af243f0-f678-4ef8-9b9a-f79e4ea5bc75": "light", "/loose": "light" },
+      "without a resolvable workspace the raw cwd remains the key");
+  } finally { await api.cleanup(); }
+});
+
 /** @purpose End-to-end (API value + resolver): explicit none beats a configured default. */
 test("explicit none stored by /last resolves to no profile even with a default set", async () => {
   const api = await harness({ profiles: [userProfile], defaultId: "light" });
