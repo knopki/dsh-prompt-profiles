@@ -124,16 +124,22 @@ Acceptance: every UI behaviour currently covered by shim assertions is covered b
 | Rewrite loses hard-won behaviour (sealing, provenance, key candidates) | Behaviour frozen in Phase 1, tests ported first, no logic edits while moving files |
 | Client bundle regression while `dev:web` tooling is absent | `lib/` is built by our own `build.mjs`; verify the served bundle by URL after each build |
 
-## Deferred (agreed with the user: get it working first, then refactor)
+## Refactor (user-specified: layered host, less commentary, tooling)
 
-Phase 2b moved the operation logic out of `api.ts` into `operations.ts` **without changing its shape**, so the result is the same tangle in a new file (~1270 lines: hand-rolled payload validation, id juggling, read models and side effects interleaved). That was deliberate sequencing, not a design: the user asked to reach a working Remote path first.
+Phase 2b moved the operation logic out of `api.ts` into `operations.ts` **without changing its shape**, so the result is the same tangle in a new file (~1270 lines: hand-rolled validation, id juggling, read models and side effects interleaved). That was deliberate sequencing — reach a working Remote path first — not a design. The refactor now follows the user's explicit requirements:
 
-The refactor to do afterwards, as its own step:
+- **Hexagonal / clean layering of the host**: `src/host/domain/` (pure rules — ids, row shapes, reference resolution, ordering, skip reasons; no I/O), `src/host/application/` (use cases — state, preview, section and profile operations, last/default), `src/host/infra/` (driven adapters — patch writer, loader registry, builtin-orders mirror, prompt_profiles storage, settings, workspace registry), `src/host/entrypoints/` (drivers — the Cordis plugin, the Typert Remote surface, the `./section` and `./profile` rows). Use cases depend on ports, never on adapters.
+- **Comment diet**: grace-lite contracts belong on a module's PUBLIC surface; internal helpers get block markup and `@purpose` only where intent is not obvious from code and types. No banal descriptions, no `@param`/`@returns` restating types, doc length proportional to the complexity documented, and no commentary that narrates history.
+- **One declarative method table** as the single source of truth (name + zod args/result + handler) from which Remote descriptors, argument validation and any future surface are derived.
+- **Biome** as the project linter/formatter, wired into `check`.
+- **Try TypeScript 7**; if it cannot build this project, stay on 6 and record exactly why.
+- Remove the `@ts-nocheck` headers from the surviving modules as they get typed.
+- **Try `zod/mini` (tree-shakable) for the client bundle size** (~760 KB of bundled zod today). The check is not only size: verify that the gateway/registry rely solely on the standard schema surface (`parse`/`safeParse`, `~standard`) and that a `zod/mini` schema satisfies it — then measure again. Not urgent.
 
-- **One declarative method table** as the single source of truth: per method a name, a zod args schema, a zod result schema, and a handler. From that table derive the Remote descriptors (collapsing `remote.ts`'s near-identical boilerplate into a generator), the argument validation (replacing the hand-rolled checks), and — until phase 2c removes it — the temporary HTTP routes.
-- **Split the domains**: `ids.ts` (rowId/toPatchId/findRow/new-id normalization), `errors.ts`, `validation.ts` (zod schemas), `state.ts` and `preview.ts` (read models), `sections.ts` and `profiles.ts` (write operations), leaving `operations.ts` as a ~100-line composition.
-- Then remove the `@ts-nocheck` headers from the surviving modules (phase 1, unchanged in intent).
-- **Try `zod/mini` (tree-shakable) to shrink the client bundle.** The spike measured ~760 KB because full zod is bundled into the browser bundle. `zod/mini` exists for exactly this, but the check is not only size: the strict codec contract requires real schema decoding, so verify that the gateway/registry only rely on the standard schema surface (`parse`/`safeParse`, `~standard`) and that a `zod/mini` schema satisfies it — then measure the bundle again. Not urgent; the working path comes first.
+
+## Later
+
+- Подумать, нельзя ли как-то в сессию пропечатывать профиль, чтоыб можно было обойтись без .dsh/storages/prompt_profiles.json
 
 ## Out of scope
 
