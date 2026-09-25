@@ -24,20 +24,44 @@ const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (val
 
 // #region FUNC_fakes
 /** @purpose Drive handlers without node sockets: minimal req/res stand-ins. */
-function fakeRequest(method, path, body) {
-  const listeners = {};
+function fakeRequest(method, path, body, headers = {}) {
   const payload = Buffer.from(body === undefined ? "" : JSON.stringify(body));
+  // Buffer delivery like a real readable stream: an async handler may reach
+  // `request.on("data")` only AFTER `deliver()` (e.g. behind an awaited
+  // `connection.admit`), and Node buffers until a 'data' listener attaches.
+  const dataListeners = [];
+  const endListeners = [];
+  let delivered = false;
+  let ended = false;
+  const flushData = () => {
+    if (delivered && payload.length > 0) for (const callback of dataListeners.splice(0)) callback(payload);
+  };
+  const flushEnd = () => {
+    if (ended) for (const callback of endListeners.splice(0)) callback();
+  };
   const request = {
     method,
     url: path,
-    headers: { "content-length": String(payload.length) },
-    on(event, callback) { listeners[event] = callback; return request; },
+    // Same defaults a browser/curl sends: JSON content-type on writes and a
+    // Host header. Tests override `content-type`/`origin` to probe CSRF checks.
+    headers: {
+      "content-length": String(payload.length),
+      host: "127.0.0.1:3080",
+      ...(method === "GET" ? {} : { "content-type": "application/json" }),
+      ...headers,
+    },
+    on(event, callback) {
+      if (event === "data") { dataListeners.push(callback); flushData(); }
+      else if (event === "end") { endListeners.push(callback); flushEnd(); }
+      return request;
+    },
     resume() {}, destroy() {},
-    emit(event, ...args) { listeners[event]?.(...args); },
   };
   request.deliver = () => {
-    if (payload.length > 0) request.emit("data", payload);
-    request.emit("end");
+    delivered = true;
+    ended = true;
+    flushData();
+    flushEnd();
   };
   return request;
 }
@@ -61,7 +85,7 @@ function fakeResponse() {
  *   return a `call(method, path, body)` driver. The fake settings records
  *   BOTH mutate ops and whole-object replace calls.
  */
-async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, agentPresetsGetThrows = false, entries, workspaceRegistry, builtinOrdersByName, beforeMutate, settingsRevision = true, configEditor: configEditorOverride, settings: settingsOverride } = {}) {
+async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, agentPresetsGetThrows = false, connection, connectionGetThrows = false, entries, workspaceRegistry, builtinOrdersByName, beforeMutate, settingsRevision = true, configEditor: configEditorOverride, settings: settingsOverride } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "dsh-pp-api-"));
   const patchPath = join(dir, "cordis.patch.yml");
   await writeFile(patchPath, "# comment\n[]\n", { mode: 0o600 });
@@ -134,11 +158,18 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
   // exactly like the live host, where a service is a `ctx.<name>` property
   // only when the plugin declares it in `inject`. No `ctx.agentPresets`
   // property is set, so a regression to property access empties `modes`.
+  // The live host HAS the connection service, so tests default to a permissive
+  // stub; `connection: null` emulates a host without it (registration warn).
+  const resolvedConnection = connection === undefined ? { admit: async () => ({ peer: { id: "peer" } }) } : connection;
   ctx.get = (name) => {
     if (name === "workspaceRegistry") return workspaceRegistry;
     if (name === "agentPresets") {
       if (agentPresetsGetThrows) throw new Error("agentPresets reflect exploded");
       return agentPresets;
+    }
+    if (name === "connection") {
+      if (connectionGetThrows) throw new Error("connection reflect exploded");
+      return resolvedConnection ?? undefined;
     }
     return undefined;
   };
@@ -152,10 +183,10 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
   return {
     patchPath, mutations, replacements, logs, dispose,
     configValues: () => ({ defaultId, lastByWorkspace }),
-    async call(method, path, body) {
+    async call(method, path, body, headers) {
       const handler = routes.get(`/__dsh-prompt-profiles${path.split("?")[0]}`);
       assert.ok(handler, `route ${path} registered`);
-      const request = fakeRequest(method, path, body);
+      const request = fakeRequest(method, path, body, headers);
       const { response, state } = fakeResponse();
       const pending = handler(request, response);
       request.deliver();
@@ -295,6 +326,111 @@ test("profile create and update reject unknown section refs symmetrically", asyn
   } finally { await api.cleanup(); }
 });
 // #endregion TEST_refConsistency
+
+// #region TEST_csrf
+/** @purpose CSRF hardening: every non-GET route requires a JSON content-type and, when Origin is present, a same-host Origin; GET is untouched. */
+test("non-GET routes refuse non-JSON content types and cross-origin requests", async () => {
+  const api = await harness({ sections: [userSection], profiles: [userProfile] });
+  try {
+    const before = await readFile(api.patchPath, "utf8");
+    // (а) an HTML form can only send urlencoded/text-plain.
+    const urlencoded = await api.call("POST", "/section/create", { title: "T", body: "B" },
+      { "content-type": "application/x-www-form-urlencoded" });
+    assert.equal(urlencoded.status, 415, JSON.stringify(urlencoded.body));
+    assert.match(urlencoded.body.error.message, /content-type must be application\/json/);
+    // (б) text/plain carrying VALID JSON: the enctype="text/plain" form trick.
+    const plain = await api.call("POST", "/profile/update",
+      { rowId: "prompt-profile-light", value: { title: "X", sections: [] } },
+      { "content-type": "text/plain" });
+    assert.equal(plain.status, 415, JSON.stringify(plain.body));
+    assert.equal(api.mutations.length, 0, "no settings write");
+    assert.equal(await readFile(api.patchPath, "utf8"), before, "patch byte-identical — no mutation");
+    // (в) a foreign Origin is refused even with a JSON content-type.
+    const foreign = await api.call("POST", "/section/create", { title: "T", body: "B" },
+      { origin: "http://evil.example" });
+    assert.equal(foreign.status, 403, JSON.stringify(foreign.body));
+    assert.match(foreign.body.error.message, /cross-origin/);
+    // (г) the SAME Origin as Host is fine.
+    const same = await api.call("POST", "/section/create", { title: "T", body: "B" },
+      { origin: "http://127.0.0.1:3080" });
+    assert.equal(same.status, 200, JSON.stringify(same.body));
+    // (д) no Origin header at all (curl/tests) is fine.
+    const none = await api.call("POST", "/section/create", { title: "T", body: "B" });
+    assert.equal(none.status, 200, JSON.stringify(none.body));
+    // (е) GET without any content-type is untouched.
+    assert.equal((await api.call("GET", "/state")).status, 200);
+    // Errors carry ONLY a message — never the request body.
+    assert.deepEqual(Object.keys(urlencoded.body), ["error"]);
+    assert.deepEqual(Object.keys(urlencoded.body.error), ["message"]);
+  } finally { await api.cleanup(); }
+});
+// #endregion TEST_csrf
+
+// #region TEST_auth
+/** @purpose Platform auth: every route (GET included) goes through the connection.admit fence; fail-closed on a throwing admit; absent service falls back to CSRF-only with a registration warn. */
+test("connection.admit fences every route and fails closed", async () => {
+  // (а) 401 + byte-identical patch.
+  const denied401 = await harness({
+    sections: [userSection], profiles: [userProfile],
+    connection: { admit: async () => ({ rejection: 401 }) },
+  });
+  try {
+    const before = await readFile(denied401.patchPath, "utf8");
+    const { status, body } = await denied401.call("POST", "/section/create", { title: "T", body: "B" });
+    assert.equal(status, 401, JSON.stringify(body));
+    assert.match(body.error.message, /web authentication required/);
+    assert.equal(denied401.mutations.length, 0, "handler never ran");
+    assert.equal(await readFile(denied401.patchPath, "utf8"), before, "patch byte-identical");
+    // (е) GET is protected too — reading state is data.
+    assert.equal((await denied401.call("GET", "/state")).status, 401);
+  } finally { await denied401.cleanup(); }
+
+  // (б) 403 with no mutation.
+  const denied403 = await harness({ connection: { admit: async () => ({ rejection: 403 }) } });
+  try {
+    const { status, body } = await denied403.call("POST", "/profile/update", {
+      rowId: "prompt-profile-light", value: { title: "X", sections: [] },
+    });
+    assert.equal(status, 403, JSON.stringify(body));
+    assert.match(body.error.message, /origin is not trusted/);
+    assert.equal(await readFile(denied403.patchPath, "utf8"), "# comment\n[]\n", "no row written");
+    assert.equal((await denied403.call("GET", "/preview?profileId=light")).status, 403);
+  } finally { await denied403.cleanup(); }
+
+  // (в) an admitted peer keeps the normal flow.
+  const allowed = await harness({
+    sections: [userSection], profiles: [userProfile],
+    connection: { admit: async () => ({ peer: { id: "peer-1" } }) },
+  });
+  try {
+    assert.equal((await allowed.call("POST", "/section/create", { title: "T", body: "B" })).status, 200);
+    assert.equal((await allowed.call("GET", "/state")).status, 200);
+  } finally { await allowed.cleanup(); }
+
+  // (г) a throwing admit refuses (fail closed) and warns.
+  const broke = await harness({
+    connection: { admit: async () => { throw new Error("admit exploded"); } },
+  });
+  try {
+    const { status, body } = await broke.call("POST", "/section/create", { title: "T", body: "B" });
+    assert.equal(status, 401, JSON.stringify(body));
+    assert.match(body.error.message, /web authentication required/);
+    assert.ok(broke.logs.some((entry) => /connection\.admit threw/.test(entry.message)), "fail-closed warn logged");
+    assert.equal(broke.mutations.length, 0);
+  } finally { await broke.cleanup(); }
+
+  // (д) no connection service: previous behaviour + ONE registration warn.
+  const none = await harness({ connection: null, sections: [userSection], profiles: [userProfile] });
+  try {
+    const warnCount = none.logs.filter((entry) => /WITHOUT platform authentication/.test(entry.message)).length;
+    assert.equal(warnCount, 1, "exactly one registration warning");
+    // The CSRF layer still applies, and a normal JSON call still works.
+    assert.equal((await none.call("POST", "/section/create", { title: "T", body: "B" }, { "content-type": "text/plain" })).status, 415);
+    assert.equal((await none.call("POST", "/section/create", { title: "T", body: "B" })).status, 200);
+    assert.equal((await none.call("GET", "/state")).status, 200);
+  } finally { await none.cleanup(); }
+});
+// #endregion TEST_auth
 
 /** @purpose H5: a pending ref counts ONLY for a real, live, config-bearing SECTION row; profile/foreign/disabled/config-less ids are 400. */
 test("pending section refs require a real live section row in the patch", async () => {
