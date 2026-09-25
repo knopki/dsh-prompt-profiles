@@ -133,6 +133,7 @@ The refactor to do afterwards, as its own step:
 - **One declarative method table** as the single source of truth: per method a name, a zod args schema, a zod result schema, and a handler. From that table derive the Remote descriptors (collapsing `remote.ts`'s near-identical boilerplate into a generator), the argument validation (replacing the hand-rolled checks), and — until phase 2c removes it — the temporary HTTP routes.
 - **Split the domains**: `ids.ts` (rowId/toPatchId/findRow/new-id normalization), `errors.ts`, `validation.ts` (zod schemas), `state.ts` and `preview.ts` (read models), `sections.ts` and `profiles.ts` (write operations), leaving `operations.ts` as a ~100-line composition.
 - Then remove the `@ts-nocheck` headers from the surviving modules (phase 1, unchanged in intent).
+- **Try `zod/mini` (tree-shakable) to shrink the client bundle.** The spike measured ~760 KB because full zod is bundled into the browser bundle. `zod/mini` exists for exactly this, but the check is not only size: the strict codec contract requires real schema decoding, so verify that the gateway/registry only rely on the standard schema surface (`parse`/`safeParse`, `~standard`) and that a `zod/mini` schema satisfies it — then measure the bundle again. Not urgent; the working path comes first.
 
 ## Out of scope
 
