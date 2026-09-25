@@ -47,7 +47,7 @@ function stubContext() {
 test("module evaluates; the domain spec is the Zod protocol dsh-storage-domain parses", () => {
   const table = promptProfilesDomain.tables.sessions;
   assert.equal(typeof table.valueSchema.parse, "function", "records reopen through valueSchema.parse (Zod)");
-  const record = { profileId: null, sections: [{ id: "x", title: "X", order: 1050.5, text: "final text" }] };
+  const record = { profileId: null, sections: [{ id: "x", title: "X", order: 1050, text: "final text" }] };
   assert.deepEqual(table.valueSchema.parse(record), record);
   const withProfile = { profileId: "light", sections: [] };
   assert.deepEqual(table.valueSchema.parse(withProfile), withProfile);

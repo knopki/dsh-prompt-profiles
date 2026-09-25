@@ -850,13 +850,15 @@ test("state modes mark complete presets and degrade without agentPresets", async
 // #endregion TEST_modes
 
 // #region TEST_preview
-/** @purpose preview orders our sections, interpolates {{cwd}}, and reports skipped refs with reasons. */
+/** @purpose preview orders our sections, interpolates {{cwd}}, reports the profile's order verbatim (no +0.5), and reports skipped refs with reasons. */
 test("preview renders ordered sections with interpolation and skip reasons", async () => {
   const blank = { id: "blank", title: "Blank", body: " ", rowId: "prompt-section-blank", source: "user" };
   const cwdSection = { id: "cwd-note", title: "Cwd", body: "Work in {{cwd}} with {{model}}.", rowId: "prompt-section-cwd-note", source: "user" };
   const profile = {
     id: "light", title: "Light",
     sections: [
+      // 1000 EQUALS the built-in tool:bash order: the preview must report 1000,
+      // not a shifted 1000.5.
       { id: "cwd-note", order: 1000, scope: "inherit" },
       { id: "missing", order: 1100 },
       { id: "blank", order: 1200 },
@@ -871,7 +873,7 @@ test("preview renders ordered sections with interpolation and skip reasons", asy
     assert.equal(status, 200);
     assert.equal(body.title, "Light");
     assert.deepEqual(body.sections, [{
-      id: "cwd-note", title: "Cwd", order: 1000.5, scope: "inherit",
+      id: "cwd-note", title: "Cwd", order: 1000, scope: "inherit",
       text: `Work in ${process.cwd()} with {{model}}.`, emits: true,
     }]);
     assert.deepEqual(body.skipped, [

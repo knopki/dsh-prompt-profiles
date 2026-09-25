@@ -149,13 +149,20 @@ assert.throws(() => Toast({ text: 'x' }), /not a function/, 'fake Toast is not c
 
 let loaded;
 let stateQueue = [];
+let lastSetState;
 const React = {
   createElement: (type, props, ...children) => {
     if (type && typeof type.validate === 'function') type.validate({ ...props, children: children[0] });
     return { type, props: props || {}, children };
   },
   Fragment: Symbol('Fragment'),
-  useState: (value) => [stateQueue.length ? stateQueue.shift() : (typeof value === 'function' ? value() : value), () => {}],
+  // The setter records the value it WOULD commit (this shim never re-renders),
+  // so state-driven handlers — DnD reorder, gated autosave — can be asserted on
+  // their real output instead of only on their wiring.
+  useState: (value) => {
+    const initial = stateQueue.length ? stateQueue.shift() : (typeof value === 'function' ? value() : value);
+    return [initial, (next) => { lastSetState = typeof next === 'function' ? next(initial) : next; }];
+  },
   useEffect: () => {},
   useRef: (value) => ({ current: value }),
   useCallback: (fn) => fn,
@@ -262,6 +269,14 @@ assert.equal(typeof injected.api.preview, 'function');
 const sectionEl = settings.component({ t: (key) => key, api: injected });
 assert.equal(sectionEl.type, 'div', 'settings page renders a loading placeholder (with the toast banner slot) before state arrives');
 assert.ok(sectionEl.children.some((child) => child && child.type === 'p'), 'loading placeholder is the paragraph');
+// The host mounts this section as the only child of client-ui-settings-general's
+// own `.options` scroll panel, which has no scrollbar gutter. OUR root must be
+// the scroller with a stable gutter so list ↔ drill height changes do not toggle
+// the panel scrollbar (the "profile → back" jolt).
+assert.equal(sectionEl.props.style.scrollbarGutter, 'stable', 'page reserves the scrollbar gutter (scrollbar-gutter: stable)');
+assert.equal(sectionEl.props.style.overflowY, 'auto', 'our page root is the scroller (not the host panel)');
+assert.equal(sectionEl.props.style.height, '100%', 'page fills the host options panel so the host never overflows');
+assert.equal(sectionEl.props.style.boxSizing, 'border-box');
 console.log('PASS settings.section / prompt-profiles / order 25 / label + api inject + loading render');
 // #endregion SECTION_settings
 
@@ -479,28 +494,45 @@ assert.equal(H.uniqueSlug('light', { light: 1 }), 'light-2');
 assert.equal(H.uniqueSlug('light', new Set(['light', 'light-2'])), 'light-3');
 assert.match(H.uniqueSlug('Light tone!', new Set()), /^[a-z0-9][a-z0-9-]*$/);
 
-// effectiveOrder + planMove
-assert.equal(H.effectiveOrder(500, { plan: 500 }), 500.5, 'builtin collision lands +0.5');
-assert.equal(H.effectiveOrder(501, { plan: 500 }), 501);
-assert.deepStrictEqual(plain(H.planMove([100, 200, 300], 2, 'up')), [100, 150, 200], 'midpoint between new neighbours, new arrangement');
-assert.deepStrictEqual(plain(H.planMove([100, 200, 300], 0, 'down')), [200, 250, 300]);
-assert.equal(H.planMove([100, 200], 0, 'up'), null, 'cannot move first row up');
-assert.equal(H.planMove([100, 200], 1, 'down'), null, 'cannot move last row down');
-assert.deepStrictEqual(plain(H.planMove([100, 200], 1, 'up')), [99, 100], 'becoming first: -1');
-assert.deepStrictEqual(plain(H.planMove([100, 200], 0, 'down')), [200, 201], 'becoming last: +1');
-assert.deepStrictEqual(plain(H.planMove([100, 300], 1, 'up', { b: 99 })), [99.5, 100], 'end move colliding with a builtin gets +0.5 (renormalisation)');
-assert.deepStrictEqual(plain(H.planMove([100, 300], 0, 'down', { b: 301 })), [300, 301.5], 'down-end collision also renormalises +0.5');
+// planReorder — drag & drop order math. NO built-in +0.5 half-step anywhere.
+assert.deepStrictEqual(plain(H.planReorder([100, 200, 300], 0, 1)), [200, 250, 300], 'drop onto the next row: midpoint between the new neighbours');
+assert.deepStrictEqual(plain(H.planReorder([100, 200, 300], 2, 1)), [100, 150, 200], 'drop onto the previous row: midpoint');
+assert.deepStrictEqual(plain(H.planReorder([100, 200], 1, 0)), [99, 100], 'becoming first: upper - 1');
+assert.deepStrictEqual(plain(H.planReorder([100, 200], 0, 1)), [200, 201], 'becoming last: lower + 1');
+assert.deepStrictEqual(plain(H.planReorder([100, 300], 1, 0)), [99, 100], 'end move is ±1 even when a built-in shares the order (no +0.5 renormalisation)');
+assert.equal(H.planReorder([100, 200], 0, 0), null, 'dropping a row onto itself is a no-op');
+assert.equal(H.planReorder([100, 200], 3, 0), null, 'out-of-range source is a no-op');
+assert.equal(H.planReorder([100, 200], 0, 9), null, 'out-of-range target is a no-op');
+assert.equal(typeof H.effectiveOrder, 'undefined', 'the client +0.5 helper is GONE (equal orders are normal)');
+assert.equal(typeof H.planMove, 'undefined', 'the arrow-move helper is GONE with the ↑↓ buttons');
 
-// outlineRows
+// outlineRows — raw persisted orders, no half-step and no collision flag
 const outline = H.outlineRows(
   { sections: [{ id: 'x', order: 500, scope: 'inherit' }, { id: 'gone', order: 10, scope: 'inherit' }] },
   { x: { id: 'x', title: 'X', body: 'hi' } },
   { 'persona-prefix': 0, 'plan:policy': 500 });
 assert.deepStrictEqual(plain(outline).map((r) => r.kind), ['builtin', 'builtin', 'ours', 'broken']);
-assert.equal(outline[2].displayOrder, 500.5, 'ours row after its colliding builtin');
-assert.equal(outline[2].collides, true);
+assert.equal(outline[2].order, 500, 'ours row keeps its persisted order — equal to the built-in plan:policy 500');
+assert.equal(outline[2].displayOrder, undefined, 'no +0.5 display order on the row');
+assert.equal(outline[2].collides, undefined, 'no collision flag on the row');
 assert.equal(outline[3].ref.id, 'gone', 'missing section becomes a broken row');
 assert.deepStrictEqual(plain(outline[2].ref), { id: 'x', order: 500, scope: 'inherit' }, 'ours ref round-trips through the vm realm');
+
+// canSaveSection — the section autosave gate (an empty/unconfirmed row never writes)
+assert.equal(H.canSaveSection('Greeting', true), true, 'confirmed row with a title may save');
+assert.equal(H.canSaveSection('   ', true), false, 'whitespace-only title is NOT saved');
+assert.equal(H.canSaveSection('', true), false, 'empty title is NOT saved (server 400 value.title must be non-empty)');
+assert.equal(H.canSaveSection(undefined, true), false, 'missing title is NOT saved');
+assert.equal(H.canSaveSection('Greeting', false), false, 'a row not confirmed by the /state poll is NOT saved');
+
+// sourceKindOf / usedInProfileName
+assert.equal(H.sourceKindOf('bundle'), 'bundle');
+assert.equal(H.sourceKindOf('unknown'), 'unknown');
+assert.equal(H.sourceKindOf('user'), null, 'user rows carry no source badge');
+assert.equal(H.sourceKindOf(undefined), null, 'an unrecognised source is not shown as user');
+assert.equal(H.usedInProfileName({ profiles: [{ configId: 'light', title: 'Light tone' }] }, 'light'), 'Light tone', 'used-in shows the profile TITLE');
+assert.equal(H.usedInProfileName({ profiles: [] }, 'ghost'), 'ghost', 'a missing profile falls back to the raw id');
+assert.equal(H.usedInProfileName({ profiles: [{ configId: 'x', title: '' }] }, 'x'), 'x', 'a blank title falls back to the id');
 
 // filterSections
 const sections = [
@@ -526,7 +558,7 @@ assert.deepStrictEqual(plain(plan).plan[0].names, ['persona-prefix', 'plan:polic
 assert.equal(plan.plan[1].text, 'Be brief.');
 assert.equal(plan.skipped[0].reason, 'scope subagents-only');
 assert.deepStrictEqual(plain(H.previewPlan({}).plan), [], 'tolerant to an empty response');
-console.log('PASS helpers: idOf, slugify/uniqueSlug, effectiveOrder/planMove, outlineRows, filterSections, previewPlan');
+console.log('PASS helpers: idOf, slugify/uniqueSlug, planReorder, outlineRows, filterSections, previewPlan, save gate, used-in/source');
 // #endregion SECTION_helpers
 
 // #region SECTION_refs Section refs carry configId VERBATIM — never a doubled prefix.
@@ -789,6 +821,164 @@ assert.equal(renameBtn.props.disabled, true, 'rename-id button disabled while a 
 console.log('PASS disabled controls: duplicate/delete/rename/create disabled while their flow is in flight');
 // #endregion SECTION_disabledControls
 
+// #region SECTION_uiRound2 Back icon, autosave gate/hint, used-in titles, source badge, DnD outline.
+// Back affordance is icon-only (aria-label + Tooltip, no "← back" text), and the
+// 14×14 icon is centred in its box instead of sticking to the top.
+const emptySection = {
+  rowId: 'prompt-section-empty', patchId: 'prompt-section-empty', configId: 'prompt-section-empty',
+  title: '', body: '', usedIn: [], source: 'user',
+};
+const emptyState = { profiles: [], sections: [{ ...emptySection }], builtinOrders: {} };
+// SectionForm useState order: title, body, confirmDelete, renameValue, confirmRename, error, mutating.
+stateQueue = ['', '', false, 'prompt-section-empty', false, '', false];
+const emptyForm = loaded.components.SectionForm({
+  section: emptySection, state: emptyState, api: {}, reload: noop, t: (k) => k, notify: noop,
+  onBack: noop, setState: noop, autoFocusTitle: false,
+});
+stateQueue = [];
+assert.ok(hasElement(emptyForm, (n) => elementText(n).includes('titleRequired')),
+  'an empty title shows the soft in-form hint (no server round-trip)');
+let backBtn = null;
+let backTip = null;
+walk(emptyForm, (n) => {
+  if (n.type === 'button' && n.props?.['aria-label'] === 'back') backBtn = n;
+  if (n.type === Tooltip && n.props?.label === 'back') backTip = n;
+});
+assert.ok(backBtn, 'back is a real button with an accessible label');
+assert.ok(backTip, 'back is wrapped in a Tooltip carrying the same label');
+assert.ok(backBtn.children.every((child) => typeof child !== 'string'),
+  'back renders the icon ONLY — no visible "← back" text');
+assert.ok(!elementText(emptyForm).includes('← back'), 'the old "← back" label is gone from the tree');
+assert.equal(backBtn.props.style.alignItems, 'center', 'back icon is vertically centred');
+assert.equal(backBtn.props.style.justifyContent, 'center');
+assert.equal(backBtn.props.style.lineHeight, 0);
+let titleInput = null;
+walk(emptyForm, (n) => {
+  if (!titleInput && n.type === 'input' && n.props && 'onBlur' in n.props && n.props.value === '') titleInput = n;
+});
+assert.equal(typeof titleInput?.props?.onBlur, 'function', 'title input flushes its pending autosave on blur');
+assert.ok(!elementText(emptyForm).includes('sourceLabel'), 'user source renders NO badge in the form');
+
+// used-in shows profile TITLES (fallback to the id), source badge visibility.
+const usedSection = { ...sectionEntry, usedIn: [{ profileId: 'light', scope: 'main-only' }, { profileId: 'ghost', scope: 'inherit' }] };
+stateQueue = ['Greeting', 'Be kind.', false, 'sec-1', false, '', false];
+const usedForm = loaded.components.SectionForm({
+  section: usedSection, state: { ...tabState, profiles: [{ configId: 'light', title: 'Light tone' }] },
+  api: {}, reload: noop, t: (k) => k, notify: noop, onBack: noop, setState: noop, autoFocusTitle: false,
+});
+stateQueue = [];
+assert.ok(elementText(usedForm).includes('Light tone'), 'used-in renders the profile TITLE, not its id');
+assert.ok(elementText(usedForm).includes('ghost'), 'a profile missing from /state falls back to the raw id');
+for (const [source, expected] of [['bundle', 'sourceBundle'], ['unknown', 'sourceUnknown']]) {
+  stateQueue = ['Greeting', 'Be kind.', false, 'sec-1', false, '', false];
+  const badgeForm = loaded.components.SectionForm({
+    section: { ...sectionEntry, source }, state: tabState, api: {}, reload: noop, t: (k) => k, notify: noop,
+    onBack: noop, setState: noop, autoFocusTitle: false,
+  });
+  stateQueue = [];
+  assert.ok(elementText(badgeForm).includes(`sourceLabel: ${expected}`), `source "${source}" shows the badge`);
+}
+stateQueue = ['', false, null];
+const listTab = loaded.components.SectionsTab({
+  state: {
+    profiles: [{ configId: 'light', title: 'Light tone' }],
+    sections: [
+      { configId: 'sec-1', patchId: 'prompt-section-sec-1', title: 'Greeting', body: 'x', usedIn: [{ profileId: 'light', scope: 'inherit' }], source: 'user' },
+      { configId: 'sec-2', patchId: 'prompt-section-sec-2', title: 'Bundled', body: 'y', usedIn: [], source: 'bundle' },
+    ],
+    builtinOrders: {},
+  },
+  api: {}, reload: noop, t: (k) => k, notify: noop, drill: null, setDrill: noop, setState: noop,
+});
+stateQueue = [];
+const listText = elementText(listTab);
+assert.ok(listText.includes('Light tone'), 'SectionsTab list shows the profile title in used-in');
+assert.equal((listText.match(/sourceLabel/g) || []).length, 1, 'only the bundle row carries a source badge (user row hidden)');
+
+// ProfileOutline: no ↑↓ arrows, no +0.5, order input only, scope pinned right,
+// HTML5 drag & drop with the same midpoint/±1 order recalc.
+const outlineProfile = {
+  rowId: 'prompt-profile-p9', patchId: 'prompt-profile-p9', configId: 'prompt-profile-p9',
+  title: 'P9',
+  sections: [{ id: 'sec-a', order: 100, scope: 'inherit' }, { id: 'sec-b', order: 200, scope: 'main-only' }],
+};
+const outlineState = {
+  profiles: [outlineProfile],
+  sections: [
+    { rowId: 'prompt-section-sec-a', patchId: 'prompt-section-sec-a', configId: 'sec-a', title: 'A', body: 'aaa', source: 'user' },
+    { rowId: 'prompt-section-sec-b', patchId: 'prompt-section-sec-b', configId: 'sec-b', title: 'B', body: '', source: 'user' },
+  ],
+  builtinOrders: { 'plan:policy': 100 },
+  modes: [],
+};
+stateQueue = ['P9', outlineProfile.sections.slice(), false, null, '', null, null];
+const outlineEl = loaded.components.ProfileOutline({
+  profile: outlineProfile, state: outlineState, api: {}, reload: noop, t: (k) => k, notify: noop,
+  onBack: noop, onOpenSection: noop, autoFocusTitle: false,
+});
+stateQueue = [];
+assert.ok(!hasElement(outlineEl, (n) => n.props?.['aria-label'] === '↑' || n.props?.['aria-label'] === '↓'),
+  'the ↑↓ move buttons are gone');
+assert.ok(!elementText(outlineEl).includes('+ 0.5') && !elementText(outlineEl).includes('collision'),
+  'no +0.5 half-step is displayed (an order equal to a built-in is normal)');
+const dragRows = [];
+walk(outlineEl, (n) => { if (typeof n.props?.onDrop === 'function') dragRows.push(n); });
+assert.equal(dragRows.length, 2, 'both OUR rows are DnD drop targets');
+const rowA = dragRows.find((r) => hasElement(r, (n) => n.type === 'input' && n.props?.value === 100));
+const rowB = dragRows.find((r) => hasElement(r, (n) => n.type === 'input' && n.props?.value === 200));
+assert.ok(rowA && rowB, 'each row keeps its numeric order INPUT');
+assert.ok(!hasElement(rowA, (n) => n.type === 'span' && Array.isArray(n.children) && n.children.includes('100')),
+  'the order is NOT also rendered as duplicate text — the input replaces it');
+const handle = rowA.children.find((child) => child && child.props && child.props.draggable === true);
+assert.ok(handle, 'the row has a draggable grip');
+assert.equal(typeof handle.props.onDragStart, 'function', 'the grip starts the drag');
+assert.equal(typeof handle.props.onDragEnd, 'function', 'the grip ends the drag');
+const idxInput = rowA.children.findIndex((child) => child?.type === 'input');
+const idxTitle = rowA.children.findIndex((child) => child?.type === 'span' && child.props?.style?.flex === 1);
+const idxScope = rowA.children.findIndex((child) => child?.type === Menu);
+const idxEdit = rowA.children.findIndex((child) => child?.type === Tooltip && child.props?.label === 'openInSectionTab');
+assert.ok(idxInput > -1 && idxTitle > idxInput, 'order input sits where the old text was, left of the title');
+assert.ok(idxScope > idxTitle && idxEdit > idxScope, 'scope is pinned right, immediately before the edit button');
+// Functional drop: dragging sec-a onto sec-b recomputes the orders.
+const dataTransfer = { effectAllowed: '', payload: '', setData(_k, v) { this.payload = v; }, getData() { return this.payload; } };
+handle.props.onDragStart({ dataTransfer });
+lastSetState = undefined;
+rowB.props.onDrop({ preventDefault() {}, dataTransfer });
+assert.deepStrictEqual(plain(lastSetState).map((r) => [r.id, r.order]),
+  [['sec-a', 200], ['sec-b', 201]],
+  'dropping onto the next row applies the midpoint/±1 scheme with NO +0.5 (sec-b end bumped to +1)');
+console.log('PASS ui round 2: back icon, autosave gate/hint, used-in titles, source badge, DnD outline (no arrows, no +0.5)');
+// #endregion SECTION_uiRound2
+
+// #region SECTION_duplicateOpensCopy Duplicate drills into the COPY, like create does.
+(async () => {
+  const copyState = {
+    profiles: [], builtinOrders: {},
+    sections: [{ rowId: 'prompt-section-copy', patchId: 'prompt-section-copy', configId: 'prompt-section-copy', title: 'Greeting (copy)', body: 'Be kind.', usedIn: [], source: 'user' }],
+  };
+  let reads = 0;
+  const drills = [];
+  const api = {
+    sectionCreate: async (v) => ({ rowId: 'prompt-section-copy', patchId: 'prompt-section-copy', configId: 'prompt-section-copy', ...v }),
+    // The copy is already in /state on the first read: this section is about the
+    // navigation, not the poll (the poll itself is covered above).
+    loadState: async () => { reads += 1; return copyState; },
+  };
+  stateQueue = ['Greeting', 'Be kind.', false, 'sec-1', false, '', false];
+  const form = loaded.components.SectionForm({
+    section: sectionEntry, state: tabState, api, reload: async () => {}, t: (k) => k, notify: () => {},
+    onBack: noop, setState: () => {}, onDrill: (id) => drills.push(id), autoFocusTitle: false,
+  });
+  stateQueue = [];
+  let dupBtn = null;
+  walk(form, (n) => { if (n.type === 'button' && n.props?.['aria-label'] === 'duplicate') dupBtn = n; });
+  assert.ok(dupBtn, 'duplicate button rendered');
+  await dupBtn.props.onClick();
+  assert.deepStrictEqual(plain(drills), ['prompt-section-copy'],
+    'duplicate navigates to the COPY id (creation-style), not the source row');
+  console.log('PASS duplicate: opens the copy in the editor after the poll agrees');
+})();
+// #endregion SECTION_duplicateOpensCopy
 
 // #region SECTION_tokens Theme tokens: every --dsw-alias-* used must be a real shipped token.
 const usedTokens = [...new Set([...code.matchAll(/--dsw-alias-[a-z0-9-]+/g)].map((m) => m[0]))];

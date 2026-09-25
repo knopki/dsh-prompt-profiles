@@ -1,11 +1,12 @@
 /**
- * Registry tests — duplicates, usedIn, effectiveOrder, insertionIndex.
+ * Registry tests — duplicates, usedIn, insertionIndex.
  * #region moduleContract
  * @modulecontract
  * @purpose Verify the pure registry's observable contracts: sorted detached
  *   views, deterministic duplicate-config.id resolution with both-rowId
- *   warnings, usedIn scope reporting, the +0.5 collision rule (SPEC decision
- *   7) and name-anchored splice planning against a realistic assembly.
+ *   warnings, usedIn scope reporting, and name-anchored splice planning
+ *   against a realistic assembly WITHOUT any collision offset (orders reach
+ *   the assembly exactly as the profile states them).
  * @scope lib/registry.js (PLAN step 2); assembly fixtures encode the spike-R1
  *   fact that assembled sections carry names but no order field.
  * #endregion moduleContract
@@ -13,7 +14,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PromptProfilesRegistry, effectiveOrder, insertionIndex } from "../lib/registry.js";
+import { PromptProfilesRegistry, insertionIndex } from "../lib/registry.js";
 import { BUILTIN_ORDERS, builtinOrdersByName } from "../lib/builtin-orders.js";
 
 function fixtureRegistry() {
@@ -117,16 +118,6 @@ test("usedIn lists referencing profiles with per-profile scope", () => {
 });
 // #endregion SECTION_usedIn
 
-// #region SECTION_effectiveOrder
-test("effectiveOrder applies +0.5 on builtin collision (SPEC decision 7)", () => {
-  assert.equal(effectiveOrder(1050, BUILTIN_ORDERS), 1050);       // free slot
-  assert.equal(effectiveOrder(1000, BUILTIN_ORDERS), 1000.5);     // TOOL_BASH
-  assert.equal(effectiveOrder(-1000, BUILTIN_ORDERS), -999.5);    // HARNESS_IDENTITY
-  assert.equal(effectiveOrder(0, BUILTIN_ORDERS), 0.5);           // PERSONA_PREFIX
-  assert.throws(() => effectiveOrder(Number.NaN, BUILTIN_ORDERS), /finite/);
-});
-// #endregion SECTION_effectiveOrder
-
 // #region SECTION_insertionIndex
 test("insertionIndex anchors on builtin names present in the assembly", () => {
   // Realistic assembly: entries carry names only, NO order field (spike R1).
@@ -138,13 +129,13 @@ test("insertionIndex anchors on builtin names present in the assembly", () => {
     "deployment:persona-suffix",   // 10200
   ];
   const byName = builtinOrdersByName(BUILTIN_ORDERS);
-  // Our snapshot sections, effective orders already ascending.
-  const ours = [300, 1000.5, 1400];
+  // Our snapshot sections, orders exactly as the profile states them.
+  const ours = [300, 1000, 1400];
   const plan = insertionIndex(ours, assemblyNames, byName);
   assert.deepEqual(plan, [
-    { order: 300, index: 2 },    // after plan:policy(500)? no: 500>300 → after persona(0) → index 2
-    { order: 1000.5, index: 4 }, // +0.5 collision: after tool:bash, before persona-suffix
-    { order: 1400, index: 4 },   // after tool:bash as well (no anchor between 1000 and 10200)
+    { order: 300, index: 2 },    // after persona-prefix(0), before plan:policy(500)
+    { order: 1000, index: 3 },   // EQUAL to tool:bash: lands before it — no +0.5
+    { order: 1400, index: 4 },   // after tool:bash (no anchor between 1000 and 10200)
   ]);
 });
 
@@ -172,7 +163,8 @@ test("insertionIndex splices descending keep our ascending order intact", () => 
     { name: "tool:bash", text: "D" },
     { name: "deployment:persona-suffix", text: "E" },
   ];
-  const plan = insertionIndex([1000.5, 1400], assembly.map((s) => s.name), byName);
+  // 1000 EQUALS tool:bash: it anchors before tool:bash, unshifted.
+  const plan = insertionIndex([1000, 1400], assembly.map((s) => s.name), byName);
   for (const entry of [...plan].reverse()) {
     assembly.splice(entry.index, 0, { name: `prompt-profile:x${entry.order}`, text: "ours" });
   }
@@ -180,8 +172,8 @@ test("insertionIndex splices descending keep our ascending order intact", () => 
     "harness:identity",
     "deployment:persona-prefix",
     "plan:policy",
+    "prompt-profile:x1000",
     "tool:bash",
-    "prompt-profile:x1000.5",
     "prompt-profile:x1400",
     "deployment:persona-suffix",
   ]);

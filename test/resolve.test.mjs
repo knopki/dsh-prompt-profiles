@@ -98,8 +98,35 @@ test("missing built-in anchors and foreign sections: last preceding present anch
   ]);
   assert.equal(planInsertion({ snapshot: { sections: [{ id: "solo", order: 1100, text: "X" }] }, assemblySections: [{ name: "foreign" }], builtinOrdersByName: orders })[0].index, 0);
 });
-test("order below every present built-in goes first, collision follows its built-in", () => {
-  assert.deepEqual(planInsertion({ snapshot: { sections: [{ id: "early", order: -2000, text: "E" }, { id: "same", order: 1000, text: "S" }] }, assemblySections: [{ name: "harness:identity" }, { name: "tool:bash" }, { name: "tool:read" }], builtinOrdersByName: orders }).map((row) => row.index), [0, 2]);
+test("order below every present built-in goes first; an order EQUAL to a built-in is not shifted", () => {
+  // `same` shares tool:bash's order 1000: it anchors BEFORE tool:bash with its
+  // own order intact (no +0.5 half-step).
+  const planned = planInsertion({
+    snapshot: { sections: [{ id: "early", order: -2000, text: "E" }, { id: "same", order: 1000, text: "S" }] },
+    assemblySections: [{ name: "harness:identity" }, { name: "tool:bash" }, { name: "tool:read" }],
+    builtinOrdersByName: orders,
+  });
+  assert.deepEqual(planned.map((row) => row.order ?? null), [null, null], "planInsertion rows carry no order field");
+  assert.deepEqual(planned.map((row) => row.index), [0, 1]);
+});
+
+/** @purpose Equal orders are legal: they are kept verbatim and both the profile order and the splice result stay deterministic. */
+test("two sections with the same order keep it and insert deterministically", () => {
+  const snapshot = { sections: [
+    { id: "b", order: 1000, text: "B" }, { id: "a", order: 1000, text: "A" },
+  ] };
+  const run = () => {
+    const assembly = [{ name: "tool:bash" }, { name: "tool:read" }];
+    const planned = planInsertion({ snapshot, assemblySections: assembly, builtinOrdersByName: orders });
+    // 1000 equals tool:bash: BOTH sections anchor before it at index 0.
+    assert.deepEqual(planned.map((row) => row.index), [0, 0]);
+    for (let i = planned.length - 1; i >= 0; i--) assembly.splice(planned[i].index, 0, planned[i]);
+    return assembly.map((row) => row.name);
+  };
+  const first = run();
+  assert.deepEqual(first, ["prompt-profile:b", "prompt-profile:a", "tool:bash", "tool:read"],
+    "equal orders are preserved and profile order is the stable tie-break");
+  assert.deepEqual(run(), first, "planInsertion is deterministic across runs");
 });
 // #endregion TEST_insertion
 
