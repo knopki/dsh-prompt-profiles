@@ -61,7 +61,7 @@ function fakeResponse() {
  *   return a `call(method, path, body)` driver. The fake settings records
  *   BOTH mutate ops and whole-object replace calls.
  */
-async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, entries, workspaceRegistry, builtinOrdersByName, beforeMutate, settingsRevision = true, configEditor: configEditorOverride, settings: settingsOverride } = {}) {
+async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, agentPresetsGetThrows = false, entries, workspaceRegistry, builtinOrdersByName, beforeMutate, settingsRevision = true, configEditor: configEditorOverride, settings: settingsOverride } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "dsh-pp-api-"));
   const patchPath = join(dir, "cordis.patch.yml");
   await writeFile(patchPath, "# comment\n[]\n", { mode: 0o600 });
@@ -130,10 +130,18 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
     settings,
     configEditor: configEditorOverride ?? (entries ? { documentPath: patchPath, entries } : { documentPath: patchPath }),
   };
-  if (agentPresets !== undefined) ctx.agentPresets = agentPresets;
-  // Reflect-style optional accessor the host context exposes for
-  // workspaceRegistry (registerApi reads it without injecting it).
-  ctx.get = (name) => (name === "workspaceRegistry" ? workspaceRegistry : undefined);
+  // Optional services are exposed ONLY through cordis REFLECT (`ctx.get`) —
+  // exactly like the live host, where a service is a `ctx.<name>` property
+  // only when the plugin declares it in `inject`. No `ctx.agentPresets`
+  // property is set, so a regression to property access empties `modes`.
+  ctx.get = (name) => {
+    if (name === "workspaceRegistry") return workspaceRegistry;
+    if (name === "agentPresets") {
+      if (agentPresetsGetThrows) throw new Error("agentPresets reflect exploded");
+      return agentPresets;
+    }
+    return undefined;
+  };
   const dispose = registerApi(ctx, {
     service,
     log: {
@@ -1301,6 +1309,29 @@ test("state modes find a persona-complete row at any depth, including the real m
     // The `!!js` tags in the real fixture must NOT warn.
     assert.ok(!api.logs.some((entry) => /preset document unreadable/.test(entry.message) && entry.details?.preset === "minimal"),
       "!!js tags parse cleanly");
+  } finally { await api.cleanup(); }
+});
+/** @purpose (а) REFLECT: a service reachable ONLY through ctx.get('agentPresets') still fills modes (the harness sets no ctx.agentPresets property). */
+test("modes resolve agentPresets through ctx.get, not as a ctx property", async () => {
+  const agentPresets = {
+    list: async () => [{ id: "minimal" }],
+    readDocument: async (id) => ({ agentPreset: id, content: REAL_MINIMAL_PRESET }),
+  };
+  const api = await harness({ agentPresets });
+  try {
+    const { status, body } = await api.call("GET", "/state");
+    assert.equal(status, 200);
+    assert.deepEqual(body.modes, [{ id: "minimal", title: "minimal", complete: true }]);
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose (в) a throwing ctx.get must not take /state down. */
+test("a throwing ctx.get leaves modes empty instead of failing /state", async () => {
+  const api = await harness({ agentPresets: { list: async () => [] }, agentPresetsGetThrows: true });
+  try {
+    const { status, body } = await api.call("GET", "/state");
+    assert.equal(status, 200);
+    assert.deepEqual(body.modes, []);
   } finally { await api.cleanup(); }
 });
 // #endregion TEST_modes
