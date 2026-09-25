@@ -15,13 +15,12 @@
  * @scope
  *  - Descriptor construction now lives in the ONE shared contract
  *    (src/shared/remote-contract.ts — the client mounts the same shape);
- *    this file owns the HOST half: the run adapters (CONST_hostRunners),
+ *    this file owns the HOST half: the run adapters (HOST_RUNNERS),
  *    the `PromptProfilesRemote` service (delegation to the shared
  *    operations), and `registerRemote` (plugin fiber + typert contribution +
  *    loud lifecycle logs).
- *  - NOT: operation logic (lib/operations.ts — ONE implementation shared
- *    with the Fetch routes), the HTTP envelope (lib/api.ts), the client-side
- *    mirrored contribution (src/client, phase 2 client half).
+ *  - NOT: operation logic (lib/operations.ts), the client-side mirrored
+ *    contribution (src/client/remote.ts).
  * @invariants
  *  - Every input crosses a STRICT zod codec (`z.strictObject`): missing
  *    required fields, extra fields and wrong types are rejected BEFORE the
@@ -30,11 +29,10 @@
  *    functions, no cycles, no non-finite numbers) AND validated against its
  *    strict result schema; a violation is a thrown ApiError 500 — the call
  *    surfaces as a Remote failure, never a silent success.
- *  - Business failures are the SAME ApiError objects the operations throw
- *    for the HTTP path; the gateway wraps them as Remote failures with the
- *    message preserved.
+ *  - Business failures are the SAME ApiError objects the operations throw;
+ *    the gateway wraps them as Remote failures with the message preserved.
  *  - `undefined`-returning operations (`last`, `defaultSet`) answer
- *    `{ ok: true }`, mirroring the HTTP `{ ok: true }` envelope.
+ *    `{ ok: true }`.
  *  - The contribution registers ONLY while the plugin fiber lives: it is
  *    committed inside a Cordis effect and withdrawn with it (verified by the
  *    real-registry smoke test).
@@ -64,24 +62,25 @@
  */
 
 import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
-import { createOperations, ApiError } from "./operations.ts";
 import {
-  TYPERT_PACKAGE, REMOTE_NAMESPACE, REMOTE_SERVICE_KEY, METHOD_SPECS,
   buildRemoteDescriptors,
+  METHOD_SPECS,
+  REMOTE_NAMESPACE,
+  REMOTE_SERVICE_KEY,
+  TYPERT_PACKAGE,
 } from "../shared/remote-contract.ts";
+import { ApiError, createOperations } from "./operations.ts";
 
-export { TYPERT_PACKAGE, REMOTE_NAMESPACE, REMOTE_SERVICE_KEY };
+export { REMOTE_NAMESPACE, REMOTE_SERVICE_KEY, TYPERT_PACKAGE };
 
 // #region CONST_hostRunners
 /**
  * Host-side adapters: one per METHOD_SPECS entry, delegating each Remote
- * method to the ONE shared operation set (same deps contract as the Fetch
- * routes). The schemas/descriptors live in the shared contract; only the
- * dispatch behaviour is host-specific.
+ * method to the ONE shared operation set. The schemas/descriptors live in the
+ * shared contract; only the dispatch behaviour is host-specific.
  *
- * `defaultSet` adapts onto the shared implementation: the operation keeps
- * the HTTP `/default` body contract (`{default: id|""}`); `profileId: ""`
- * means "none", exactly like the HTTP route.
+ * `defaultSet` adapts onto the shared implementation, whose input names the
+ * field `default`; `profileId: ""` means "none".
  */
 const HOST_RUNNERS = {
   state: (ops, input) => ops.state(input),
@@ -114,7 +113,9 @@ const HOST_RUNNERS = {
  * @returns {void} throws ApiError(500) on the first violation.
  */
 function assertPlainJson(value, method, ancestors = new Set()) {
-  const fail = (why) => { throw new ApiError(500, `remote ${method}: result is not JSON-safe (${why})`); };
+  const fail = (why) => {
+    throw new ApiError(500, `remote ${method}: result is not JSON-safe (${why})`);
+  };
   if (value === null || typeof value === "string" || typeof value === "boolean") return;
   if (typeof value === "number") {
     if (!Number.isFinite(value)) fail("non-finite number");
@@ -126,7 +127,8 @@ function assertPlainJson(value, method, ancestors = new Set()) {
   if (ancestors.has(value)) fail("cycle");
   ancestors.add(value);
   if (Array.isArray(value)) {
-    if (Object.getOwnPropertySymbols(value).length > 0 || Object.keys(value).length !== value.length) fail("sparse or decorated array");
+    if (Object.getOwnPropertySymbols(value).length > 0 || Object.keys(value).length !== value.length)
+      fail("sparse or decorated array");
     for (const item of value) assertPlainJson(item, method, ancestors);
   } else {
     if (Object.getOwnPropertySymbols(value).length > 0) fail("symbol key");
@@ -164,7 +166,7 @@ export function remoteInvocations() {
  *
  * @purpose Host every Remote method on a Service the gateway can resolve by
  *   `descriptor.service`, with all behaviour delegated to the ONE shared
- *   operation set (no duplicated logic, identical error semantics to HTTP).
+ *   operation set (no duplicated logic).
  */
 export class PromptProfilesRemote extends TypertRemoteService {
   /**
@@ -176,24 +178,20 @@ export class PromptProfilesRemote extends TypertRemoteService {
    * fail with «Receiver must be an instance of class». Arrow closures ignore
    * the receiver entirely, so proxied dispatch behaves exactly like a direct
    * call.
-   *
-   * @purpose Host every Remote method on a Service the gateway can resolve by
-   *   `descriptor.service`, with all behaviour delegated to the ONE shared
-   *   operation set (no duplicated logic, identical error semantics to HTTP).
-   *
-   * @param {object} ctx - Cordis plugin context.
-   * @param {object} options - plugin config: { service, getService?, warn?, log? }
-   *   forwarded to createOperations (same deps contract as registerApi).
+   * @param {object} options - { service, getService?, warn?, log? } forwarded
+   *   to createOperations.
    */
   constructor(ctx, options = {}) {
     super(ctx, REMOTE_SERVICE_KEY, { namespace: REMOTE_NAMESPACE });
-    const getService = options.getService ?? ((name) => {
-      try {
-        return ctx.get?.(name) ?? undefined;
-      } catch {
-        return undefined; // absent/throwing service: degrade, never block
-      }
-    });
+    const getService =
+      options.getService ??
+      ((name) => {
+        try {
+          return ctx.get?.(name) ?? undefined;
+        } catch {
+          return undefined; // absent/throwing service: degrade, never block
+        }
+      });
     const { ops } = createOperations({
       service: options.service,
       getService,
@@ -205,11 +203,10 @@ export class PromptProfilesRemote extends TypertRemoteService {
     // #region METHOD_invoke
     /**
      * ONE dispatch path for every method: run the shared operation (via the
-     * HOST_RUNNERS adapter), normalize `undefined` to `{ ok: true }` (the
-     * HTTP envelope semantics), enforce JSON-safety and the strict result
-     * schema. Business errors (ApiError) propagate unchanged so the gateway
-     * reports a Remote failure with the operation's own status semantics
-     * preserved in the message.
+     * HOST_RUNNERS adapter), normalize `undefined` to `{ ok: true }`, enforce
+     * JSON-safety and the strict result schema. Business errors (ApiError)
+     * propagate unchanged so the gateway reports a Remote failure with the
+     * operation's own message preserved.
      */
     const invoke = async (method, input) => {
       const spec = dispatch.get(method);
@@ -218,7 +215,10 @@ export class PromptProfilesRemote extends TypertRemoteService {
       assertPlainJson(result, method);
       const parsed = spec.result().safeParse(result);
       if (!parsed.success) {
-        throw new ApiError(500, `remote ${method}: result violates its strict schema (${parsed.error.issues[0]?.path?.join(".") ?? ""} ${parsed.error.issues[0]?.message ?? ""})`);
+        throw new ApiError(
+          500,
+          `remote ${method}: result violates its strict schema (${parsed.error.issues[0]?.path?.join(".") ?? ""} ${parsed.error.issues[0]?.message ?? ""})`,
+        );
       }
       return parsed.data;
     };
@@ -238,24 +238,38 @@ export class PromptProfilesRemote extends TypertRemoteService {
  * calling fiber — the registry withdrawal is what the smoke test asserts.
  *
  * @purpose Give the plugin ONE call that registers the whole Remote surface
- *   when (and only while) the `typert` service exists, with the same loud
- *   lifecycle diagnostics the HTTP mount has.
+ *   when (and only while) the `typert` service exists, with loud lifecycle
+ *   diagnostics.
  * @param {object} ctx - the `typert` inject child (ctx.typert + ctx.get).
- * @param {object} options - { service, warn?, log? } (registerApi contract).
+ * @param {object} options - { service, warn?, log? }.
  * @returns {() => void} disposer withdrawing the contribution (the service
  *   fiber is a child of `ctx` and disposes with it).
  */
 export function registerRemote(ctx, options) {
-  const warn = options.warn ?? ((message, details) => {
-    try { ctx.logger?.warn?.(message, details ?? ""); } catch { /* diagnostics only */ }
-  });
+  const warn =
+    options.warn ??
+    ((message, details) => {
+      try {
+        ctx.logger?.warn?.(message, details ?? "");
+      } catch {
+        /* diagnostics only */
+      }
+    });
   const log = options.log ?? {
     warn,
     error: (message, details) => {
-      try { (ctx.logger?.error ?? ctx.logger?.warn ?? console.error)(message, details ?? ""); } catch { /* diagnostics only */ }
+      try {
+        (ctx.logger?.error ?? ctx.logger?.warn ?? console.error)(message, details ?? "");
+      } catch {
+        /* diagnostics only */
+      }
     },
     info: (message, details) => {
-      try { ctx.logger?.info?.(message, details ?? ""); } catch { /* diagnostics only */ }
+      try {
+        ctx.logger?.info?.(message, details ?? "");
+      } catch {
+        /* diagnostics only */
+      }
     },
   };
   const contribution = {
@@ -269,9 +283,10 @@ export function registerRemote(ctx, options) {
     disposeContribution = ctx.typert.register(contribution) ?? (() => {});
   } catch (error) {
     // LOUD but non-fatal: a broken registration must never take the plugin
-    // (or the HTTP routes) down; the Remote surface is simply absent.
+    // down; the Remote surface is simply absent.
     log.error("prompt-profiles remote: typert contribution rejected", {
-      package: TYPERT_PACKAGE, error: error?.message ?? String(error),
+      package: TYPERT_PACKAGE,
+      error: error?.message ?? String(error),
     });
     return () => {};
   }
@@ -280,7 +295,11 @@ export function registerRemote(ctx, options) {
   ctx.plugin(PromptProfilesRemote, {
     service: options.service,
     getService: (name) => {
-      try { return ctx.get?.(name) ?? undefined; } catch { return undefined; }
+      try {
+        return ctx.get?.(name) ?? undefined;
+      } catch {
+        return undefined;
+      }
     },
     warn,
     log,

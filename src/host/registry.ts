@@ -107,7 +107,10 @@ export class PromptProfilesRegistry {
   profiles() {
     return [...this.#profiles.values()]
       .map((entry) => ({ ...configView(entry.config), rowId: entry.rowId, source: entry.source }))
-      .sort((a, b) => String(a.title ?? "").localeCompare(String(b.title ?? "")) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      .sort(
+        (a, b) =>
+          String(a.title ?? "").localeCompare(String(b.title ?? "")) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      );
   }
   // #endregion METHOD_profiles
 
@@ -147,8 +150,10 @@ export class PromptProfilesRegistry {
     const stack = this.#stacks.get(key) ?? [];
     const winner = stack[stack.length - 1];
     if (winner) {
-      this.#warn(`prompt-profiles: duplicate ${kind} config.id "${config.id}"` +
-        ` — row "${winner.rowId}" is overridden by row "${rowId}" (later registration wins)`);
+      this.#warn(
+        `prompt-profiles: duplicate ${kind} config.id "${config.id}"` +
+          ` — row "${winner.rowId}" is overridden by row "${rowId}" (later registration wins)`,
+      );
     }
     const entry = { rowId, config, source };
     stack.push(entry);

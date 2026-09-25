@@ -36,8 +36,8 @@
  * #endregion moduleContract
  */
 
-import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { BUILTIN_ORDERS, unmappedBuiltinKeys } from "./builtin-orders.ts";
 
 // #region FUNC_parseBuiltinOrders
@@ -69,7 +69,10 @@ export function parseBuiltinOrders(sourceText) {
   // Strict grammar: every non-empty line must be exactly one `KEY: number,`
   // pair. Comments, spreads, computed keys, string values or two pairs on one
   // line all throw — a partial parse would silently drop anchors.
-  const lines = body.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  const lines = body
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
   if (lines.length === 0) {
     throw new Error("mirror: SECTION_ORDERS literal contains no recognizable entries");
   }
@@ -78,7 +81,9 @@ export function parseBuiltinOrders(sourceText) {
   for (const [index, line] of lines.entries()) {
     const match = entry.exec(line);
     if (!match) {
-      throw new Error(`mirror: SECTION_ORDERS line ${index + 1} is not a plain key: number pair — ${JSON.stringify(line)}`);
+      throw new Error(
+        `mirror: SECTION_ORDERS line ${index + 1} is not a plain key: number pair — ${JSON.stringify(line)}`,
+      );
     }
     const value = Number(match[2]);
     if (!Number.isFinite(value)) {
@@ -181,9 +186,13 @@ export function loadBuiltinOrders({ resolveFrom, warn = console.warn, deps = {} 
     // say so explicitly instead of losing it silently on a DSH upgrade.
     const unmapped = unmappedBuiltinKeys(orders);
     if (unmapped.length > 0) {
-      warn("prompt-profiles mirror: built-in section keys have no assembled-name mapping; they provide no insertion anchor", {
-        file, unmapped,
-      });
+      warn(
+        "prompt-profiles mirror: built-in section keys have no assembled-name mapping; they provide no insertion anchor",
+        {
+          file,
+          unmapped,
+        },
+      );
     }
     return { orders: Object.freeze(orders), origin: "runtime", file };
   } catch (error) {

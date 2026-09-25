@@ -8,13 +8,23 @@
  *   (spike R2 proved those against the real loader).
  * #endregion moduleContract
  */
-import test from "node:test";
+
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseDocument, isSeq } from "yaml";
-import { insertRow, removeRow, disableRow, provenance, withPatchBatch, setWriteGate, renameSectionRow, toPatchId } from "../lib/writer.js";
+import test from "node:test";
+import { isSeq, parseDocument } from "yaml";
+import {
+  disableRow,
+  insertRow,
+  provenance,
+  removeRow,
+  renameSectionRow,
+  setWriteGate,
+  toPatchId,
+  withPatchBatch,
+} from "../lib/writer.js";
 
 const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value) => value }] };
 const SECTION_NAME = "@knopki/dsh-prompt-profiles/section";
@@ -51,9 +61,7 @@ async function workspace(text = samplePatch) {
 const entryIds = (text) => {
   const document = parseDocument(text, parseOptions);
   assert.ok(isSeq(document.contents), "patch stays a YAML sequence");
-  return document.contents.items
-    .map((item) => item?.get?.("id"))
-    .filter((id) => id !== undefined);
+  return document.contents.items.map((item) => item?.get?.("id")).filter((id) => id !== undefined);
 };
 
 const sectionRow = (id) => ({
@@ -90,8 +98,9 @@ test("insert, remove, disable round-trip", async () => {
     await insertRow({ patchPath, row: sectionRow("tone") });
     await disableRow({ patchPath, rowId: "ui-settings-general", name: "@deepseek-ai/dsh-client-ui-settings-general" });
     let after = await readFile(patchPath, "utf8");
-    const disabled = parseDocument(after, parseOptions).contents.items
-      .find((item) => item?.get?.("id") === "ui-settings-general");
+    const disabled = parseDocument(after, parseOptions).contents.items.find(
+      (item) => item?.get?.("id") === "ui-settings-general",
+    );
     assert.equal(disabled.get("disabled"), true);
     assert.equal(disabled.get("name"), "@deepseek-ai/dsh-client-ui-settings-general");
     assert.equal(disabled.get("config").get("welcomeNoticeVersion"), "2026-08-13.1");
@@ -158,15 +167,31 @@ test("provenance distinguishes user inserts, bundle overrides, and unresolved ro
     await insertRow({ patchPath, row: sectionRow("mine") });
     await disableRow({ patchPath, rowId: "bundle-row", name: "some-bundle-plugin" });
     // Insert row reached by its unqualified id.
-    assert.deepEqual(provenance({ patchPath, rowId: "prompt-section-mine" }), { source: "user", inserted: true, overridden: false });
+    assert.deepEqual(provenance({ patchPath, rowId: "prompt-section-mine" }), {
+      source: "user",
+      inserted: true,
+      overridden: false,
+    });
     // …by the QUALIFIED loader entry id (what the registry passes live).
-    assert.deepEqual(provenance({ patchPath, rowId: "include:prompt-section-mine" }), { source: "user", inserted: true, overridden: false });
+    assert.deepEqual(provenance({ patchPath, rowId: "include:prompt-section-mine" }), {
+      source: "user",
+      inserted: true,
+      overridden: false,
+    });
     // …by its config.id (bare token).
     assert.deepEqual(provenance({ patchPath, rowId: "mine" }), { source: "user", inserted: true, overridden: false });
     // A bare override row is bundle-provided (we only disabled/overrode it).
-    assert.deepEqual(provenance({ patchPath, rowId: "bundle-row" }), { source: "bundle", inserted: false, overridden: true });
+    assert.deepEqual(provenance({ patchPath, rowId: "bundle-row" }), {
+      source: "bundle",
+      inserted: false,
+      overridden: true,
+    });
     // A row this patch says nothing about cannot be proven: unknown.
-    assert.deepEqual(provenance({ patchPath, rowId: "never-seen" }), { source: "unknown", inserted: false, overridden: false });
+    assert.deepEqual(provenance({ patchPath, rowId: "never-seen" }), {
+      source: "unknown",
+      inserted: false,
+      overridden: false,
+    });
     assert.throws(() => provenance({ patchPath, rowId: "" }), /non-empty/);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -178,9 +203,21 @@ test("provenance matches old slug ids in either form", async () => {
   const { dir, patchPath } = await workspace();
   try {
     await insertRow({ patchPath, row: sectionRow("old-slug") });
-    assert.deepEqual(provenance({ patchPath, rowId: "include:prompt-section-old-slug" }), { source: "user", inserted: true, overridden: false });
-    assert.deepEqual(provenance({ patchPath, rowId: "old-slug" }), { source: "user", inserted: true, overridden: false });
-    assert.deepEqual(provenance({ patchPath, rowId: "prompt-section-old-slug" }), { source: "user", inserted: true, overridden: false });
+    assert.deepEqual(provenance({ patchPath, rowId: "include:prompt-section-old-slug" }), {
+      source: "user",
+      inserted: true,
+      overridden: false,
+    });
+    assert.deepEqual(provenance({ patchPath, rowId: "old-slug" }), {
+      source: "user",
+      inserted: true,
+      overridden: false,
+    });
+    assert.deepEqual(provenance({ patchPath, rowId: "prompt-section-old-slug" }), {
+      source: "user",
+      inserted: true,
+      overridden: false,
+    });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -209,13 +246,18 @@ test("disableRow for an unknown id yields a bare (non-insert) row the loader ski
 /** @purpose Batch rollback restores the in-memory backup when a later step throws. */
 test("withPatchBatch restores the backup when a step throws", async () => {
   const { dir, patchPath } = await workspace();
-  const addRow = (row) => (document) => { document.add(document.createNode({ insert: [row] })); };
+  const addRow = (row) => (document) => {
+    document.add(document.createNode({ insert: [row] }));
+  };
   try {
     const before = await readFile(patchPath, "utf8");
-    await assert.rejects(withPatchBatch({ patchPath }, async (edit) => {
-      await edit(addRow(sectionRow("doomed")));
-      throw new Error("later step failed");
-    }), /later step failed/);
+    await assert.rejects(
+      withPatchBatch({ patchPath }, async (edit) => {
+        await edit(addRow(sectionRow("doomed")));
+        throw new Error("later step failed");
+      }),
+      /later step failed/,
+    );
     assert.equal(await readFile(patchPath, "utf8"), before);
     const ok = await withPatchBatch({ patchPath }, async (edit) => {
       await edit(addRow(sectionRow("kept")));
@@ -233,10 +275,15 @@ test("withPatchBatch leaves the file untouched when a step fails before writing"
   try {
     const before = await readFile(patchPath, "utf8");
     const inodeBefore = (await stat(patchPath)).ino;
-    await assert.rejects(withPatchBatch({ patchPath }, async (edit) => {
-      await edit(() => { throw new Error("validation failed before any write"); });
-      return "unreachable";
-    }), /validation failed before any write/);
+    await assert.rejects(
+      withPatchBatch({ patchPath }, async (edit) => {
+        await edit(() => {
+          throw new Error("validation failed before any write");
+        });
+        return "unreachable";
+      }),
+      /validation failed before any write/,
+    );
     assert.equal(await readFile(patchPath, "utf8"), before);
     assert.equal((await stat(patchPath)).ino, inodeBefore, "no atomic rewrite happened (same inode)");
   } finally {
@@ -277,7 +324,10 @@ test("a queued writer does not commit over an external edit that landed first", 
   let tail = Promise.resolve();
   const gate = (fn) => {
     const run = tail.then(fn, fn);
-    tail = run.then(() => {}, () => {});
+    tail = run.then(
+      () => {},
+      () => {},
+    );
     return run;
   };
   setWriteGate(gate);
@@ -292,7 +342,8 @@ test("a queued writer does not commit over an external edit that landed first", 
     await Promise.all([external, ours]);
     const document = parseDocument(await readFile(patchPath, "utf8"), parseOptions);
     const ids = document.contents.items.flatMap((item) =>
-      item?.get?.("insert") ? item.get("insert").items.map((row) => row.get("id")) : [item.get("id")]);
+      item?.get?.("insert") ? item.get("insert").items.map((row) => row.get("id")) : [item.get("id")],
+    );
     assert.ok(ids.includes("external-edit"), "the external edit is not lost");
     assert.ok(ids.includes("prompt-section-tone"), "our row landed too");
   } finally {
@@ -309,7 +360,10 @@ test("a failing batch never restores a stale backup over an external edit", asyn
   let tail = Promise.resolve();
   const gate = (fn) => {
     const run = tail.then(fn, fn);
-    tail = run.then(() => {}, () => {});
+    tail = run.then(
+      () => {},
+      () => {},
+    );
     return run;
   };
   setWriteGate(gate);
@@ -320,12 +374,14 @@ test("a failing batch never restores a stale backup over an external edit", asyn
     });
     const ours = assert.rejects(
       withPatchBatch({ patchPath }, async (edit) => {
-        await edit((document) => { document.add(document.createNode({ insert: [sectionRow("doomed")] })); });
+        await edit((document) => {
+          document.add(document.createNode({ insert: [sectionRow("doomed")] }));
+        });
         throw new Error("later step failed");
       }),
       /later step failed/,
     );
-    const [ , failed ] = await Promise.all([external, ours]);
+    const [, failed] = await Promise.all([external, ours]);
     assert.ok(failed === undefined);
     const ids = entryIds(await readFile(patchPath, "utf8"));
     assert.deepEqual(ids, ["external-edit"], "rollback kept the external edit and dropped the batch's row");
@@ -343,14 +399,24 @@ test("renameSectionRow inserts the new row and drops the old one in one commit, 
   const { dir, patchPath } = await workspace("[]\n");
   try {
     await insertRow({ patchPath, row: sectionRow("tone") });
-    await insertRow({ patchPath, row: {
-      id: "prompt-profile-light", name: "@knopki/dsh-prompt-profiles/profile",
-      config: { id: "light", title: "Light", sections: [{ id: "tone", order: 1050, scope: "main-only" }] },
-    } });
+    await insertRow({
+      patchPath,
+      row: {
+        id: "prompt-profile-light",
+        name: "@knopki/dsh-prompt-profiles/profile",
+        config: { id: "light", title: "Light", sections: [{ id: "tone", order: 1050, scope: "main-only" }] },
+      },
+    });
     await renameSectionRow({
       patchPath,
-      row: { id: "prompt-section-short-tone", name: SECTION_NAME, config: { id: "prompt-section-short-tone", title: "Title tone", body: "Line one\nLine two" } },
-      oldRowId: "prompt-section-tone", oldName: SECTION_NAME, bundleOwned: false,
+      row: {
+        id: "prompt-section-short-tone",
+        name: SECTION_NAME,
+        config: { id: "prompt-section-short-tone", title: "Title tone", body: "Line one\nLine two" },
+      },
+      oldRowId: "prompt-section-tone",
+      oldName: SECTION_NAME,
+      bundleOwned: false,
     });
     const document = parseDocument(await readFile(patchPath, "utf8"), parseOptions);
     const ids = [];
@@ -359,11 +425,15 @@ test("renameSectionRow inserts the new row and drops the old one in one commit, 
       else ids.push(item.get("id"));
     }
     assert.deepEqual([...ids].sort(), ["prompt-profile-light", "prompt-section-short-tone"]);
-    const profileEntry = document.contents.items
-      .find((item) => item?.get?.("insert")?.items?.some((row) => row.get("id") === "prompt-profile-light"));
+    const profileEntry = document.contents.items.find((item) =>
+      item?.get?.("insert")?.items?.some((row) => row.get("id") === "prompt-profile-light"),
+    );
     const profile = profileEntry.get("insert").items.find((row) => row.get("id") === "prompt-profile-light");
-    assert.deepEqual(profile.get("config").get("sections").toJS(document), [{ id: "tone", order: 1050, scope: "main-only" }],
-      "profile refs keep the OLD id — rename never rewrites profiles");
+    assert.deepEqual(
+      profile.get("config").get("sections").toJS(document),
+      [{ id: "tone", order: 1050, scope: "main-only" }],
+      "profile refs keep the OLD id — rename never rewrites profiles",
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -376,13 +446,18 @@ test("renameSectionRow inserts the new row and drops the old one in one commit, 
  *  the document itself when none remain (verify-fixes-glm defect 4). */
 test("rename and removeRow keep the file-leading comment of a removed first entry", async () => {
   const header = "# File-leading header comment:\n# keep me across renames.\n";
-  const firstEntry = (rowId, id) => `- insert:\n    - id: ${rowId}\n      name: "@knopki/dsh-prompt-profiles/section"\n      config:\n        id: ${id}\n        title: T\n        body: B\n`;
-  const { dir, patchPath } = await workspace(header + firstEntry("prompt-section-tone", "tone") + firstEntry("prompt-section-other", "other"));
+  const firstEntry = (rowId, id) =>
+    `- insert:\n    - id: ${rowId}\n      name: "@knopki/dsh-prompt-profiles/section"\n      config:\n        id: ${id}\n        title: T\n        body: B\n`;
+  const { dir, patchPath } = await workspace(
+    header + firstEntry("prompt-section-tone", "tone") + firstEntry("prompt-section-other", "other"),
+  );
   try {
     await renameSectionRow({
       patchPath,
       row: { id: "prompt-section-short-tone", name: SECTION_NAME, config: { id: "short-tone", title: "T", body: "B" } },
-      oldRowId: "prompt-section-tone", oldName: SECTION_NAME, bundleOwned: false,
+      oldRowId: "prompt-section-tone",
+      oldName: SECTION_NAME,
+      bundleOwned: false,
     });
     const after = await readFile(patchPath, "utf8");
     assert.match(after, /# File-leading header comment:/, "leading comment survives the rename");

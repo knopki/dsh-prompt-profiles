@@ -62,9 +62,7 @@ export const Config = z.object({
  * @param {object} config - Resolved Config (see CONST_Config).
  */
 export function apply(ctx, config) {
-  ctx.inject(["settings"], (child) =>
-    child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)),
-  );
+  ctx.inject(["settings"], (child) => child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)));
   ctx.effect(() =>
     ctx.promptProfiles.registerSection({
       rowId: ctx.fiber?.entry?.id ?? null,

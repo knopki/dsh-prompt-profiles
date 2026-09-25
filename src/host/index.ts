@@ -9,12 +9,11 @@
  * @scope
  *  - Expose the registry as `ctx.promptProfiles`, load the mirror lazily,
  *    seal each agent's first assembled prompt in a durable storage domain,
- *    resolve row provenance from the profile patch, serve the SPEC §5.5
- *    HTTP API on web surfaces, and mount the Typert Remote surface
- *    (namespace `promptProfiles`) when the `typert` service exists.
- *  - NOT: section/profile row registration (lib/section.js, lib/profile.js),
- *    patch-file mutation mechanics (lib/writer.js), route handlers
- *    (lib/api.js).
+ *    resolve row provenance from the profile patch, and mount the Typert
+ *    Remote surface (namespace `promptProfiles`) when the `typert` service
+ *    exists.
+ *  - NOT: section/profile row registration (lib/section.js, lib/profile.js)
+ *    or patch-file mutation mechanics (lib/writer.js).
  * @invariants
  *  - The row mounts even when optional services (settings, profileContext)
  *    are absent; injection waits for storageDomain and workspaceRegistry.
@@ -47,16 +46,24 @@
  */
 
 import { Service } from "@deepseek-ai/cordis";
+import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
 import z from "@deepseek-ai/schemastery";
 import { z as zod } from "zod";
-import { PromptProfilesRegistry } from "./registry.ts";
-import { loadBuiltinOrders } from "./mirror.ts";
 import { builtinOrdersByName } from "./builtin-orders.ts";
-import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
-import { resolveProfileId, resolveWorkspaceKeys, buildSnapshot, planInsertion, isSubagent, isFork, sealSnapshot, retryingCache } from "./resolve.ts";
-import { provenance, setWriteGate } from "./writer.ts";
-import { registerApi } from "./api.ts";
+import { loadBuiltinOrders } from "./mirror.ts";
+import { PromptProfilesRegistry } from "./registry.ts";
 import { registerRemote } from "./remote.ts";
+import {
+  buildSnapshot,
+  isFork,
+  isSubagent,
+  planInsertion,
+  resolveProfileId,
+  resolveWorkspaceKeys,
+  retryingCache,
+  sealSnapshot,
+} from "./resolve.ts";
+import { provenance, setWriteGate } from "./writer.ts";
 
 // #region CONST_promptProfilesDomain
 /**
@@ -66,13 +73,24 @@ import { registerRemote } from "./remote.ts";
  * has no `.nullable()` and is reserved for the plugin `Config` (astra finding A).
  */
 export const promptProfilesDomain = defineDomain({
-  name: "prompt_profiles", version: 1, invalidRecords: "backup-and-skip",
-  tables: { sessions: domainTable(zod.object({
-    profileId: zod.string().nullable(),
-    sections: zod.array(zod.object({
-      id: zod.string(), title: zod.string(), order: zod.number(), text: zod.string(),
-    })),
-  })) },
+  name: "prompt_profiles",
+  version: 1,
+  invalidRecords: "backup-and-skip",
+  tables: {
+    sessions: domainTable(
+      zod.object({
+        profileId: zod.string().nullable(),
+        sections: zod.array(
+          zod.object({
+            id: zod.string(),
+            title: zod.string(),
+            order: zod.number(),
+            text: zod.string(),
+          }),
+        ),
+      }),
+    ),
+  },
 });
 // #endregion CONST_promptProfilesDomain
 
@@ -81,8 +99,8 @@ export const promptProfilesDomain = defineDomain({
  * The `promptProfiles` service: registry of section/profile rows plus the
  * built-in orders mirror. Loader row `prompt-profiles` instantiates this.
  *
- * @purpose Give every consumer (subpath rows, prompt sealing, HTTP API) one
- *   authoritative registry view of prompt-profile rows that survives
+ * @purpose Give every consumer (subpath rows, prompt sealing, Remote surface)
+ *   one authoritative registry view of prompt-profile rows that survives
  *   duplicate ids and degrades instead of throwing.
  */
 export class PromptProfilesPlugin extends Service {
@@ -108,10 +126,9 @@ export class PromptProfilesPlugin extends Service {
 
   // #region METHOD_constructor
   /**
-   * Install the service and wire settings suppression.
-   *
-   * @purpose Mount the registry, the prompt assembler, and (on web surfaces)
-   *   the CRUD API without requiring any optional service to exist.
+   * @purpose Mount the registry, the prompt assembler, and (when the platform
+   *   service exists) the Remote surface, without requiring any optional
+   *   service to be present.
    * @param {object} ctx - Cordis plugin context (fiber = the loader row).
    * @param {object} config - resolved Config (see CONST_Config).
    */
@@ -121,9 +138,7 @@ export class PromptProfilesPlugin extends Service {
     this.registry = new PromptProfilesRegistry({
       warn: (message, details) => ctx.logger?.warn?.(message, details ?? ""),
     });
-    ctx.inject(["settings"], (child) =>
-      child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)),
-    );
+    ctx.inject(["settings"], (child) => child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)));
     this._installAssembler(ctx);
     // Join the writer's raw file writes to dsh-hmr exclusivity when present,
     // so they serialize with config-editor/settings edits in this process
@@ -139,48 +154,10 @@ export class PromptProfilesPlugin extends Service {
       }
       return () => setWriteGate(null);
     });
-    // SPEC §5.5: the API depends ONLY on the platform Connection service (the
-    // same carrier the DSH API gateway uses: `connection.fetch.register`).
-    // settings/configEditor/agentPresets/workspaceRegistry are OPTIONAL and read
-    // through `ctx.get` inside registerApi (per route). Requiring more services
-    // here made the callback skip SILENTLY whenever one was missing — the live
-    // "plugin Running, zero routes, empty log" bug.
-    let noConnectionTimer = null;
-    ctx.inject(["connection"], (child) =>
-      child.effect(() => {
-        if (noConnectionTimer !== null) {
-          clearTimeout(noConnectionTimer);
-          noConnectionTimer = null;
-        }
-        return registerApi(child, { service: this });
-      }),
-    );
-    // Headless / connection-less profile: the plugin still mounts, but the API
-    // cannot exist — say so at ERROR level (never a silent zero routes).
-    noConnectionTimer = setTimeout(() => {
-      noConnectionTimer = null;
-      try {
-        if (ctx.get?.("connection")) return;
-        const missing = ["connection", "settings", "configEditor", "agentPresets", "workspaceRegistry"]
-          .filter((name) => {
-            try {
-              return !ctx.get?.(name);
-            } catch {
-              return true;
-            }
-          });
-        ctx.logger?.error?.("prompt-profiles api: mounted ZERO routes", { missing });
-      } catch {
-        // diagnostics only
-      }
-    }, 200);
-    noConnectionTimer.unref?.();
-    // TYPERT REMOTE (phase 2b): the `typert` registry service is OPTIONAL —
-    // a profile without it (older DSH, stripped host) keeps the Fetch routes
-    // and everything else; the missing Remote surface is reported LOUDLY
-    // after the settle window instead of silently (same pattern as the
-    // connection case above, and for the same reason: "Running, zero
-    // endpoints, empty log" must never happen again).
+    // TYPERT REMOTE: the `typert` registry service is OPTIONAL — a profile
+    // without it (older DSH, stripped host) keeps everything else; the missing
+    // Remote surface is reported LOUDLY after the settle window instead of
+    // silently, so "Running, zero endpoints, empty log" cannot happen.
     let noTypertTimer = null;
     ctx.inject(["typert"], (child) =>
       child.effect(() => {
@@ -195,7 +172,7 @@ export class PromptProfilesPlugin extends Service {
       noTypertTimer = null;
       try {
         if (ctx.get?.("typert")) return;
-        ctx.logger?.error?.("prompt-profiles remote: mounted ZERO remote endpoints (typert service absent; HTTP routes unaffected)", {});
+        ctx.logger?.error?.("prompt-profiles remote: mounted ZERO remote endpoints (typert service absent)", {});
       } catch {
         // diagnostics only
       }
@@ -211,133 +188,153 @@ export class PromptProfilesPlugin extends Service {
   // #region METHOD_installAssembler
   /** @purpose Register one unscoped waterfall listener whose snapshots outlive config edits and resumes. */
   _installAssembler(ctx) {
-    ctx.inject(["storageDomain", "workspaceRegistry"], (child) => child.effect(() => {
-      // A rejected open must NOT stay cached: retryingCache drops the pending
-      // promise on failure so the next assembly retries (verify-step2b-glm defect 1).
-      const open = retryingCache(() => child.storageDomain.open(promptProfilesDomain));
-      const pending = new Map();
-      // Pinned per-session decisions (astra finding G): once a session's
-      // snapshot is decided in memory it stays stable for this process even
-      // while storage is down, so no later retry can activate a profile
-      // mid-session after an unprofiled turn.
-      const decided = new Map();
-      /**
-       * Diagnostics sink: every log call is guarded so a broken logger can
-       * never take an assembly (and therefore the prompt) down.
-       */
-      const log = (level, message, details) => {
-        try {
-          const sink = child.logger?.[level];
-          if (typeof sink === "function") sink.call(child.logger, message, details ?? "");
-        } catch {
-          // diagnostics only
-        }
-      };
-      const dispose = child.on("system-prompt/assemble", async (assembly, context, next) => {
-        const agent = context?.agent;
-        const session = agent?.session;
-        if (session?.id && Array.isArray(assembly?.sections)) {
+    ctx.inject(["storageDomain", "workspaceRegistry"], (child) =>
+      child.effect(() => {
+        // A rejected open must NOT stay cached: retryingCache drops the pending
+        // promise on failure so the next assembly retries (verify-step2b-glm defect 1).
+        const open = retryingCache(() => child.storageDomain.open(promptProfilesDomain));
+        const pending = new Map();
+        // Pinned per-session decisions (astra finding G): once a session's
+        // snapshot is decided in memory it stays stable for this process even
+        // while storage is down, so no later retry can activate a profile
+        // mid-session after an unprofiled turn.
+        const decided = new Map();
+        /**
+         * Diagnostics sink: every log call is guarded so a broken logger can
+         * never take an assembly (and therefore the prompt) down.
+         */
+        const log = (level, message, details) => {
           try {
-            // The workspace key candidates MUST include the one POST /last
-            // wrote (see resolveWorkspaceKeys): the registry's session
-            // membership first, then the ASYNC resolveByPath(cwd) id, then the
-            // raw cwd. Reading walks them in order, so a legacy path-keyed
-            // choice is still found when the UUID key has none.
-            const cwd = session.header?.cwd ?? null;
-            const workspaceKeys = await resolveWorkspaceKeys({
-              workspaceRegistry: child.workspaceRegistry, session, cwd,
-            });
-            const workspaceKey = workspaceKeys[0] ?? "";
-            let sealed = pending.get(session.id);
-            if (!sealed) {
-              const skips = [];
-              sealed = sealSnapshot({
-                sessionId: session.id,
-                memo: decided,
-                openTable: async () => (await open()).table("sessions"),
-                createSnapshot: () => {
-                  const profiles = this.profiles();
-                  const { profileId, reset } = resolveProfileId({
-                    lastByWorkspace: this.config.lastByWorkspace.get(), workspaceKeys,
-                    defaultId: this.config.default.get(), profileIds: profiles.map((profile) => profile.id),
-                  });
-                  if (reset) log("debug", "prompt-profiles stale workspace choice reset", { sessionId: session.id, workspaceKey });
-                  const profile = profiles.find((row) => row.id === profileId);
-                  const sections = new Map(this.sections().map((row) => [row.id, row]));
-                  for (const ref of profile?.sections ?? []) {
-                    if (!sections.has(ref.id)) log("warn", "prompt-profiles missing section", { profileId, sectionId: ref.id });
-                  }
-                  const snapshot = buildSnapshot({
-                    profile, sectionsById: sections, isSubagent: isSubagent(agent), isFork: isFork(agent),
-                    // Seal-time interpolation (astra finding D): variables of
-                    // THIS assembly, final text stored, never re-interpolated.
-                    variables: assembly.variables ?? {},
-                    warn: (message, details) => log("warn", message, details),
-                    // Per-reference skip reasons for the seal diagnostics below.
-                    onSkip: (skip) => skips.push(skip),
-                  });
-                  // Seal diagnostics (kept deliberately): the user can send
-                  // these lines when a chip choice does not reach the prompt.
-                  log("info", "prompt-profiles seal", {
-                    sessionId: session.id,
-                    workspaceKey,
-                    profileId: snapshot.profileId,
-                    selected: snapshot.sections.length,
-                    skipped: skips.length,
-                    skipReasons: skips,
-                    sectionIds: snapshot.sections.map((section) => section.id),
-                  });
-                  return snapshot;
-                },
-                warn: (message, details) => log("warn", message, details),
-              });
-              pending.set(session.id, sealed);
-              void sealed.finally(() => pending.delete(session.id)).catch(() => {});
-            }
-            const snapshot = await sealed;
-            if (snapshot.sections.length) {
-              // planInsertion returns BASE indices into the original array;
-              // splicing from LAST to FIRST keeps earlier indices valid and
-              // preserves ascending order (resolve.js FUNC_planInsertion).
-              // The profile's order reaches the assembly UNCHANGED — equal
-              // orders are never shifted.
-              // interpolate:false: the sealed text is FINAL — the engine must
-              // never interpolate (and never throw on) `{{...}}` again.
-              const planned = planInsertion({
-                snapshot, assemblySections: assembly.sections, builtinOrdersByName: this.builtinOrdersByName(),
-              });
-              for (let i = planned.length - 1; i >= 0; i--) {
-                const { index, ...entry } = planned[i];
-                assembly.sections.splice(index, 0, entry);
-              }
-              log("debug", "prompt-profiles inserted", {
-                sessionId: session.id,
-                workspaceKey,
-                profileId: snapshot.profileId,
-                inserted: planned.map((entry) => ({ name: entry.name, index: entry.index })),
-                assemblySections: assembly.sections.length,
-              });
-            } else {
-              log("info", "prompt-profiles: no sections to insert", {
-                sessionId: session.id,
-                workspaceKey,
-                profileId: snapshot.profileId,
-                assemblySections: assembly.sections.length,
-              });
-            }
-          } catch (error) {
-            log("warn", "prompt-profiles snapshot unavailable; prompt unchanged", { sessionId: session.id, error });
+            const sink = child.logger?.[level];
+            if (typeof sink === "function") sink.call(child.logger, message, details ?? "");
+          } catch {
+            // diagnostics only
           }
-        }
-        return next();
-      });
-      return async () => {
-        dispose();
-        pending.clear();
-        const cached = open.cached();
-        if (cached) await cached.then((domain) => domain.close(), () => {});
-      };
-    }));
+        };
+        const dispose = child.on("system-prompt/assemble", async (assembly, context, next) => {
+          const agent = context?.agent;
+          const session = agent?.session;
+          if (session?.id && Array.isArray(assembly?.sections)) {
+            try {
+              // The workspace key candidates MUST include the one POST /last
+              // wrote (see resolveWorkspaceKeys): the registry's session
+              // membership first, then the ASYNC resolveByPath(cwd) id, then the
+              // raw cwd. Reading walks them in order, so a legacy path-keyed
+              // choice is still found when the UUID key has none.
+              const cwd = session.header?.cwd ?? null;
+              const workspaceKeys = await resolveWorkspaceKeys({
+                workspaceRegistry: child.workspaceRegistry,
+                session,
+                cwd,
+              });
+              const workspaceKey = workspaceKeys[0] ?? "";
+              let sealed = pending.get(session.id);
+              if (!sealed) {
+                const skips = [];
+                sealed = sealSnapshot({
+                  sessionId: session.id,
+                  memo: decided,
+                  openTable: async () => (await open()).table("sessions"),
+                  createSnapshot: () => {
+                    const profiles = this.profiles();
+                    const { profileId, reset } = resolveProfileId({
+                      lastByWorkspace: this.config.lastByWorkspace.get(),
+                      workspaceKeys,
+                      defaultId: this.config.default.get(),
+                      profileIds: profiles.map((profile) => profile.id),
+                    });
+                    if (reset)
+                      log("debug", "prompt-profiles stale workspace choice reset", {
+                        sessionId: session.id,
+                        workspaceKey,
+                      });
+                    const profile = profiles.find((row) => row.id === profileId);
+                    const sections = new Map(this.sections().map((row) => [row.id, row]));
+                    for (const ref of profile?.sections ?? []) {
+                      if (!sections.has(ref.id))
+                        log("warn", "prompt-profiles missing section", { profileId, sectionId: ref.id });
+                    }
+                    const snapshot = buildSnapshot({
+                      profile,
+                      sectionsById: sections,
+                      isSubagent: isSubagent(agent),
+                      isFork: isFork(agent),
+                      // Seal-time interpolation (astra finding D): variables of
+                      // THIS assembly, final text stored, never re-interpolated.
+                      variables: assembly.variables ?? {},
+                      warn: (message, details) => log("warn", message, details),
+                      // Per-reference skip reasons for the seal diagnostics below.
+                      onSkip: (skip) => skips.push(skip),
+                    });
+                    // Seal diagnostics (kept deliberately): the user can send
+                    // these lines when a chip choice does not reach the prompt.
+                    log("info", "prompt-profiles seal", {
+                      sessionId: session.id,
+                      workspaceKey,
+                      profileId: snapshot.profileId,
+                      selected: snapshot.sections.length,
+                      skipped: skips.length,
+                      skipReasons: skips,
+                      sectionIds: snapshot.sections.map((section) => section.id),
+                    });
+                    return snapshot;
+                  },
+                  warn: (message, details) => log("warn", message, details),
+                });
+                pending.set(session.id, sealed);
+                void sealed.finally(() => pending.delete(session.id)).catch(() => {});
+              }
+              const snapshot = await sealed;
+              if (snapshot.sections.length) {
+                // planInsertion returns BASE indices into the original array;
+                // splicing from LAST to FIRST keeps earlier indices valid and
+                // preserves ascending order (resolve.js FUNC_planInsertion).
+                // The profile's order reaches the assembly UNCHANGED — equal
+                // orders are never shifted.
+                // interpolate:false: the sealed text is FINAL — the engine must
+                // never interpolate (and never throw on) `{{...}}` again.
+                const planned = planInsertion({
+                  snapshot,
+                  assemblySections: assembly.sections,
+                  builtinOrdersByName: this.builtinOrdersByName(),
+                });
+                for (let i = planned.length - 1; i >= 0; i--) {
+                  const { index, ...entry } = planned[i];
+                  assembly.sections.splice(index, 0, entry);
+                }
+                log("debug", "prompt-profiles inserted", {
+                  sessionId: session.id,
+                  workspaceKey,
+                  profileId: snapshot.profileId,
+                  inserted: planned.map((entry) => ({ name: entry.name, index: entry.index })),
+                  assemblySections: assembly.sections.length,
+                });
+              } else {
+                log("info", "prompt-profiles: no sections to insert", {
+                  sessionId: session.id,
+                  workspaceKey,
+                  profileId: snapshot.profileId,
+                  assemblySections: assembly.sections.length,
+                });
+              }
+            } catch (error) {
+              log("warn", "prompt-profiles snapshot unavailable; prompt unchanged", { sessionId: session.id, error });
+            }
+          }
+          return next();
+        });
+        return async () => {
+          dispose();
+          pending.clear();
+          const cached = open.cached();
+          if (cached)
+            await cached.then(
+              (domain) => domain.close(),
+              () => {},
+            );
+        };
+      }),
+    );
   }
   // #endregion METHOD_installAssembler
 
@@ -421,6 +418,7 @@ export class PromptProfilesPlugin extends Service {
    */
   _loadMirror() {
     if (this._mirror) return this._mirror;
+    // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
     let resolveFrom;
     try {
       resolveFrom = this.ctx.profileContext?.dir ?? undefined;
@@ -455,12 +453,14 @@ export class PromptProfilesPlugin extends Service {
    */
   _resolveSource(rowId) {
     if (typeof rowId !== "string" || rowId === "") return "unknown";
+    // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
     let configEditor;
     try {
       configEditor = this.ctx.get?.("configEditor") ?? this.ctx.configEditor;
     } catch {
       configEditor = undefined;
     }
+    // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
     let patchPath;
     try {
       patchPath = configEditor?.documentPath;
@@ -472,7 +472,8 @@ export class PromptProfilesPlugin extends Service {
       return provenance({ patchPath, rowId }).source;
     } catch (error) {
       this.ctx.logger?.warn?.("prompt-profiles: provenance unavailable; source stays unknown", {
-        rowId, error: error?.message ?? String(error),
+        rowId,
+        error: error?.message ?? String(error),
       });
       return "unknown";
     }

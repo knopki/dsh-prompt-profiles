@@ -13,13 +13,12 @@
  * @scope
  *  - Descriptor construction now lives in the ONE shared contract
  *    (src/shared/remote-contract.ts — the client mounts the same shape);
- *    this file owns the HOST half: the run adapters (CONST_hostRunners),
+ *    this file owns the HOST half: the run adapters (HOST_RUNNERS),
  *    the `PromptProfilesRemote` service (delegation to the shared
  *    operations), and `registerRemote` (plugin fiber + typert contribution +
  *    loud lifecycle logs).
- *  - NOT: operation logic (lib/operations.ts — ONE implementation shared
- *    with the Fetch routes), the HTTP envelope (lib/api.ts), the client-side
- *    mirrored contribution (src/client, phase 2 client half).
+ *  - NOT: operation logic (lib/operations.ts), the client-side mirrored
+ *    contribution (src/client/remote.ts).
  * @invariants
  *  - Every input crosses a STRICT zod codec (`z.strictObject`): missing
  *    required fields, extra fields and wrong types are rejected BEFORE the
@@ -28,11 +27,10 @@
  *    functions, no cycles, no non-finite numbers) AND validated against its
  *    strict result schema; a violation is a thrown ApiError 500 — the call
  *    surfaces as a Remote failure, never a silent success.
- *  - Business failures are the SAME ApiError objects the operations throw
- *    for the HTTP path; the gateway wraps them as Remote failures with the
- *    message preserved.
+ *  - Business failures are the SAME ApiError objects the operations throw;
+ *    the gateway wraps them as Remote failures with the message preserved.
  *  - `undefined`-returning operations (`last`, `defaultSet`) answer
- *    `{ ok: true }`, mirroring the HTTP `{ ok: true }` envelope.
+ *    `{ ok: true }`.
  *  - The contribution registers ONLY while the plugin fiber lives: it is
  *    committed inside a Cordis effect and withdrawn with it (verified by the
  *    real-registry smoke test).
@@ -61,8 +59,8 @@
  * #endregion moduleContract
  */
 import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
-import { TYPERT_PACKAGE, REMOTE_NAMESPACE, REMOTE_SERVICE_KEY } from "../shared/remote-contract.ts";
-export { TYPERT_PACKAGE, REMOTE_NAMESPACE, REMOTE_SERVICE_KEY };
+import { REMOTE_NAMESPACE, REMOTE_SERVICE_KEY, TYPERT_PACKAGE } from "../shared/remote-contract.ts";
+export { REMOTE_NAMESPACE, REMOTE_SERVICE_KEY, TYPERT_PACKAGE };
 /**
  * The host descriptors, built from the ONE shared method table
  * (src/shared/remote-contract.ts — the client half mounts the same shape).
@@ -113,7 +111,7 @@ export declare function remoteInvocations(): {
  *
  * @purpose Host every Remote method on a Service the gateway can resolve by
  *   `descriptor.service`, with all behaviour delegated to the ONE shared
- *   operation set (no duplicated logic, identical error semantics to HTTP).
+ *   operation set (no duplicated logic).
  */
 export declare class PromptProfilesRemote extends TypertRemoteService {
     /**
@@ -125,14 +123,8 @@ export declare class PromptProfilesRemote extends TypertRemoteService {
      * fail with «Receiver must be an instance of class». Arrow closures ignore
      * the receiver entirely, so proxied dispatch behaves exactly like a direct
      * call.
-     *
-     * @purpose Host every Remote method on a Service the gateway can resolve by
-     *   `descriptor.service`, with all behaviour delegated to the ONE shared
-     *   operation set (no duplicated logic, identical error semantics to HTTP).
-     *
-     * @param {object} ctx - Cordis plugin context.
-     * @param {object} options - plugin config: { service, getService?, warn?, log? }
-     *   forwarded to createOperations (same deps contract as registerApi).
+     * @param {object} options - { service, getService?, warn?, log? } forwarded
+     *   to createOperations.
      */
     constructor(ctx: any, options?: {});
 }
@@ -142,10 +134,10 @@ export declare class PromptProfilesRemote extends TypertRemoteService {
  * calling fiber — the registry withdrawal is what the smoke test asserts.
  *
  * @purpose Give the plugin ONE call that registers the whole Remote surface
- *   when (and only while) the `typert` service exists, with the same loud
- *   lifecycle diagnostics the HTTP mount has.
+ *   when (and only while) the `typert` service exists, with loud lifecycle
+ *   diagnostics.
  * @param {object} ctx - the `typert` inject child (ctx.typert + ctx.get).
- * @param {object} options - { service, warn?, log? } (registerApi contract).
+ * @param {object} options - { service, warn?, log? }.
  * @returns {() => void} disposer withdrawing the contribution (the service
  *   fiber is a child of `ctx` and disposes with it).
  */

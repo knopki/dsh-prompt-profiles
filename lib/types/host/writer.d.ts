@@ -47,7 +47,7 @@
  */
 declare function withMutex(fn: any): Promise<void>;
 /**
- * Public alias shared with the API's settings.mutate writes (lib/api.js).
+ * Public alias shared with the operations' settings.mutate writes.
  * NOT reentrant — never call writer mutations from inside it.
  */
 export declare const withWriteLock: typeof withMutex;
@@ -81,16 +81,16 @@ export declare function removeRow({ patchPath, rowId }: {
  * @returns {Promise<boolean>} whether the file was written.
  */
 export declare function disableRow({ patchPath, rowId, name }: {
+    name: any;
     patchPath: any;
     rowId: any;
-    name: any;
 }): Promise<void>;
 /**
  * Normalize ANY row identifier to the unqualified patch row id: strip a
  * leading `<parent>:` qualification chain (`include:group:prompt-section-1` →
  * `prompt-section-1`) and keep the last segment. An already-unqualified id —
  * or a non-string / empty value — passes through unchanged. THE low-level
- * normalizer; lib/api.js imports this instead of keeping a second copy.
+ * normalizer; every other module imports this instead of keeping a copy.
  * @param {string} value - row id as received.
  * @returns {string} the last `:`-separated segment (value for non-strings).
  */
@@ -146,11 +146,11 @@ export declare function readPatchRows({ patchPath }: {
  * @returns {Promise<boolean>} whether the file was written.
  */
 export declare function renameSectionRow({ patchPath, row, oldRowId, oldName, bundleOwned }: {
+    bundleOwned: any;
+    oldName: any;
+    oldRowId: any;
     patchPath: any;
     row: any;
-    oldRowId: any;
-    oldName: any;
-    bundleOwned: any;
 }): Promise<void>;
 /**
  * Run a multi-step mutation as one unit: the module mutex AND the optional host

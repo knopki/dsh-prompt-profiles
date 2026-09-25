@@ -35,9 +35,11 @@
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
     "test": "node --test test/*.mjs",
     "test:remote": "vitest run",
-    "check": "pnpm run typecheck && pnpm run test && pnpm run test:remote && pnpm run build"
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run test:remote && pnpm run build"
   },
   "dsh": {
     "bundle": {
@@ -96,6 +98,7 @@
     }
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
     "@deepseek-ai/cordis": "~4.0.4",
     "@deepseek-ai/dsh-api-gateway": "0.1.7-rc.2",
     "@deepseek-ai/dsh-client-modules": "0.1.7-rc.2",
@@ -113,7 +116,7 @@
     "esbuild": "^0.28.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.8"
   }
 }

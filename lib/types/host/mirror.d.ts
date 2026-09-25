@@ -67,12 +67,12 @@ export declare function parseBuiltinOrders(sourceText: any): {};
  * @returns {{ orders: Record<string, number>, origin: "runtime"|"fallback", file: string|null }}
  */
 export declare function loadBuiltinOrders({ resolveFrom, warn, deps }?: {
+    deps?: {} | undefined;
     warn?: {
         (...data: any[]): void;
         (...data: any[]): void;
         (message?: any, ...optionalParams: any[]): void;
     } | undefined;
-    deps?: {} | undefined;
 }): {
     orders: Readonly<{}>;
     origin: string;

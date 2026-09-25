@@ -148,7 +148,9 @@ export function interpolateSealedText(sectionId, text, variables) {
     const group = GROUP_AT.exec(text.slice(open));
     if (group === null) {
       if (text.indexOf("}}", open + 2) >= 0) {
-        throw new Error(`malformed prompt variable reference at "${text.slice(open, open + 16)}…" in section "${sectionId}" (references are complete simple {{name}} groups)`);
+        throw new Error(
+          `malformed prompt variable reference at "${text.slice(open, open + 16)}…" in section "${sectionId}" (references are complete simple {{name}} groups)`,
+        );
       }
       result += text.slice(last, open + 2);
       last = open + 2;
@@ -156,10 +158,14 @@ export function interpolateSealedText(sectionId, text, variables) {
     }
     const name = group[0].slice(2, -2);
     if (!VARIABLE_NAME.test(name)) {
-      throw new Error(`malformed prompt variable reference "{{${name}}}" in section "${sectionId}" (variable names match ${String(VARIABLE_NAME)})`);
+      throw new Error(
+        `malformed prompt variable reference "{{${name}}}" in section "${sectionId}" (variable names match ${String(VARIABLE_NAME)})`,
+      );
     }
     if (!Object.hasOwn(known, name)) {
-      throw new Error(`unknown prompt variable "{{${name}}}" in section "${sectionId}"; registered variables: ${Object.keys(known).join(", ") || "(none)"}`);
+      throw new Error(
+        `unknown prompt variable "{{${name}}}" in section "${sectionId}"; registered variables: ${Object.keys(known).join(", ") || "(none)"}`,
+      );
     }
     const value = known[name];
     if (value === undefined) {
@@ -218,7 +224,15 @@ export function sectionSkipReason(ref, section, { subagent = false, fork = false
  *   (scope filtered, not found, disabled, empty body, interpolation failed).
  *   Never allowed to break sealing — a throwing sink is swallowed here.
  */
-export function buildSnapshot({ profile, sectionsById, isSubagent: subagent = false, isFork: fork = false, variables = {}, warn = () => {}, onSkip = () => {} }) {
+export function buildSnapshot({
+  profile,
+  sectionsById,
+  isSubagent: subagent = false,
+  isFork: fork = false,
+  variables = {},
+  warn = () => {},
+  onSkip = () => {},
+}) {
   const sections = [];
   const skip = (id, reason) => {
     try {
@@ -230,7 +244,11 @@ export function buildSnapshot({ profile, sectionsById, isSubagent: subagent = fa
   for (const ref of profile?.sections ?? []) {
     const section = sectionsById instanceof Map ? sectionsById.get(ref.id) : sectionsById?.[ref.id];
     const reason = sectionSkipReason(ref, section, { subagent, fork });
-    if (reason !== null) { skip(ref.id, reason); continue; }
+    if (reason !== null) {
+      skip(ref.id, reason);
+      continue;
+    }
+    // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
     let text;
     try {
       text = interpolateSealedText(ref.id, section.body, variables);
@@ -240,7 +258,10 @@ export function buildSnapshot({ profile, sectionsById, isSubagent: subagent = fa
       skip(ref.id, failed);
       continue;
     }
-    if (!text.trim()) { skip(ref.id, "empty after interpolation"); continue; }
+    if (!text.trim()) {
+      skip(ref.id, "empty after interpolation");
+      continue;
+    }
     sections.push({ id: ref.id, title: section.title, order: ref.order, text });
   }
   return { profileId: profile?.id ?? null, sections };
@@ -264,7 +285,8 @@ export function buildSnapshot({ profile, sectionsById, isSubagent: subagent = fa
 export function planInsertion({ snapshot, assemblySections, builtinOrdersByName }) {
   if (!snapshot?.sections?.length) return [];
   const names = assemblySections.map((section) => section.name);
-  const sorted = snapshot.sections.map((section, position) => ({ section, position }))
+  const sorted = snapshot.sections
+    .map((section, position) => ({ section, position }))
     .sort((a, b) => a.section.order - b.section.order || a.position - b.position);
   const orders = sorted.map(({ section }) => section.order);
   const anchors = insertionIndex(orders, names, builtinOrdersByName);
@@ -302,6 +324,7 @@ export function planInsertion({ snapshot, assemblySections, builtinOrdersByName 
  */
 export async function sealSnapshot({ sessionId, createSnapshot, memo, openTable, warn = () => {} }) {
   if (!memo.has(sessionId)) {
+    // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
     let snapshot;
     let persisted = false;
     try {
@@ -350,13 +373,15 @@ export async function sealSnapshot({ sessionId, createSnapshot, memo, openTable,
 export function retryingCache(create) {
   let cached = null;
   const get = () => {
-    cached ??= Promise.resolve().then(create).then(
-      (value) => value,
-      (error) => {
-        cached = null;
-        throw error;
-      },
-    );
+    cached ??= Promise.resolve()
+      .then(create)
+      .then(
+        (value) => value,
+        (error) => {
+          cached = null;
+          throw error;
+        },
+      );
     return cached;
   };
   get.cached = () => cached;

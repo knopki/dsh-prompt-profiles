@@ -46,11 +46,7 @@ export const inject = ["promptProfiles"];
 const SectionRef = z.object({
   id: z.string().required(),
   order: z.number().required(),
-  scope: z.union([
-    z.const("inherit"),
-    z.const("main-only"),
-    z.const("subagents-only"),
-  ]).default("inherit"),
+  scope: z.union([z.const("inherit"), z.const("main-only"), z.const("subagents-only")]).default("inherit"),
 });
 // #endregion CONST_SectionRef
 
@@ -78,9 +74,7 @@ export const Config = z.object({
  * @param {object} config - Resolved Config (see CONST_Config).
  */
 export function apply(ctx, config) {
-  ctx.inject(["settings"], (child) =>
-    child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)),
-  );
+  ctx.inject(["settings"], (child) => child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)));
   ctx.effect(() =>
     ctx.promptProfiles.registerProfile({
       rowId: ctx.fiber?.entry?.id ?? null,

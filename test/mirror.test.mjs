@@ -15,14 +15,11 @@
  * #endregion moduleContract
  */
 
-import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import {
-  parseBuiltinOrders,
-  loadBuiltinOrders,
-} from "../lib/mirror.js";
+import { test } from "node:test";
 import { BUILTIN_ORDERS, builtinOrdersByName, unmappedBuiltinKeys } from "../lib/builtin-orders.js";
+import { loadBuiltinOrders, parseBuiltinOrders } from "../lib/mirror.js";
 
 const SAMPLE = `
 import { Service } from "@deepseek-ai/cordis";
@@ -58,21 +55,32 @@ test("parseBuiltinOrders throws descriptively on garbage input", () => {
 
 test("parseBuiltinOrders refuses a PARTIALLY parseable table (M5)", () => {
   // One changed upstream line must fail the whole parse, not silently drop it.
-  assert.throws(() => parseBuiltinOrders(
-    "const SECTION_ORDERS = {\n\tTOOL_BASH: 1e3,\n\tTOOL_READ: 1100,\n\tTOOL_NEW: compute(1),\n};"
-  ), /line 3 is not a plain key: number pair/);
+  assert.throws(
+    () =>
+      parseBuiltinOrders(
+        "const SECTION_ORDERS = {\n\tTOOL_BASH: 1e3,\n\tTOOL_READ: 1100,\n\tTOOL_NEW: compute(1),\n};",
+      ),
+    /line 3 is not a plain key: number pair/,
+  );
   // Two pairs on one line is a grammar change too.
-  assert.throws(() => parseBuiltinOrders(
-    "const SECTION_ORDERS = {\n\tA: 1, B: 2,\n};"
-  ), /line 1 is not a plain key: number pair/);
+  assert.throws(
+    () => parseBuiltinOrders("const SECTION_ORDERS = {\n\tA: 1, B: 2,\n};"),
+    /line 1 is not a plain key: number pair/,
+  );
 });
 // #endregion SECTION_parse
 
 // #region SECTION_realFile
-test("loadBuiltinOrders parses the real installed dsh-system-prompt", { skip: (() => {
-  try { createRequire(import.meta.url).resolve("@deepseek-ai/dsh-system-prompt"); return false; }
-  catch { return "dsh-system-prompt not resolvable from here"; }
-})() }, () => {
+test("loadBuiltinOrders parses the real installed dsh-system-prompt", {
+  skip: (() => {
+    try {
+      createRequire(import.meta.url).resolve("@deepseek-ai/dsh-system-prompt");
+      return false;
+    } catch {
+      return "dsh-system-prompt not resolvable from here";
+    }
+  })(),
+}, () => {
   const warnings = [];
   const result = loadBuiltinOrders({ warn: (message) => warnings.push(message) });
   assert.equal(result.origin, "runtime", "resolved and parsed the installed package");
@@ -163,18 +171,41 @@ test("builtinOrdersByName maps verified keys to dotted section names", () => {
 /** @purpose M5: pin the name mapping and the total built-in set so a DSH upgrade breaks a test instead of silently losing anchors. */
 test("builtin name mapping is frozen against the installed built-in set", () => {
   const EXPECTED_NAMES = [
-    "app:web-surface", "context:file-reference", "deployment:persona-prefix",
-    "deployment:persona-suffix", "harness:identity", "mcp-resource-servers",
-    "plan:policy", "team:policy", "tool:bash", "tool:edit", "tool:glob",
-    "tool:goal", "tool:grep", "tool:jobs", "tool:pwsh", "tool:ralph",
-    "tool:read", "tool:web_fetch", "tool:web_search", "tool:write",
-    "tools:ptc-only", "tools:sdk", "ui:deliverable-file-references",
+    "app:web-surface",
+    "context:file-reference",
+    "deployment:persona-prefix",
+    "deployment:persona-suffix",
+    "harness:identity",
+    "mcp-resource-servers",
+    "plan:policy",
+    "team:policy",
+    "tool:bash",
+    "tool:edit",
+    "tool:glob",
+    "tool:goal",
+    "tool:grep",
+    "tool:jobs",
+    "tool:pwsh",
+    "tool:ralph",
+    "tool:read",
+    "tool:web_fetch",
+    "tool:web_search",
+    "tool:write",
+    "tools:ptc-only",
+    "tools:sdk",
+    "ui:deliverable-file-references",
   ];
-  assert.deepEqual(Object.keys(builtinOrdersByName(BUILTIN_ORDERS)).sort(), EXPECTED_NAMES,
-    "the assembled-name mapping changed — map the new built-in or pin it as known-unmapped");
+  assert.deepEqual(
+    Object.keys(builtinOrdersByName(BUILTIN_ORDERS)).sort(),
+    EXPECTED_NAMES,
+    "the assembled-name mapping changed — map the new built-in or pin it as known-unmapped",
+  );
   assert.equal(Object.keys(BUILTIN_ORDERS).length, 32, "built-in count is pinned");
-  assert.deepEqual(unmappedBuiltinKeys(BUILTIN_ORDERS), [],
-    "every fallback key is either mapped or in the pinned known-unmapped set");
+  assert.deepEqual(
+    unmappedBuiltinKeys(BUILTIN_ORDERS),
+    [],
+    "every fallback key is either mapped or in the pinned known-unmapped set",
+  );
   // A NEW built-in is reported and takes no anchor.
   assert.deepEqual(unmappedBuiltinKeys({ ...BUILTIN_ORDERS, TOOL_FRESH: 1 }), ["TOOL_FRESH"]);
   assert.equal(builtinOrdersByName({ ...BUILTIN_ORDERS, TOOL_FRESH: 1 })["tool:fresh"], undefined);

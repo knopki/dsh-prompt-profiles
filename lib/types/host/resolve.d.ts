@@ -23,11 +23,11 @@
  * @param {string[]} [options.profileIds]
  */
 export declare function resolveProfileId({ lastByWorkspace, workspaceKey, workspaceKeys, defaultId, profileIds }: {
+    defaultId: any;
     lastByWorkspace?: {} | undefined;
+    profileIds: any;
     workspaceKey: any;
     workspaceKeys: any;
-    defaultId: any;
-    profileIds: any;
 }): {
     profileId: any;
     reset: boolean;
@@ -89,8 +89,8 @@ export declare function interpolateSealedText(sectionId: any, text: any, variabl
  *   is emitted.
  */
 export declare function sectionSkipReason(ref: any, section: any, { subagent, fork }?: {
-    subagent?: boolean | undefined;
     fork?: boolean | undefined;
+    subagent?: boolean | undefined;
 }): string | null;
 /**
  * @purpose Freeze the chosen section's FINAL text (interpolation resolved and
@@ -105,14 +105,14 @@ export declare function sectionSkipReason(ref: any, section: any, { subagent, fo
  *   (scope filtered, not found, disabled, empty body, interpolation failed).
  *   Never allowed to break sealing — a throwing sink is swallowed here.
  */
-export declare function buildSnapshot({ profile, sectionsById, isSubagent: subagent, isFork: fork, variables, warn, onSkip }: {
+export declare function buildSnapshot({ profile, sectionsById, isSubagent: subagent, isFork: fork, variables, warn, onSkip, }: {
+    isFork?: boolean | undefined;
+    isSubagent?: boolean | undefined;
+    onSkip?: (() => void) | undefined;
     profile: any;
     sectionsById: any;
-    isSubagent?: boolean | undefined;
-    isFork?: boolean | undefined;
     variables?: {} | undefined;
     warn?: (() => void) | undefined;
-    onSkip?: (() => void) | undefined;
 }): {
     profileId: any;
     sections: {
@@ -136,9 +136,9 @@ export declare function buildSnapshot({ profile, sectionsById, isSubagent: subag
  *   consumer by contract.
  */
 export declare function planInsertion({ snapshot, assemblySections, builtinOrdersByName }: {
-    snapshot: any;
     assemblySections: any;
     builtinOrdersByName: any;
+    snapshot: any;
 }): any;
 /**
  * @purpose Decide a session's snapshot EXACTLY ONCE and keep it stable
@@ -161,10 +161,10 @@ export declare function planInsertion({ snapshot, assemblySections, builtinOrder
  * @returns {Promise<object>} the sealed snapshot (persisted when possible).
  */
 export declare function sealSnapshot({ sessionId, createSnapshot, memo, openTable, warn }: {
-    sessionId: any;
     createSnapshot: any;
     memo: any;
     openTable: any;
+    sessionId: any;
     warn?: (() => void) | undefined;
 }): Promise<any>;
 /**
@@ -179,5 +179,5 @@ export declare function sealSnapshot({ sessionId, createSnapshot, memo, openTabl
  */
 export declare function retryingCache(create: any): {
     (): any;
-    cached(): any;
+    cached: () => any;
 };

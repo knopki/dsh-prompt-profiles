@@ -12,13 +12,13 @@
  *   host) or client behavior (lib/client.js has its own suite).
  * #endregion moduleContract
  */
-import test from "node:test";
+
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import test from "node:test";
 import plugin, { promptProfilesDomain } from "../lib/index.js";
-import { BUILTIN_ORDERS } from "../lib/builtin-orders.js";
 
 // #region FUNC_stubContext
 /** @purpose Stand in for a Cordis context: record inject callbacks so tests
@@ -71,23 +71,31 @@ test("plugin constructs against stubbed DSH services", () => {
     config: { id: "tone", title: { get: () => "Tone" }, body: { get: () => "Be brief." } },
     source: "bundle",
   });
-  assert.deepEqual(service.sections().map((row) => row.title), ["Tone"]);
+  assert.deepEqual(
+    service.sections().map((row) => row.title),
+    ["Tone"],
+  );
   dispose();
 });
 // #endregion TEST_construction
 
 // #region FUNC_reloadContext
-/** @purpose Reload stand: effect disposers are COLLECTED (like cordis), the injected Connection Fetch registry throws on duplicate exact routes (like HostConnectionService), and info/warn logs are captured. */
+/** @purpose Reload stand: effect disposers are COLLECTED (like cordis), the injected typert registry throws on a duplicate endpoint (like the real TypertRegistry), and info/warn logs are captured. */
 function reloadContext() {
-  const routes = new Map();
+  const endpoints = new Map();
   const effects = [];
   const logs = [];
-  let connectionInject = null;
-  const fetchRegistry = {
-    register({ path, methods, requestBody, fetch }) {
-      if (routes.has(path)) throw new Error(`connection: exact Fetch route ${JSON.stringify(path)} is already registered`);
-      routes.set(path, { methods: new Set(methods), requestBody, fetch });
-      return () => routes.delete(path);
+  let typertInject = null;
+  const typert = {
+    register(contribution) {
+      const keys = contribution.invocations.map((descriptor) => `${descriptor.namespace}/${descriptor.method}`);
+      for (const key of keys) {
+        if (endpoints.has(key)) throw new Error(`typert: endpoint ${key} is already registered`);
+      }
+      for (const [index, key] of keys.entries()) endpoints.set(key, contribution.invocations[index]);
+      return () => {
+        for (const key of keys) endpoints.delete(key);
+      };
     },
   };
   const logger = {
@@ -101,45 +109,56 @@ function reloadContext() {
     if (typeof dispose === "function") effects.push(dispose);
     return dispose;
   };
-  const connection = { admit: async () => ({ peer: {} }), fetch: fetchRegistry };
   const child = {
-    connection, logger, get: () => undefined,
+    typert,
+    logger,
+    get: () => undefined,
     settings: { configure: () => () => {} },
     configEditor: { documentPath: "/nonexistent-dsh-reload/cordis.patch.yml" },
     effect: collect,
     on: () => () => {},
+    // The delegating Remote service itself is Cordis machinery; the reload
+    // concern here is the contribution lifetime, so the fiber is a recorder.
+    plugin: () => ({ dispose() {} }),
   };
   const ctx = {
-    inject: (deps, callback) => { if (deps.includes("connection")) connectionInject = callback; return () => {}; },
+    inject: (deps, callback) => {
+      if (deps.includes("typert")) typertInject = callback;
+      return () => {};
+    },
     effect: collect,
     on: () => () => {},
     get: () => undefined,
     reflect: { provide: () => {} },
     logger,
   };
-  return { ctx, child, routes, effects, logs, mountRoutes: () => connectionInject?.(child) };
+  return { ctx, child, endpoints, effects, logs, mountRemote: () => typertInject?.(child) };
 }
 // #endregion FUNC_reloadContext
 
 // #region TEST_reload
-/** @purpose HMR reload: mount → dispose the effects (as the loader does) → mount the SAME inject callback again; routes must leave and come back without a duplicate-route failure. */
-test("plugin mounts, disposes and remounts without duplicate-route failures", async () => {
+/** @purpose HMR reload: mount → dispose the effects (as the loader does) → mount the SAME inject callback again; the Remote contribution must leave and come back without a duplicate-endpoint failure. */
+test("plugin mounts, disposes and remounts without duplicate-endpoint failures", async () => {
   const lc = reloadContext();
   const config = { default: { get: () => "" }, lastByWorkspace: { get: () => ({}) } };
   new plugin(lc.ctx, config);
-  lc.mountRoutes(); // mount #1: fire the recorded connection inject callback
-  const firstCount = lc.routes.size;
-  assert.ok(firstCount > 0, "routes registered on mount");
+  lc.mountRemote(); // mount #1: fire the recorded typert inject callback
+  const firstCount = lc.endpoints.size;
+  assert.equal(firstCount, 11, "all eleven Remote endpoints registered on mount");
   // HMR unmount: run every collected effect disposer.
   for (const dispose of lc.effects.splice(0).reverse()) await dispose();
-  assert.equal(lc.routes.size, 0, "routes removed on unmount");
+  assert.equal(lc.endpoints.size, 0, "contribution withdrawn on unmount");
   // HMR remount of the same row (same child services).
-  lc.mountRoutes();
-  assert.equal(lc.routes.size, firstCount, "the same routes are back, no duplicate failure");
-  assert.ok(!lc.logs.some((entry) => /route registration failed/.test(entry.message)),
-    "no registration failure logged on a clean reload");
-  assert.ok(lc.logs.some((entry) => /api: mounted/.test(entry.message)), "mount logged at info");
-  assert.ok(lc.logs.some((entry) => /api: unmounted/.test(entry.message)), "unmount logged at info");
+  lc.mountRemote();
+  assert.equal(lc.endpoints.size, firstCount, "the same endpoints are back, no duplicate failure");
+  assert.ok(
+    !lc.logs.some((entry) => /contribution rejected/.test(entry.message)),
+    "no registration failure logged on a clean reload",
+  );
+  assert.ok(
+    lc.logs.some((entry) => /remote: mounted/.test(entry.message)),
+    "mount logged at info",
+  );
 });
 // #endregion TEST_reload
 
@@ -153,10 +172,15 @@ test("assembler resolves the workspace key, seals and logs the decision, and pin
   const logs = [];
   const records = new Map();
   let openFails = false;
-  const table = { get: (id) => records.get(id), put: async (id, snapshot) => { records.set(id, snapshot); } };
+  const table = {
+    get: (id) => records.get(id),
+    put: async (id, snapshot) => {
+      records.set(id, snapshot);
+    },
+  };
   const domain = { table: () => table, close: async () => {} };
   let assemble = null;
-  let config = {
+  const config = {
     default: { get: () => "" },
     lastByWorkspace: { get: () => ({ "ws-session": "light" }) },
   };
@@ -170,7 +194,8 @@ test("assembler resolves the workspace key, seals and logs the decision, and pin
   service.registerProfile({
     rowId: "row-light",
     config: {
-      id: "light", title: { get: () => "Light" },
+      id: "light",
+      title: { get: () => "Light" },
       sections: { get: () => [{ id: "cwd-note", order: 1050 }] },
     },
     source: "bundle",
@@ -181,14 +206,25 @@ test("assembler resolves the workspace key, seals and logs the decision, and pin
   const resolveCalls = [];
   const workspaceRegistry = {
     list: () => [{ id: "ws-session", sessionIds: ["s1"] }],
-    resolveByPath: async (path) => { resolveCalls.push(path); return { id: "ws-path" }; },
+    resolveByPath: async (path) => {
+      resolveCalls.push(path);
+      return { id: "ws-path" };
+    },
   };
   const assembler = ctx.injections.find(({ deps }) => deps.includes("storageDomain"));
   assert.ok(assembler, "assembler injection declared");
   assembler.callback({
-    storageDomain: { open: async () => { if (openFails) throw new Error("storage down"); return domain; } },
+    storageDomain: {
+      open: async () => {
+        if (openFails) throw new Error("storage down");
+        return domain;
+      },
+    },
     workspaceRegistry,
-    on: (event, handler) => { assemble = handler; return () => {}; },
+    on: (_event, handler) => {
+      assemble = handler;
+      return () => {};
+    },
     effect: (thunk) => thunk(),
     logger: {
       debug: (message, details) => logs.push({ level: "debug", message, details }),
@@ -209,7 +245,10 @@ test("assembler resolves the workspace key, seals and logs the decision, and pin
     { name: "tool:bash", text: "T" },
     { name: "prompt-profile:cwd-note", text: "Work in /first.", interpolate: false },
   ]);
-  assert.equal(logs.some((entry) => /pinned in memory/.test(entry.message)), true);
+  assert.equal(
+    logs.some((entry) => /pinned in memory/.test(entry.message)),
+    true,
+  );
   // The seal line the user can send when a chip choice does not reach the prompt.
   const seal = logs.find((entry) => entry.message === "prompt-profiles seal");
   assert.ok(seal, "seal diagnostics logged");
@@ -230,7 +269,9 @@ test("assembler resolves the workspace key, seals and logs the decision, and pin
   config.lastByWorkspace = { get: () => ({ "ws-session": "other" }) };
   const second = await runAssembly({ cwd: "/second" });
   assert.deepEqual(second.sections, first.sections);
-  assert.deepEqual(records.get("s1").sections, [{ id: "cwd-note", title: "Cwd", order: 1050, text: "Work in /first." }]);
+  assert.deepEqual(records.get("s1").sections, [
+    { id: "cwd-note", title: "Cwd", order: 1050, text: "Work in /first." },
+  ]);
   // A literal `{{` body would be skipped at seal time — nothing render-hostile
   // is ever persisted or inserted.
   service.registerSection({
@@ -247,7 +288,12 @@ test("assembler resolves the workspace key, seals and logs the decision, and pin
 test("assembler falls back to the async resolveByPath workspace id", async () => {
   const logs = [];
   const records = new Map();
-  const table = { get: (id) => records.get(id), put: async (id, snapshot) => { records.set(id, snapshot); } };
+  const table = {
+    get: (id) => records.get(id),
+    put: async (id, snapshot) => {
+      records.set(id, snapshot);
+    },
+  };
   let assemble = null;
   const config = { default: { get: () => "" }, lastByWorkspace: { get: () => ({ "ws-path": "light" }) } };
   const ctx = stubContext();
@@ -269,16 +315,23 @@ test("assembler falls back to the async resolveByPath workspace id", async () =>
       list: () => [{ id: "ws-other", sessionIds: ["someone-else"] }],
       resolveByPath: async () => ({ id: "ws-path" }),
     },
-    on: (event, handler) => { assemble = handler; return () => {}; },
+    on: (_event, handler) => {
+      assemble = handler;
+      return () => {};
+    },
     effect: (thunk) => thunk(),
     logger: { debug() {}, info: (message, details) => logs.push({ message, details }), warn() {} },
   });
   const state = { sections: [{ name: "tool:bash", text: "T" }], variables: {} };
   await assemble(state, { agent: { session: { id: "s2", header: { cwd: "/proj" } } } }, () => {});
-  assert.deepEqual(state.sections, [
-    { name: "tool:bash", text: "T" },
-    { name: "prompt-profile:tone", text: "Be brief.", interpolate: false },
-  ], "the awaited path-resolved workspace id reaches resolveProfileId");
+  assert.deepEqual(
+    state.sections,
+    [
+      { name: "tool:bash", text: "T" },
+      { name: "prompt-profile:tone", text: "Be brief.", interpolate: false },
+    ],
+    "the awaited path-resolved workspace id reaches resolveProfileId",
+  );
   const seal = logs.find((entry) => entry.message === "prompt-profiles seal");
   assert.equal(seal.details.workspaceKey, "ws-path");
   assert.equal(seal.details.profileId, "light");
@@ -288,7 +341,12 @@ test("assembler falls back to the async resolveByPath workspace id", async () =>
 test("assembler finds a legacy path-keyed choice under a UUID-resolved workspace", async () => {
   const logs = [];
   const records = new Map();
-  const table = { get: (id) => records.get(id), put: async (id, snapshot) => { records.set(id, snapshot); } };
+  const table = {
+    get: (id) => records.get(id),
+    put: async (id, snapshot) => {
+      records.set(id, snapshot);
+    },
+  };
   let assemble = null;
   // The choice exists ONLY under the old path key.
   const config = { default: { get: () => "" }, lastByWorkspace: { get: () => ({ "/proj": "light" }) } };
@@ -308,16 +366,23 @@ test("assembler finds a legacy path-keyed choice under a UUID-resolved workspace
   assembler.callback({
     storageDomain: { open: async () => ({ table: () => table, close: async () => {} }) },
     workspaceRegistry: { list: () => [], resolveByPath: async () => ({ id: "uuid-1" }) },
-    on: (event, handler) => { assemble = handler; return () => {}; },
+    on: (_event, handler) => {
+      assemble = handler;
+      return () => {};
+    },
     effect: (thunk) => thunk(),
     logger: { debug() {}, info: (message, details) => logs.push({ message, details }), warn() {} },
   });
   const state = { sections: [{ name: "tool:bash", text: "T" }], variables: {} };
   await assemble(state, { agent: { session: { id: "s-path", header: { cwd: "/proj" } } } }, () => {});
-  assert.deepEqual(state.sections, [
-    { name: "tool:bash", text: "T" },
-    { name: "prompt-profile:tone", text: "Be brief.", interpolate: false },
-  ], "the legacy path choice still reaches the prompt");
+  assert.deepEqual(
+    state.sections,
+    [
+      { name: "tool:bash", text: "T" },
+      { name: "prompt-profile:tone", text: "Be brief.", interpolate: false },
+    ],
+    "the legacy path choice still reaches the prompt",
+  );
   const seal = logs.find((entry) => entry.message === "prompt-profiles seal");
   assert.equal(seal.details.workspaceKey, "uuid-1", "diagnostics report the first (UUID) candidate");
   assert.equal(seal.details.profileId, "light");
@@ -329,12 +394,16 @@ test("assembler finds a legacy path-keyed choice under a UUID-resolved workspace
 test("registerSection resolves source through ctx.get('configEditor') without injection", async () => {
   const dir = await mkdtemp(join(tmpdir(), "dsh-pp-source-"));
   const patchPath = join(dir, "cordis.patch.yml");
-  await writeFile(patchPath, [
-    "- insert:",
-    '    - id: prompt-section-old-slug',
-    '      name: "@knopki/dsh-prompt-profiles/section"',
-    "      config: { id: old-slug, title: T, body: B }",
-  ].join("\n"), { mode: 0o600 });
+  await writeFile(
+    patchPath,
+    [
+      "- insert:",
+      "    - id: prompt-section-old-slug",
+      '      name: "@knopki/dsh-prompt-profiles/section"',
+      "      config: { id: old-slug, title: T, body: B }",
+    ].join("\n"),
+    { mode: 0o600 },
+  );
   try {
     const ctx = stubContext();
     // No injected configEditor property — only the reflect accessor.
@@ -353,7 +422,10 @@ test("registerSection resolves source through ctx.get('configEditor') without in
     assert.equal(sources["prompt-section-bundle"], "unknown", "a row absent from the patch is unresolved");
     // Without configEditor the source degrades to unknown, never throws.
     const bare = new plugin(stubContext(), { default: { get: () => "" }, lastByWorkspace: { get: () => ({}) } });
-    bare.registerSection({ rowId: "prompt-section-x", config: { id: "prompt-section-x", title: { get: () => "T" }, body: { get: () => "B" } } });
+    bare.registerSection({
+      rowId: "prompt-section-x",
+      config: { id: "prompt-section-x", title: { get: () => "T" }, body: { get: () => "B" } },
+    });
     assert.equal(bare.sections()[0].source, "unknown");
   } finally {
     await rm(dir, { recursive: true, force: true });

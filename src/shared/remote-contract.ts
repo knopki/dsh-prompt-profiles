@@ -54,6 +54,7 @@ export const REMOTE_SERVICE_KEY = "promptProfilesRemote";
  * generated descriptors' memoized factories (`dsh-goal/lib/typert.host.js`).
  */
 export function memoCreate(build) {
+  // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
   let cached;
   return () => (cached ??= build());
 }
@@ -90,58 +91,64 @@ export const METHOD_SPECS = [
   {
     method: "state",
     line: 115,
-    input: () => z.strictObject({
-      sessionId: z.string().optional(),
-      cwd: z.string().optional(),
-      workspaceId: z.string().optional(),
-    }),
-    result: () => z.strictObject({
-      profiles: jsonRows(),
-      sections: jsonRows(),
-      builtinOrders: z.record(z.string(), z.number()),
-      modes: z.array(z.strictObject({ id: z.string(), title: z.string(), complete: z.boolean() })),
-      default: z.string(),
-      lastByWorkspace: z.record(z.string(), z.string()),
-      revision: z.number().nullable(),
-    }),
+    input: () =>
+      z.strictObject({
+        sessionId: z.string().optional(),
+        cwd: z.string().optional(),
+        workspaceId: z.string().optional(),
+      }),
+    result: () =>
+      z.strictObject({
+        profiles: jsonRows(),
+        sections: jsonRows(),
+        builtinOrders: z.record(z.string(), z.number()),
+        modes: z.array(z.strictObject({ id: z.string(), title: z.string(), complete: z.boolean() })),
+        default: z.string(),
+        lastByWorkspace: z.record(z.string(), z.string()),
+        revision: z.number().nullable(),
+      }),
   },
   {
     method: "preview",
     line: 134,
     input: () => z.strictObject({ profileId: z.string(), cwd: z.string().optional() }),
-    result: () => z.strictObject({
-      profileId: z.string(),
-      title: z.string(),
-      sections: jsonRows(),
-      skipped: z.array(z.strictObject({ id: z.string(), title: z.string(), reason: z.string() })),
-      variables: z.record(z.string(), z.string().nullable()),
-    }),
+    result: () =>
+      z.strictObject({
+        profileId: z.string(),
+        title: z.string(),
+        sections: jsonRows(),
+        skipped: z.array(z.strictObject({ id: z.string(), title: z.string(), reason: z.string() })),
+        variables: z.record(z.string(), z.string().nullable()),
+      }),
   },
   {
     method: "sectionCreate",
     line: 147,
-    input: () => z.strictObject({
-      id: z.string().optional(),
-      title: z.string().optional(),
-      body: z.string().optional(),
-    }),
-    result: () => z.strictObject({
-      rowId: z.string(),
-      patchId: z.string(),
-      configId: z.string(),
-      title: z.string(),
-      body: z.string(),
-      emits: z.boolean(),
-    }),
+    input: () =>
+      z.strictObject({
+        id: z.string().optional(),
+        title: z.string().optional(),
+        body: z.string().optional(),
+      }),
+    result: () =>
+      z.strictObject({
+        rowId: z.string(),
+        patchId: z.string(),
+        configId: z.string(),
+        title: z.string(),
+        body: z.string(),
+        emits: z.boolean(),
+      }),
   },
   {
     method: "sectionUpdate",
     line: 165,
-    input: () => z.strictObject({
-      rowId: z.string(),
-      value: z.strictObject({ title: z.string(), body: z.string() }),
-      revision: z.number().optional(),
-    }),
+    input: () =>
+      z.strictObject({
+        rowId: z.string(),
+        value: z.strictObject({ title: z.string(), body: z.string() }),
+        revision: z.number().optional(),
+      }),
     result: () => z.strictObject({ rowId: z.string(), patchId: z.string(), emits: z.boolean() }),
   },
   {
@@ -154,37 +161,41 @@ export const METHOD_SPECS = [
     method: "sectionRename",
     line: 183,
     input: () => z.strictObject({ rowId: z.string(), id: z.string() }),
-    result: () => z.strictObject({
-      rowId: z.string(),
-      patchId: z.string(),
-      id: z.string(),
-      affectedProfiles: z.array(z.strictObject({ profileId: z.string(), title: z.string() })),
-    }),
+    result: () =>
+      z.strictObject({
+        rowId: z.string(),
+        patchId: z.string(),
+        id: z.string(),
+        affectedProfiles: z.array(z.strictObject({ profileId: z.string(), title: z.string() })),
+      }),
   },
   {
     method: "profileCreate",
     line: 195,
-    input: () => z.strictObject({
-      id: z.string().optional(),
-      title: z.string().optional(),
-      sections: z.array(sectionRef()).optional(),
-    }),
-    result: () => z.strictObject({
-      rowId: z.string(),
-      patchId: z.string(),
-      configId: z.string(),
-      title: z.string(),
-      sections: z.array(sectionRef()),
-    }),
+    input: () =>
+      z.strictObject({
+        id: z.string().optional(),
+        title: z.string().optional(),
+        sections: z.array(sectionRef()).optional(),
+      }),
+    result: () =>
+      z.strictObject({
+        rowId: z.string(),
+        patchId: z.string(),
+        configId: z.string(),
+        title: z.string(),
+        sections: z.array(sectionRef()),
+      }),
   },
   {
     method: "profileUpdate",
     line: 212,
-    input: () => z.strictObject({
-      rowId: z.string(),
-      value: z.strictObject({ title: z.string(), sections: z.array(sectionRef()).optional() }),
-      revision: z.number().optional(),
-    }),
+    input: () =>
+      z.strictObject({
+        rowId: z.string(),
+        value: z.strictObject({ title: z.string(), sections: z.array(sectionRef()).optional() }),
+        revision: z.number().optional(),
+      }),
     result: () => z.strictObject({ rowId: z.string(), patchId: z.string() }),
   },
   {
@@ -196,12 +207,13 @@ export const METHOD_SPECS = [
   {
     method: "last",
     line: 230,
-    input: () => z.strictObject({
-      workspaceId: z.string().optional(),
-      cwd: z.string().optional(),
-      profileId: z.string(),
-      revision: z.number().optional(),
-    }),
+    input: () =>
+      z.strictObject({
+        workspaceId: z.string().optional(),
+        cwd: z.string().optional(),
+        profileId: z.string(),
+        revision: z.number().optional(),
+      }),
     result: () => z.strictObject({ ok: z.literal(true) }),
   },
   {
@@ -242,16 +254,18 @@ export function buildRemoteDescriptors(face) {
     namespace: REMOTE_NAMESPACE,
     method: spec.method,
     invocation: { kind: "direct" },
-    parameters: [{
-      name: "input",
-      wire: "input",
-      source: "json",
-      codec: {
-        mode: "strict",
-        typeSymbol: `${TYPERT_PACKAGE}#${cap(spec.method)}Input`,
-        create: memoCreate(spec.input),
+    parameters: [
+      {
+        name: "input",
+        wire: "input",
+        source: "json",
+        codec: {
+          mode: "strict",
+          typeSymbol: `${TYPERT_PACKAGE}#${cap(spec.method)}Input`,
+          create: memoCreate(spec.input),
+        },
       },
-    }],
+    ],
     result: {
       mode: "strict",
       typeSymbol: `${TYPERT_PACKAGE}#${cap(spec.method)}Result`,

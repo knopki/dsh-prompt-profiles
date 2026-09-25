@@ -7,12 +7,11 @@
  * @scope
  *  - Expose the registry as `ctx.promptProfiles`, load the mirror lazily,
  *    seal each agent's first assembled prompt in a durable storage domain,
- *    resolve row provenance from the profile patch, serve the SPEC §5.5
- *    HTTP API on web surfaces, and mount the Typert Remote surface
- *    (namespace `promptProfiles`) when the `typert` service exists.
- *  - NOT: section/profile row registration (lib/section.js, lib/profile.js),
- *    patch-file mutation mechanics (lib/writer.js), route handlers
- *    (lib/api.js).
+ *    resolve row provenance from the profile patch, and mount the Typert
+ *    Remote surface (namespace `promptProfiles`) when the `typert` service
+ *    exists.
+ *  - NOT: section/profile row registration (lib/section.js, lib/profile.js)
+ *    or patch-file mutation mechanics (lib/writer.js).
  * @invariants
  *  - The row mounts even when optional services (settings, profileContext)
  *    are absent; injection waits for storageDomain and workspaceRegistry.
@@ -71,8 +70,8 @@ export declare const promptProfilesDomain: {
  * The `promptProfiles` service: registry of section/profile rows plus the
  * built-in orders mirror. Loader row `prompt-profiles` instantiates this.
  *
- * @purpose Give every consumer (subpath rows, prompt sealing, HTTP API) one
- *   authoritative registry view of prompt-profile rows that survives
+ * @purpose Give every consumer (subpath rows, prompt sealing, Remote surface)
+ *   one authoritative registry view of prompt-profile rows that survives
  *   duplicate ids and degrades instead of throwing.
  */
 export declare class PromptProfilesPlugin extends Service {
@@ -83,10 +82,9 @@ export declare class PromptProfilesPlugin extends Service {
     /** @type {{ orders: Record<string, number>, origin: string, file: string|null } | null} */
     _mirror: null;
     /**
-     * Install the service and wire settings suppression.
-     *
-     * @purpose Mount the registry, the prompt assembler, and (on web surfaces)
-     *   the CRUD API without requiring any optional service to exist.
+     * @purpose Mount the registry, the prompt assembler, and (when the platform
+     *   service exists) the Remote surface, without requiring any optional
+     *   service to be present.
      * @param {object} ctx - Cordis plugin context (fiber = the loader row).
      * @param {object} config - resolved Config (see CONST_Config).
      */

@@ -12,10 +12,10 @@
  * #endregion moduleContract
  */
 
-import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PromptProfilesRegistry, insertionIndex } from "../lib/registry.js";
+import { test } from "node:test";
 import { BUILTIN_ORDERS, builtinOrdersByName } from "../lib/builtin-orders.js";
+import { insertionIndex, PromptProfilesRegistry } from "../lib/registry.js";
 
 function fixtureRegistry() {
   const warnings = [];
@@ -57,8 +57,14 @@ function fixtureRegistry() {
 // #region SECTION_views
 test("sections() sorts by id; profiles() sorts by title", () => {
   const { registry } = fixtureRegistry();
-  assert.deepEqual(registry.sections().map((s) => s.id), ["light-tone", "no-preamble"]);
-  assert.deepEqual(registry.profiles().map((p) => p.id), ["light", "review"]);
+  assert.deepEqual(
+    registry.sections().map((s) => s.id),
+    ["light-tone", "no-preamble"],
+  );
+  assert.deepEqual(
+    registry.profiles().map((p) => p.id),
+    ["light", "review"],
+  );
 });
 
 test("views are detached copies", () => {
@@ -70,7 +76,10 @@ test("views are detached copies", () => {
 test("disposers remove registrations", () => {
   const { registry, disposeA } = fixtureRegistry();
   disposeA();
-  assert.deepEqual(registry.sections().map((s) => s.id), ["no-preamble"]);
+  assert.deepEqual(
+    registry.sections().map((s) => s.id),
+    ["no-preamble"],
+  );
 });
 // #endregion SECTION_views
 
@@ -102,7 +111,10 @@ test("disposing an overridden registration is a no-op (deterministic winner)", (
   const winner = registry.sections().find((s) => s.id === "light-tone");
   assert.equal(winner.rowId, "row-c");
   disposeC();
-  assert.equal(registry.sections().find((s) => s.id === "light-tone"), undefined);
+  assert.equal(
+    registry.sections().find((s) => s.id === "light-tone"),
+    undefined,
+  );
 });
 
 test("H4: disposing the winner RESTORES the still-mounted earlier registration", () => {
@@ -121,7 +133,10 @@ test("H4: disposing the winner RESTORES the still-mounted earlier registration",
   assert.equal(survivor.title, "Light tone");
   // And disposing the survivor finally removes it.
   disposeA();
-  assert.equal(registry.sections().find((s) => s.id === "light-tone"), undefined);
+  assert.equal(
+    registry.sections().find((s) => s.id === "light-tone"),
+    undefined,
+  );
 });
 // #endregion SECTION_duplicates
 
@@ -141,20 +156,20 @@ test("usedIn lists referencing profiles with per-profile scope", () => {
 test("insertionIndex anchors on builtin names present in the assembly", () => {
   // Realistic assembly: entries carry names only, NO order field (spike R1).
   const assemblyNames = [
-    "harness:identity",            // -1000
-    "deployment:persona-prefix",   // 0
-    "plan:policy",                 // 500
-    "tool:bash",                   // 1000
-    "deployment:persona-suffix",   // 10200
+    "harness:identity", // -1000
+    "deployment:persona-prefix", // 0
+    "plan:policy", // 500
+    "tool:bash", // 1000
+    "deployment:persona-suffix", // 10200
   ];
   const byName = builtinOrdersByName(BUILTIN_ORDERS);
   // Our snapshot sections, orders exactly as the profile states them.
   const ours = [300, 1000, 1400];
   const plan = insertionIndex(ours, assemblyNames, byName);
   assert.deepEqual(plan, [
-    { order: 300, index: 2 },    // after persona-prefix(0), before plan:policy(500)
-    { order: 1000, index: 3 },   // EQUAL to tool:bash: lands before it — no +0.5
-    { order: 1400, index: 4 },   // after tool:bash (no anchor between 1000 and 10200)
+    { order: 300, index: 2 }, // after persona-prefix(0), before plan:policy(500)
+    { order: 1000, index: 3 }, // EQUAL to tool:bash: lands before it — no +0.5
+    { order: 1400, index: 4 }, // after tool:bash (no anchor between 1000 and 10200)
   ]);
 });
 
@@ -183,19 +198,26 @@ test("insertionIndex splices descending keep our ascending order intact", () => 
     { name: "deployment:persona-suffix", text: "E" },
   ];
   // 1000 EQUALS tool:bash: it anchors before tool:bash, unshifted.
-  const plan = insertionIndex([1000, 1400], assembly.map((s) => s.name), byName);
+  const plan = insertionIndex(
+    [1000, 1400],
+    assembly.map((s) => s.name),
+    byName,
+  );
   for (const entry of [...plan].reverse()) {
     assembly.splice(entry.index, 0, { name: `prompt-profile:x${entry.order}`, text: "ours" });
   }
-  assert.deepEqual(assembly.map((s) => s.name), [
-    "harness:identity",
-    "deployment:persona-prefix",
-    "plan:policy",
-    "prompt-profile:x1000",
-    "tool:bash",
-    "prompt-profile:x1400",
-    "deployment:persona-suffix",
-  ]);
+  assert.deepEqual(
+    assembly.map((s) => s.name),
+    [
+      "harness:identity",
+      "deployment:persona-prefix",
+      "plan:policy",
+      "prompt-profile:x1000",
+      "tool:bash",
+      "prompt-profile:x1400",
+      "deployment:persona-suffix",
+    ],
+  );
 });
 // #endregion SECTION_insertionIndex
 
@@ -206,7 +228,12 @@ test("insertionIndex splices descending keep our ascending order intact", () => 
 test("volatile wrappers are unwrapped at read time and follow live edits", () => {
   const registry = new PromptProfilesRegistry({ warn: () => {} });
   // Fake Cordis volatile wrapper: .get() returns the CURRENT value.
-  const box = (initial) => ({ value: initial, get() { return this.value; } });
+  const box = (initial) => ({
+    value: initial,
+    get() {
+      return this.value;
+    },
+  });
   const title = box("Zen");
   const body = box("Old body.");
   const sections = box([{ id: "zen", order: 100, scope: "main-only" }]);
@@ -231,8 +258,14 @@ test("volatile wrappers are unwrapped at read time and follow live edits", () =>
   // Sorting follows live titles: a re-titled profile reorders against a peer.
   const beta = box("Beta");
   registry.registerProfile({ rowId: "row-b", config: { id: "b", title: beta, sections: box([]) }, source: "user" });
-  assert.deepEqual(registry.profiles().map((row) => row.id), ["b", "p"]);
+  assert.deepEqual(
+    registry.profiles().map((row) => row.id),
+    ["b", "p"],
+  );
   beta.value = "Zeta";
-  assert.deepEqual(registry.profiles().map((row) => row.id), ["p", "b"]);
+  assert.deepEqual(
+    registry.profiles().map((row) => row.id),
+    ["p", "b"],
+  );
 });
 // #endregion TEST_volatileUnwrap

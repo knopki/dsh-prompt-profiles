@@ -390,3 +390,125 @@ descriptor table). `lib/client.js.map` 1 602 094 b.
    inject"). The product inject and the spec both use the two-key form.
 7. `MIGRATION.md` carries an uncommitted in-workspace edit (a `zod/mini`
    note) that is NOT part of this commit — left in the tree for its author.
+
+## Refactor step A — delete the HTTP transport, add tooling
+
+Step A of the user-specified refactor (`MIGRATION.md` → "Refactor"): the
+transport is now Remote-ONLY, the comment policy is applied to
+`operations.ts`, and the project has a linter. No layering yet (that is
+step B).
+
+### Deleted
+
+- `src/host/api.ts` (328 lines) — Fetch routes, CSRF/Origin checks,
+  `connection.admit`, body byte-limit/parse, the `{error:{message}}`
+  envelope, route registration/disposal and its loud zero-route logs.
+- `createOperations` no longer builds or returns the `/state`…`/last` route
+  table; it returns `{ ops }` only. The operation logic itself is untouched
+  (`api.test.mjs` still pins all 11 operations).
+- `src/host/index.ts`: the `connection` inject, `registerApi` call and the
+  200 ms "mounted ZERO routes" timer. The `typert` inject, the sealing
+  assembler, the registry wiring and the writer's HMR gate remain.
+- Client: `request`/`post`/`ApiError`/`makeApi`/`clientApi`, the
+  `/api/__dsh-prompt-profiles` base and the failed-mount fetch fallback. A
+  failed mount now leaves `unavailableApi` in force: every method rejects
+  with the new `remoteUnavailable` message (en/ru/zh), which the existing
+  notify / inline-error / settings-placeholder paths render. Nothing falls
+  back silently; `readyApi()` still makes pre-mount calls WAIT.
+- `build.mjs`: dropped the `src/host/api.ts` entry. It now wipes `lib/`
+  before building — esbuild content-hashes chunk names and tsc keeps
+  declarations of deleted modules, so every earlier build had left orphan
+  `lib/chunks/*` behind (8 stale chunk pairs of up to 20 k lines each were
+  still committed; one of them was the only remaining
+  `/api/__dsh-prompt-profiles` string in `lib/`).
+- `lib/`: `api.js`, `api.js.map`, `lib/types/host/api.d.ts` and every stale
+  chunk pair.
+
+### Test deltas (node:test 131 → 124, vitest 4 → 4, shim assertion mass
+396 → 404 assert lines)
+
+- `test/api.test.mjs` 57 → 51. Removed 7 tests that asserted the deleted
+  envelope only: CSRF content-type/Origin (415/403), `connection.admit`
+  fencing (401/403/503-fallback), the four route-registration/RELOAD tests
+  and the "route failures are logged with route/rowId/patchId" test.
+  Added 1: `createOperations` returns exactly the 11 operations and no
+  transport table. The harness now drives `createOperations` through a
+  test-owned path→operation map and keeps the operation-level statuses
+  (400/404/409/503/500) and messages under assertion. Envelope-only
+  expectations that no longer exist: the `internal error:` prefix on 500s
+  (the raw message now surfaces) and the per-request failure log lines.
+- `test/index.test.mjs` 7 → 7: the reload test was re-pointed from the
+  Connection Fetch registry to the Remote contribution (a stub `typert`
+  that rejects duplicate endpoints, like the real registry): mount →
+  dispose → remount is clean, all 11 endpoints come back.
+- `test/smoke-cordis.test.mjs` 9 → 8: no more `driver`/routes/connection
+  stub. "Every service present" now exercises the shared operations against
+  the real Cordis services; a new "no optional service at all" test keeps
+  the old headless mount guarantee; the gateway test compares a Remote call
+  with `createOperations` on a second host (byte-identical patches) instead
+  of HTTP-vs-Remote; the "connection alone still registers 10 routes" test
+  is gone (its operation-level behaviour lives in `api.test.mjs`).
+- `test/client-shim.test.cjs`: the fetch stub is replaced by a Remote
+  namespace double (records `{method, args}`, answers envelopes, scripts
+  `state`), the fake `$mount` now RESOLVES and the strict ctx gained
+  `inject`. Re-pointed cases: pick → exactly one `last({cwd, profileId})`;
+  the blocked no-key choice still issues no request; the frozen write
+  contract is asserted on `makeRemoteApi` (`rowId`, whole-object `value`,
+  `defaultSet({profileId})`, `state({})`); chip refresh counts Remote
+  `state` calls (recorder is append-only now, so phases count from marks
+  instead of `length = 0`). Added a second, isolated VM load whose mount
+  REJECTS: it proves the dictionary message reaches the UI error path, that
+  the failure is logged with `stage: '$mount'`, and that every facade
+  method refuses instead of silently answering. Static guard added: the
+  built client contains no `__dsh-prompt-profiles` and no `fetch(`.
+- `test/remote/client-remote.spec.mjs`: unchanged behaviour; `(0, eval)`
+  became `globalThis.eval` (indirect eval, same semantics) to satisfy
+  Biome.
+
+### Biome
+
+- `@biomejs/biome@2.5.14` devDependency; `biome.json` with recommended
+  rules, 2-space indent, line width 120, double quotes/semicolons/trailing
+  commas (matching the existing style), organize-imports assist on, and
+  `files.includes` excluding `lib`, `.spike`, `node_modules`, `.pnpm-store`
+  and `.git`. Scripts: `lint` (`biome check .`), `format`
+  (`biome format --write .`), and `check` now runs `lint` before the tests.
+- Formatter applied to 24 files (mostly single→double quotes and line
+  wrapping in the two hand-written test harnesses); no behaviour change —
+  all suites were re-run after it.
+- Disabled `suspicious/noImplicitAnyLet` is NOT used: the 12 `let x;`
+  sites (all assigned inside the following `try`) carry a per-line
+  `// biome-ignore lint/suspicious/noImplicitAnyLet: …` naming the reason,
+  so the rule stays on for new code. `security/noGlobalEval` is likewise
+  ignored at the single bench line that evaluates the built bundle.
+- Two Biome 2.5.14 quirks found the hard way: (a) ANY comment in
+  `biome.json` makes the linter silently ignore `files.includes` and walk
+  `.spike` (637 bogus errors) — the config is therefore comment-free and
+  the reasons live here and in `README.md`; (b) the `useBiomeIgnoreFolder`
+  autofix (`!lib/**` → `!lib`) is what the scanner wants, so the shorthand
+  is used.
+- `useOptionalChain` / `noUnusedVariables` "unsafe" fixes were applied by
+  hand where they are provably equivalent; one Biome false-positive-adjacent
+  case is worth remembering: it considers a write-only local unused, and
+  removing `let reads = 0;` left a bare `reads += 1;` that only then failed
+  — the dead counter is gone.
+
+### TypeScript 7
+
+`pnpm add -D typescript@7` resolved to **7.0.2** (the highest available 7.x;
+no need for `typescript@next`). `pnpm run typecheck` is clean and
+`pnpm run build` (esbuild + `tsc -p tsconfig.json`) is green, so the project
+stays on TS 7.0.2 — no revert was needed.
+
+### Sizes and verification
+
+- `lib/client.js` **911 218 B** (baseline 911 260 B, −42 B);
+  `lib/index.js` **15 034 B** (baseline 15 509 B, −475 B). The client
+  bundle is still zod-dominated.
+- `pnpm run check` green (typecheck + lint + 124 node tests + 4 vitest
+  specs + build); `node --test test/smoke-cordis.test.mjs` 8/8;
+  `node test/client-shim.test.cjs` 28 PASS + ALL OK; `pnpm run test:remote`
+  4/4.
+- Two consecutive `pnpm run build` runs produce a byte-identical `lib/`
+  (sha256 over the file set), and `lib/` contains no
+  `/api/__dsh-prompt-profiles` reference.

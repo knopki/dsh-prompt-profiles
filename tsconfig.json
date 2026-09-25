@@ -5,11 +5,7 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": [
-      "ES2022",
-      "DOM",
-      "WebWorker"
-    ],
+    "lib": ["ES2022", "DOM", "WebWorker"],
     "jsx": "react-jsx",
     "rootDir": "src",
     "outDir": "lib/types",
@@ -18,12 +14,8 @@
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "types": [
-      "node"
-    ],
+    "types": ["node"],
     "stripInternal": true
   },
-  "include": [
-    "src"
-  ]
+  "include": ["src"]
 }

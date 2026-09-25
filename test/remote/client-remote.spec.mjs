@@ -16,13 +16,14 @@
 //   same bytes the profile serves), loaded through the ModuleLoader handshake
 //   exactly like the browser; assertions are on real gateway-validated calls.
 // #endregion MODULE_CONTRACT
-import { test, expect } from "vitest";
+
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { RemoteMock, ok } from "@deepseek-ai/dsh-remote-mock";
 import { Context } from "@deepseek-ai/cordis";
+import { ok, RemoteMock } from "@deepseek-ai/dsh-remote-mock";
 import { TypertRegistry } from "@deepseek-ai/dsh-typert-registry";
+import { expect, test } from "vitest";
 
 const require = createRequire(import.meta.url);
 
@@ -39,11 +40,17 @@ function loadClientBundle(sourcePath, requireTable) {
   const previous = globalThis.window;
   globalThis.window = {
     __ModuleLoader__: {
-      load: (module) => { modules.set(module.id, module.factory((id) => requireTable(id))); },
+      load: (module) => {
+        modules.set(
+          module.id,
+          module.factory((id) => requireTable(id)),
+        );
+      },
     },
   };
   try {
-    (0, eval)(source);
+    // biome-ignore lint/security/noGlobalEval: the bench must evaluate the built browser bundle exactly as the ModuleLoader does; only local build output is ever passed in.
+    globalThis.eval(source);
   } finally {
     if (previous === undefined) delete globalThis.window;
     else globalThis.window = previous;
@@ -80,15 +87,21 @@ async function makeBench() {
         registerGenerationSource: () => () => {},
       });
       child.provide("locale", { register() {}, bind: () => (key) => key });
-      child.provide("slots", { inject(name, callback) { callback(); }, register() { return () => {}; } });
+      child.provide("slots", {
+        inject(_name, callback) {
+          callback();
+        },
+        register() {
+          return () => {};
+        },
+      });
     },
   });
   await stubs.await();
   const registry = ctx.plugin(TypertRegistry);
   await registry.await();
-  const gatewayClient = loadClientBundle(
-    "../../node_modules/@deepseek-ai/dsh-api-gateway/lib/client.js",
-    (id) => require(id),
+  const gatewayClient = loadClientBundle("../../node_modules/@deepseek-ai/dsh-api-gateway/lib/client.js", (id) =>
+    require(id),
   );
   const gateway = ctx.plugin({ name: "bench-remote", inject: gatewayClient.inject, apply: gatewayClient.apply });
   await gateway.await();
@@ -107,7 +120,18 @@ async function makeBench() {
   const fiber = ctx.plugin(plugin);
   await fiber.await();
   await waitFor(() => ctx.get("remote.promptProfiles") !== undefined, "remote.promptProfiles namespace");
-  return { ctx, mock, fiber, plugin, dispose: async () => { await fiber.dispose(); await gateway.dispose(); await registry.dispose(); await stubs.dispose(); } };
+  return {
+    ctx,
+    mock,
+    fiber,
+    plugin,
+    dispose: async () => {
+      await fiber.dispose();
+      await gateway.dispose();
+      await registry.dispose();
+      await stubs.dispose();
+    },
+  };
 }
 
 /** Poll a predicate with a deadline instead of a fixed sleep. */
@@ -130,12 +154,18 @@ test("the built client contribution mounts: namespace service reachable via inje
     // the namespace service is reachable only through ctx.inject.
     let refused = false;
     bench.ctx.inject(["locale"], (scope) => {
-      try { void scope.remote; } catch { refused = true; }
+      try {
+        void scope.remote;
+      } catch {
+        refused = true;
+      }
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(refused, "scope.remote without inject throws").toBe(true);
     let answer = null;
-    bench.ctx.inject(["remote", "remote.promptProfiles"], (scope) => { answer = scope.remote.promptProfiles; });
+    bench.ctx.inject(["remote", "remote.promptProfiles"], (scope) => {
+      answer = scope.remote.promptProfiles;
+    });
     await waitFor(() => answer !== null, "inject callback");
     expect(typeof answer.state).toBe("function");
   } finally {
@@ -147,13 +177,26 @@ test("a call reaches the mock with the exact expected args and unwraps the envel
   const bench = await makeBench();
   try {
     const state = {
-      profiles: [{ rowId: "prompt-profile-light", patchId: "profile-light", configId: "light", title: "Light", sections: [] }],
-      sections: [], builtinOrders: {}, modes: [], default: "light", lastByWorkspace: {}, revision: 1,
+      profiles: [
+        { rowId: "prompt-profile-light", patchId: "profile-light", configId: "light", title: "Light", sections: [] },
+      ],
+      sections: [],
+      builtinOrders: {},
+      modes: [],
+      default: "light",
+      lastByWorkspace: {},
+      revision: 1,
     };
     bench.mock.unary("promptProfiles/state", ok(state));
-    bench.mock.unary("promptProfiles/sectionRename", ok({
-      rowId: "prompt-section-a", patchId: "prompt-section-a", id: "prompt-section-b", affectedProfiles: [],
-    }));
+    bench.mock.unary(
+      "promptProfiles/sectionRename",
+      ok({
+        rowId: "prompt-section-a",
+        patchId: "prompt-section-a",
+        id: "prompt-section-b",
+        affectedProfiles: [],
+      }),
+    );
     const scope = await new Promise((resolve) => {
       bench.ctx.inject(["remote", "remote.promptProfiles"], resolve);
     });
@@ -168,9 +211,16 @@ test("a call reaches the mock with the exact expected args and unwraps the envel
     });
 
     // The facade (what the UI consumes) maps onto the same endpoints.
-    bench.mock.unary("promptProfiles/preview", ok({
-      profileId: "light", title: "Light", sections: [], skipped: [], variables: {},
-    }));
+    bench.mock.unary(
+      "promptProfiles/preview",
+      ok({
+        profileId: "light",
+        title: "Light",
+        sections: [],
+        skipped: [],
+        variables: {},
+      }),
+    );
     const api = bench.plugin.remote.makeRemoteApi(scope);
     const preview = await api.preview("light");
     expect(preview.profileId).toBe("light");
@@ -191,22 +241,42 @@ test("a call reaches the mock with the exact expected args and unwraps the envel
 test("a failure envelope surfaces through the UI error path (runSave notify), conflict classified", async () => {
   const bench = await makeBench();
   try {
-    bench.mock.unary("promptProfiles/preview", { ok: false, error: { code: "gateway/internal", message: "preview: profile \"ghost\" is not registered", details: {} } });
-    bench.mock.unary("promptProfiles/sectionUpdate", { ok: false, error: { code: "gateway/internal", message: "configuration changed since read (expected revision 7)", details: {} } });
+    bench.mock.unary("promptProfiles/preview", {
+      ok: false,
+      error: { code: "gateway/internal", message: 'preview: profile "ghost" is not registered', details: {} },
+    });
+    bench.mock.unary("promptProfiles/sectionUpdate", {
+      ok: false,
+      error: {
+        code: "gateway/internal",
+        message: "configuration changed since read (expected revision 7)",
+        details: {},
+      },
+    });
     const scope = await new Promise((resolve) => {
       bench.ctx.inject(["remote", "remote.promptProfiles"], resolve);
     });
     const api = bench.plugin.remote.makeRemoteApi(scope);
 
     // (1) plain failure: the envelope's message is the Error the UI renders.
-    const error = await api.preview("ghost").then(() => null, (err) => err);
+    const error = await api.preview("ghost").then(
+      () => null,
+      (err) => err,
+    );
     expect(error).toBeInstanceOf(Error);
     expect(error.message).toContain("is not registered");
     expect(error.code).toBe("gateway/internal");
     // The SAME error path runSave feeds: notify receives the message text.
     const notes = [];
     const reloaded = [];
-    const okSave = await bench.plugin.runSave(() => api.preview("ghost"), async () => { reloaded.push(1); }, (k) => k, (m) => notes.push(m));
+    const okSave = await bench.plugin.runSave(
+      () => api.preview("ghost"),
+      async () => {
+        reloaded.push(1);
+      },
+      (k) => k,
+      (m) => notes.push(m),
+    );
     expect(okSave).toBe(false);
     expect(notes.at(-1)).toContain("is not registered");
     expect(reloaded.length).toBe(0);
@@ -216,9 +286,15 @@ test("a failure envelope surfaces through the UI error path (runSave notify), co
     notes.length = 0;
     let attempts = 0;
     const conflict = await bench.plugin.runSave(
-      async () => { attempts += 1; if (attempts === 1) await api.sectionUpdate("section-a", { title: "T", body: "B" }); },
-      async () => { reloaded.push(1); },
-      (k) => k, (m) => notes.push(m),
+      async () => {
+        attempts += 1;
+        if (attempts === 1) await api.sectionUpdate("section-a", { title: "T", body: "B" });
+      },
+      async () => {
+        reloaded.push(1);
+      },
+      (k) => k,
+      (m) => notes.push(m),
     );
     expect(conflict).toBe(true, "the stale-revision message takes the 409 re-apply path");
     expect(attempts).toBe(2);

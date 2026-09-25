@@ -1,13 +1,12 @@
 // @ts-nocheck
 // TODO(phase 1): remove after typing
 /**
- * Pure prompt-profile operations shared by EVERY transport (SPEC §5.5).
+ * Prompt-profile use cases (SPEC §5.5), transport-neutral.
  * #region moduleContract
  * @modulecontract
  * @purpose Own the operation logic — validation, registry lookups, writer and
- *   settings mutations — exactly once, so the HTTP Fetch routes (lib/api.ts)
- *   and the Typert Remote surface (lib/remote.ts) execute ONE implementation
- *   and can never drift apart.
+ *   settings mutations — so every surface built on this bundle executes ONE
+ *   implementation and cannot drift apart.
  * @scope
  *  - The eleven operations (state, preview, section create/update/delete/
  *    rename, profile create/update/delete, default, last) with whole-object
@@ -22,10 +21,9 @@
  *    (`prompt-section-1`) — toPatchId normalizes internally.
  *  - EVERY mutating path runs inside the bundle's one in-process serializer
  *    (`withWriteLock`), preventing same-process lost updates.
- *  - NOT: transport concerns — HTTP envelopes, statuses-as-headers, CSRF and
- *    platform auth live in lib/api.ts; Typert descriptors and codecs live in
- *    lib/remote.ts. This module only throws ApiError with the documented
- *    status semantics (400/404/409/413/503/500).
+ *  - NOT: transport concerns. Descriptors, codecs and wire envelopes live
+ *    with the surface that owns them; this module only throws ApiError with
+ *    the documented status semantics (400/404/409/503/500).
  * @invariants
  *  - Every payload is validated BEFORE any write happens: section value
  *    {title non-empty, body string}; profile value {title non-empty,
@@ -43,7 +41,7 @@
  *    `profileId: ""` still means an explicit "none" and an unknown profile id
  *    is a 404.
  *  - Results are plain JSON-safe objects (no class instances, no functions):
- *    both transports serialize them verbatim.
+ *    surfaces serialize them verbatim.
  *  - RESIDUAL CONCURRENCY WINDOW (documented, see writer.js): other plugins'
  *    direct configEditor writes when dsh-hmr is absent, and any second DSH
  *    process, are not serialized with these operations.
@@ -52,17 +50,6 @@
  *    documentPath / entries (both OPTIONAL, resolved lazily through the
  *    caller-provided getService reader), ctx.promptProfiles views,
  *    lib/writer.js, lib/resolve.ts.
- * @rationale
- *  - Q: Why extract now, and why keep ApiError here?
- *    A: Phase 2b adds a second transport (Typert Remote) next to the Fetch
- *    routes. Duplicated operation logic is exactly how the historical
- *    findRow divergence bug happened; ApiError is the shared failure
- *    vocabulary both transports translate for themselves.
- *  - Q: Why do operations still receive the deps bag instead of importing
- *    services directly?
- *    A: Optional services degrade PER OPERATION on web and headless surfaces
- *    alike; the lazy getService reader keeps late-appearing services visible
- *    without a mandatory inject.
  * @keywords operations, validation, CRUD, settings.replace, withWriteLock,
  *   toPatchId, rowId, patchId, ApiError, transport-neutral
  * #endregion moduleContract
@@ -70,8 +57,18 @@
 
 import { randomUUID } from "node:crypto";
 import { parse } from "yaml";
-import { insertRow, removeRow, disableRow, provenance, withWriteLock, renameSectionRow, listRowIds, readPatchRows, toPatchId } from "./writer.ts";
-import { resolveWorkspaceKeys, sectionSkipReason, planInsertion } from "./resolve.ts";
+import { planInsertion, resolveWorkspaceKeys, sectionSkipReason } from "./resolve.ts";
+import {
+  disableRow,
+  insertRow,
+  listRowIds,
+  provenance,
+  readPatchRows,
+  removeRow,
+  renameSectionRow,
+  toPatchId,
+  withWriteLock,
+} from "./writer.ts";
 
 // #region CONST_identity
 /** Plugin names of the row kinds these operations manage (SPEC §3). */
@@ -93,10 +90,9 @@ const yamlParseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: 
 
 // #region CLASS_ApiError
 /**
- * @purpose Carry an operation-status plus a safe message out of the shared
- *   operations so every transport can answer with its own clean failure shape
- *   (HTTP: `{ error: { message } }` + status; Remote: a Remote failure)
- *   instead of a stack.
+ * @purpose Carry an operation status plus a safe message out of the shared
+ *   operations, so each surface translates a failure into its own shape
+ *   instead of leaking a stack.
  */
 export class ApiError extends Error {
   constructor(status, message) {
@@ -108,13 +104,10 @@ export class ApiError extends Error {
 
 // #region FUNC_errorText
 /**
- * Extract a NON-EMPTY human-readable message from any thrown value —
- * Error (even with an empty .message), string, plain object, null/undefined.
- *
- * @purpose Live bug: the empty-400 round showed failure diagnostics
- *   collapsing when a thrown value had no `.message`; every response body
- *   and every log line now carries a readable message by construction.
- * @param {unknown} error - whatever was thrown.
+ * @purpose Extract a NON-EMPTY human-readable message from any thrown value —
+ *   Error (even with an empty `.message`), string, plain object, null.
+ *   Every failure rendered to a user or a log carries a readable message by
+ *   construction.
  * @returns {string} non-empty message.
  */
 export function errorText(error) {
@@ -138,53 +131,45 @@ export function errorText(error) {
 
 // #region FUNC_findRow
 /**
- * Shared registry-row lookup for every operation that addresses an existing
- * row.
- *
- * @purpose ONE place implementing the id-matching rule, so rename, update,
- *   delete (and any future operation) can never diverge — the live bug was
- *   exactly such a divergence: the registry stored the QUALIFIED loader
- *   entry rowId (`include:prompt-section-f01aa4a5`, from
- *   `ctx.fiber.entry.id` in lib/section.js) while a route looked the row up
- *   by the unqualified patch id and missed with «is not registered».
+ * @purpose ONE place implementing the row id-matching rule, so every
+ *   operation that addresses an existing row resolves it identically. The
+ *   registry stores the QUALIFIED loader entry rowId
+ *   (`include:prompt-section-f01aa4a5`, from `ctx.fiber.entry.id`), while
+ *   callers may send the unqualified patch row id.
  *
  * MATCHING ORDER (first hit wins):
  *  1. exact match on the registry `rowId`;
  *  2. normalized match: `toPatchId(value)` against `rowId` (qualified value
  *     → unqualified row) or `toPatchId(rowId)` against `value` (unqualified
- *     value → qualified row) — the direction that actually occurs live;
+ *     value → qualified row);
  *  3. the row's CONFIG id (`candidate.id`), exact or `toPatchId`-normalized,
  *     so callers may address a row by its domain id as well.
  *
- * CANONICAL ID: this helper only FINDS the row. The patch row id used for
- * settings/writer addresses is derived separately by `patchIdOf`, which
- * prefers the canonical id from `configEditor.entries()` and only falls back
- * to `toPatchId` when entries are unavailable.
- *
  * @param {Array<{ id: string, rowId: string }>} registryView - rows from
  *   service.sections() / service.profiles().
- * @param {string} value - row identifier as received (any of the three
- *   forms above).
  * @returns {object | null} the matching registry row view, or null.
  */
 export function findRow(registryView, value) {
   if (typeof value !== "string" || value === "") return null;
   const normalized = toPatchId(value);
-  return (registryView ?? []).find((candidate) =>
-    candidate.rowId === value
-    || candidate.rowId === normalized
-    || toPatchId(candidate.rowId) === normalized
-    || candidate.id === value
-    || candidate.id === normalized,
-  ) ?? null;
+  return (
+    (registryView ?? []).find(
+      (candidate) =>
+        candidate.rowId === value ||
+        candidate.rowId === normalized ||
+        toPatchId(candidate.rowId) === normalized ||
+        candidate.id === value ||
+        candidate.id === normalized,
+    ) ?? null
+  );
 }
 // #endregion FUNC_findRow
 
 // #region FUNC_normalizeNewRowId
 /**
- * Normalize the NEW id of a create/rename payload to the two canonical
- * forms under the frozen decision «config.id === full row id»: the stored
- * config id is the FULL `prompt-<kind>-<token>` string.
+ * Normalize the NEW id of a create/rename payload to the canonical
+ * `prompt-<kind>-<token>` form under the frozen decision «config.id === full
+ * row id»: the stored config id IS that full string.
  *
  * Accepted inputs (all equivalent):
  *  - bare token:            `123123`
@@ -192,10 +177,9 @@ export function findRow(registryView, value) {
  *  - qualified loader form: `include:prompt-section-123123` (any `:` chain)
  *
  * @param {"section"|"profile"} kind - supplies the `prompt-<kind>-` prefix.
- * @param {string} value - id as received.
- * @returns {string} the FULL `prompt-<kind>-<token>` form, or null when the
- *   input is not a string or reduces to the bare prefix (pattern checks stay
- *   with the caller, which reports a clear 400).
+ * @returns {string} the FULL form, or null when the input is not a string or
+ *   reduces to the bare prefix (pattern checks stay with the caller, which
+ *   reports a clear 400).
  */
 export function normalizeNewRowId(kind, value) {
   if (typeof value !== "string") return null;
@@ -217,19 +201,12 @@ export const tokenSource = { next: () => randomUUID().replace(/-/g, "").slice(0,
 
 // #region FUNC_generateTokenId
 /**
- * Generate a unique short random id for create operations: 8 lowercase hex
- * chars from a crypto UUID, returned in the FULL `prompt-<kind>-<token>` form
- * that is BOTH the row id and `config.id` (frozen id scheme). The token is
- * regenerated on collision with any full id in `taken` — an existing row id
- * or an existing `config.id` (SPEC §3/§5.5).
- *
- * @purpose The create id no longer derives from the title: slug ids read as
- *   two different ids (`prompt-section-new-section` vs `config.id:
- *   new-section`) and could collide with rows another bundle ships. A random
- *   token removes both problems; existing rows keep their slug-based ids.
- * @param {"section"|"profile"} kind
- * @param {Set<string>} taken - every FULL id string (row-id AND config-id
- *   forms) that must not be reused (see takenIds in createOperations).
+ * @purpose Generate a create id as a short random token instead of a
+ *   title-derived slug: two ids derived from one title read as different rows
+ *   and can collide with rows another bundle ships. Regenerates on collision
+ *   with any full id in `taken` (an existing row id or `config.id`).
+ * @param {Set<string>} taken - every FULL id string that must not be reused
+ *   (see takenIds in createOperations).
  * @returns {string} the full `prompt-<kind>-<token>` id, unique against
  *   `taken`.
  */
@@ -244,9 +221,9 @@ function generateTokenId(kind, taken) {
 /**
  * @purpose Reject malformed payloads before anything is written
  *   (PLAN step 4: «попытка испортить входные данные — отказ без записи»).
- *   Updates carry a WHOLE object `value`; there are no path ops anymore.
+ *   Updates carry a WHOLE object `value`; there are no path ops.
  * @param {string} kind - expected payload kind, for error messages.
- * @param {object} body - parsed JSON body (HTTP) or decoded Remote input.
+ * @param {object} body - decoded operation input.
  * @param {object} deps - registry views for cross-field checks
  *   (`sectionTargets: Map<string, string>` mapping every id a profile ref may
  *   use for a section — config.id, full row id, qualified form, bare token —
@@ -278,7 +255,10 @@ function validate(kind, body, deps = {}) {
     const full = normalizeNewRowId(name, body.id);
     const token = full === null ? "" : full.slice(`prompt-${name}-`.length);
     if (token === "" || !ID_PATTERN.test(token)) {
-      throw new ApiError(400, `${kind}: field "id" must be a bare token, prompt-${name}-<token>, or include:prompt-${name}-<token> matching ${ID_PATTERN}`);
+      throw new ApiError(
+        400,
+        `${kind}: field "id" must be a bare token, prompt-${name}-<token>, or include:prompt-${name}-<token> matching ${ID_PATTERN}`,
+      );
     }
     return full;
   };
@@ -392,8 +372,8 @@ function validate(kind, body, deps = {}) {
       // revision is used for the orphan-reference cleanup settings write.
       return { rowId: str("rowId"), revision: revision() };
     case "default": {
-      // Only a profile-id string, '' (none), or null (clear) — never a
-      // silently coerced missing field (verify-step4-sol defect 3).
+      // Only a profile-id string, '' (none), or null (clear) — a missing
+      // field is rejected, never silently coerced.
       if (!("default" in body) || (body.default !== null && typeof body.default !== "string")) {
         throw new ApiError(400, 'default: field "default" must be a profile id string, "" for none, or null');
       }
@@ -412,9 +392,10 @@ function validate(kind, body, deps = {}) {
       const workspaceId = body.workspaceId ?? "";
       const cwd = body.cwd ?? "";
       if (workspaceId === "" && cwd === "") {
-        throw new ApiError(400, 'last: workspaceId or cwd is required');
+        throw new ApiError(400, "last: workspaceId or cwd is required");
       }
-      if (typeof body.profileId !== "string") throw new ApiError(400, "last: profileId must be a string (empty = none)");
+      if (typeof body.profileId !== "string")
+        throw new ApiError(400, "last: profileId must be a string (empty = none)");
       return { workspaceId, cwd, profileId: body.profileId, revision: revision() };
     }
     default:
@@ -431,8 +412,7 @@ const MAX_PRESET_DEPTH = 32;
  * `config.complete === true`, at ANY depth — through arrays, objects and the
  * `config` ARRAYS of `cordis:group` rows. The preset document shape varies:
  * the raw `presets/*.patch.yml` nests the persona row under
- * `insert[].config.plugins[]` (live bug: the old flat `[entry, ...entry.insert]`
- * scan never reached it), while `agentPresets.readDocument` may dump the
+ * `insert[].config.plugins[]`, while `agentPresets.readDocument` may dump the
  * plugin LIST at the top level. One recursive search covers both; no preset
  * name is hardcoded.
  */
@@ -445,27 +425,24 @@ function hasCompletePersona(node, depth = 0) {
 }
 
 /**
- * Build `modes: [{id, title, complete}]` for the editor's complete-mode
- * warning (SPEC §2 decision 21): for each agent preset, read its declared
- * composition and mark `complete: true` when any plugin row named
- * `@deepseek-ai/dsh-persona` carries `config.complete === true` ANYWHERE in
- * the parsed document (recursive, see hasCompletePersona).
- *
- * @purpose Let the UI warn that a profile is discarded in complete modes,
- *   using the only detection method SPEC proved (readDocument + parse; the
- *   roster alone carries no config).
- * @param {object} [agentPresets] - ctx.agentPresets (optional service).
- * @param {(message: string, details?: unknown) => void} warn
+ * @purpose Build `modes: [{id, title, complete}]` for the editor's
+ *   complete-mode warning (SPEC §2 decision 21): for each agent preset, read
+ *   its declared composition and mark `complete: true` when any plugin row
+ *   named `@deepseek-ai/dsh-persona` carries `config.complete === true`
+ *   ANYWHERE in the parsed document (recursive, see hasCompletePersona). The
+ *   roster alone carries no config, so readDocument + parse is the only
+ *   detection method.
  * @returns {Promise<Array<{ id: string, title: string, complete: boolean }>>}
  *   `[]` when the service is absent or listing fails (degrade, SPEC §7).
  */
 async function modeViews(agentPresets, warn) {
   if (agentPresets == null) return [];
+  // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
   let presets;
   try {
     presets = await agentPresets.list();
   } catch (error) {
-    warn?.("prompt-profiles api: agentPresets.list failed; modes empty", { error: error?.message ?? String(error) });
+    warn?.("prompt-profiles: agentPresets.list failed; modes empty", { error: error?.message ?? String(error) });
     return [];
   }
   const modes = [];
@@ -479,8 +456,9 @@ async function modeViews(agentPresets, warn) {
       const entries = parse(document.content ?? "", yamlParseOptions);
       complete = hasCompletePersona(entries);
     } catch (error) {
-      warn?.("prompt-profiles api: preset document unreadable; complete stays false", {
-        preset: preset.id, error: error?.message ?? String(error),
+      warn?.("prompt-profiles: preset document unreadable; complete stays false", {
+        preset: preset.id,
+        error: error?.message ?? String(error),
       });
     }
     modes.push({ id: preset.id, title: preset.name ?? preset.id, complete });
@@ -491,10 +469,10 @@ async function modeViews(agentPresets, warn) {
 
 // #region FUNC_stateResponse
 /**
- * @purpose Assemble the state document (SPEC §5.5 + frozen live-bugfix
- *   contract): profiles, sections with source, usedIn, an `emits` flag, and
- *   BOTH identifiers on every row — `rowId` (fully qualified loader entry id,
- *   display/debug) and `patchId` (unqualified patch row id used for writes).
+ * @purpose Assemble the state document (SPEC §5.5): profiles, sections with
+ *   source, usedIn, an `emits` flag, and BOTH identifiers on every row —
+ *   `rowId` (fully qualified loader entry id, display/debug) and `patchId`
+ *   (unqualified patch row id used for writes).
  */
 async function stateResponse(deps) {
   const { service, warn, patchIdOf } = deps;
@@ -522,20 +500,18 @@ async function stateResponse(deps) {
 // #region FUNC_previewResponse
 /**
  * Build the preview document for `preview({profileId, cwd?})`: an
- * ILLUSTRATIVE preview, not the runtime text. Built-in sections appear as
- * `{kind:"builtin", name, order}` placeholders interleaved with our sections
- * in final order; selection reuses `sectionSkipReason` (the same predicate
- * `buildSnapshot` applies for the main agent) and the merge reuses
- * `planInsertion`, BUT interpolation is lenient: `{{cwd}}` is filled with
- * the session cwd when the input supplies one (otherwise `process.cwd()`),
- * every other variable stays literal, and unknown or malformed references
- * are NOT rejected. Real values are substituted when the session starts, so
- * the response reports exactly which variables were used and what (if
- * anything) was substituted — `null` means unknown — for the client to flag
- * as illustrative.
- *
- * @purpose Give the editor an honest, readable preview without a live session;
- *   the sealed snapshot remains the ONLY runtime truth.
+ * @purpose Build the preview document for `preview({profileId, cwd?})`: an
+ *   ILLUSTRATIVE preview, not the runtime text. Built-in sections appear as
+ *   `{kind:"builtin", name, order}` placeholders interleaved with our sections
+ *   in final order; selection reuses `sectionSkipReason` (the same predicate
+ *   `buildSnapshot` applies for the main agent) and the merge reuses
+ *   `planInsertion`, BUT interpolation is lenient: `{{cwd}}` is filled with
+ *   the session cwd when the input supplies one (otherwise `process.cwd()`),
+ *   every other variable stays literal, and unknown or malformed references
+ *   are NOT rejected. Real values are substituted when the session starts, so
+ *   the response reports exactly which variables were used and what (if
+ *   anything) was substituted — `null` means unknown — for the client to flag
+ *   as illustrative. The sealed snapshot remains the ONLY runtime truth.
  * @returns {{ profileId: string, title: string, sections: Array<object>,
  *   skipped: Array<{ id: string, reason: string }>,
  *   variables: Record<string, string|null> }}
@@ -550,11 +526,12 @@ function previewResponse(deps, profileId, { cwd } = {}) {
   // Variables actually referenced by the rendered text, with the value the
   // preview substituted (null = unknown host-side / substituted at session start).
   const usedVariables = new Set();
-  const interpolate = (text) => String(text).replace(/\{\{([^{}]*)\}\}/g, (match, name) => {
-    if (!/^[a-z][a-z0-9_]*$/.test(name)) return match; // malformed: left literal
-    usedVariables.add(name);
-    return name === "cwd" ? sessionCwd : match; // only cwd is known host-side
-  });
+  const interpolate = (text) =>
+    String(text).replace(/\{\{([^{}]*)\}\}/g, (match, name) => {
+      if (!/^[a-z][a-z0-9_]*$/.test(name)) return match; // malformed: left literal
+      usedVariables.add(name);
+      return name === "cwd" ? sessionCwd : match; // only cwd is known host-side
+    });
   // Profile order = insertion order (stable on equal orders), the same sort
   // planInsertion performs.
   const planned = [...profile.sections].sort((a, b) => a.order - b.order);
@@ -565,17 +542,29 @@ function previewResponse(deps, profileId, { cwd } = {}) {
     // Runtime selection rule (main agent): inherit + main-only emit,
     // subagents-only is skipped with a reason.
     const reason = sectionSkipReason(ref, section, { subagent: false, fork: false });
-    if (reason !== null) { skipped.push({ id: ref.id, title: section?.title ?? ref.id, reason }); continue; }
+    if (reason !== null) {
+      skipped.push({ id: ref.id, title: section?.title ?? ref.id, reason });
+      continue;
+    }
+    // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
     let text;
     try {
       text = interpolate(section.body);
     } catch (error) {
-      skipped.push({ id: ref.id, title: section.title, reason: `interpolation failed: ${error?.message ?? String(error)}` });
+      skipped.push({
+        id: ref.id,
+        title: section.title,
+        reason: `interpolation failed: ${error?.message ?? String(error)}`,
+      });
       continue;
     }
     ours.push({
-      id: section.id, title: section.title, order: ref.order, scope: ref.scope ?? "inherit",
-      text, emits: true,
+      id: section.id,
+      title: section.title,
+      order: ref.order,
+      scope: ref.scope ?? "inherit",
+      text,
+      emits: true,
     });
   }
   // Built-in placeholders in ENGINE order (order, then name) — the order the
@@ -594,19 +583,17 @@ function previewResponse(deps, profileId, { cwd } = {}) {
   });
   const merged = builtins.slice();
   for (let i = plan.length - 1; i >= 0; i--) merged.splice(plan[i].index, 0, ours[i]);
-  const variables = Object.fromEntries([...usedVariables].sort().map((name) => [name, name === "cwd" ? sessionCwd : null]));
+  const variables = Object.fromEntries(
+    [...usedVariables].sort().map((name) => [name, name === "cwd" ? sessionCwd : null]),
+  );
   return { profileId, title: profile.title, sections: merged, skipped, variables };
 }
 // #endregion FUNC_previewResponse
 
 /**
- * Map the writer's duplicate guard («already exists» from insertRow /
- * renameSectionRow) to a clean 400 in every operation that can hit it —
- * create operations included (verify-fixes-glm defect 1: bare rethrow
- * answered 500).
- *
- * @purpose Give sectionCreate, profileCreate and sectionRename the same
- *   clean ApiError 400 the rest of the operations throw.
+ * @purpose Map the writer's duplicate guard («already exists» from insertRow /
+ *   renameSectionRow) to a clean 400, so a duplicate id never surfaces as a
+ *   500 in sectionCreate, profileCreate or sectionRename.
  */
 function mapDuplicate(error) {
   if (/already exists/.test(error?.message ?? "")) throw new ApiError(400, error.message);
@@ -638,13 +625,13 @@ async function deleteRow(deps, patchId, name) {
 
 // #region FUNC_renameSection
 /**
- * @purpose Execute the rename batch (SPEC §2 #16) as ONE writer commit
- *   (astra finding C): guard the new full row id, then insert the new row and
- *   remove or disable the old one — a single read-modify-write held inside one
- *   exclusivity gate. The incoming rowId may be qualified or not; every file
- *   address below uses the NORMALIZED patch row id. The new id arrives already
- *   normalized to the FULL `prompt-section-<token>` form, so it is BOTH the
- *   new row id and the new `config.id`.
+ * @purpose Execute the rename batch (SPEC §2 #16) as ONE writer commit: guard
+ *   the new full row id, then insert the new row and remove or disable the old
+ *   one — a single read-modify-write held inside one exclusivity gate. The
+ *   incoming rowId may be qualified or not; every file address below uses the
+ *   NORMALIZED patch row id. The new id arrives already normalized to the FULL
+ *   `prompt-section-<token>` form, so it is BOTH the new row id and the new
+ *   `config.id`.
  *
  * PROFILES ARE NEVER TOUCHED (frozen decision): a profile that came from a
  * bundle cannot have its refs rewritten anyway and the action is rare, so
@@ -666,7 +653,8 @@ async function renameSection(deps, { rowId: received, id: newId }) {
     aliases.add(section.id.slice("prompt-section-".length));
   }
   const namesSection = (value) => aliases.has(value) || aliases.has(toPatchId(value));
-  const affectedProfiles = service.profiles()
+  const affectedProfiles = service
+    .profiles()
     .filter((profile) => profile.sections.some((ref) => namesSection(ref.id)))
     .map((profile) => ({ profileId: profile.id, title: profile.title }));
   // The normalized new id already naming THIS row means nothing would change;
@@ -677,20 +665,26 @@ async function renameSection(deps, { rowId: received, id: newId }) {
   // registered section's config.id or row id. A duplicate row id already in
   // the patch surfaces from the writer's duplicate guard inside the batch
   // below (mapped to a clean 400 with the rollback already applied).
-  const clash = service.sections().some((row) => row.rowId !== section.rowId
-    && (row.id === newId || row.rowId === newId || toPatchId(row.rowId) === newId));
+  const clash = service
+    .sections()
+    .some(
+      (row) =>
+        row.rowId !== section.rowId && (row.id === newId || row.rowId === newId || toPatchId(row.rowId) === newId),
+    );
   if (clash) throw new ApiError(400, `section id "${newId}" is already taken`);
   const patchPath = configEditor.documentPath;
   // Only a row THIS patch inserted may be physically removed; a bare override
-  // or a lower-layer row we can only override is disabled instead. Using
-  // `.inserted` (not `.source === 'bundle'`) keeps this correct now that an
-  // absent row reports 'unknown' rather than 'bundle'.
+  // or a lower-layer row we can only override is disabled instead. `.inserted`
+  // (not `.source === 'bundle'`) keeps this correct now that an absent row
+  // reports 'unknown' rather than 'bundle'.
   const bundleOwned = !provenance({ patchPath, rowId: oldRowId }).inserted;
   try {
     await renameSectionRow({
       patchPath,
       row: { id: newId, name: SECTION_NAME, config: { id: newId, title: section.title, body: section.body } },
-      oldRowId, oldName: SECTION_NAME, bundleOwned,
+      oldRowId,
+      oldName: SECTION_NAME,
+      bundleOwned,
     });
   } catch (error) {
     // A row id already present in the patch (but not registered) surfaces
@@ -704,28 +698,20 @@ async function renameSection(deps, { rowId: received, id: newId }) {
 
 // #region FUNC_createOperations
 /**
- * Build the shared operation set plus the route table (SPEC §5.5 + preview +
- * frozen live-bugfix contract). Each operation validates, performs at most
- * one logical write path, and returns a plain JSON result (`undefined` means
- * "nothing to report"; the HTTP layer answers `{ ok: true }` for it).
- *
- * @purpose Keep the operation set and the HTTP route table declarative and
- *   transport-neutral, so lib/api.ts (Fetch routes) and lib/remote.ts
- *   (Typert Remote) share ONE implementation of every behaviour.
- * @param {object} deps - { service, settings, configEditor, workspaceRegistry?,
- *   agentPresets?, connection?, warn?, log?, getService? }.
- * @returns {{ ops: Record<string, (input: object) => any>,
- *   routes: Array<{ path: string, method: string, op: string,
- *   run: (body: object, query: URLSearchParams) => any }> }}
+ * @purpose Build the operation set (SPEC §5.5 + preview) once per surface.
+ *   Each operation validates, performs at most one logical write path, and
+ *   returns a plain JSON result; `undefined` means "nothing to report" and the
+ *   surface renders its own acknowledgement for it.
+ * @param {object} deps - { service, getService?, settings?, configEditor?,
+ *   workspaceRegistry?, agentPresets?, warn?, log? }. Optional services are
+ *   read per call through `getService`, so a late-appearing service is picked
+ *   up and a missing one degrades per operation instead of blocking the mount.
+ * @returns {{ ops: Record<string, (input: object) => any> }}
  */
 export function createOperations(deps) {
   const { service } = deps;
   const SECTION_PREFIX = "prompt-section-";
-  // OPTIONAL services are resolved LAZILY (per call) through the REFLECT
-  // reader the transport passes in, so a service that appears after the
-  // transport mounts is picked up and one that is missing degrades per
-  // operation instead of blocking the mount (the live "Running plugin, zero
-  // routes" bug).
+  /** Lazy per-call service resolution through the caller's REFLECT reader. */
   const svc = (name) => {
     try {
       return deps.getService?.(name) ?? deps[name];
@@ -790,10 +776,18 @@ export function createOperations(deps) {
     try {
       const path = patchPath();
       if (path === undefined) return new Set();
-      return new Set(readPatchRows({ patchPath: path })
-        .filter((row) => typeof row.id === "string" && row.id.startsWith(SECTION_PREFIX)
-          && row.name === SECTION_NAME && row.hasConfig && !row.disabled)
-        .map((row) => row.id));
+      return new Set(
+        readPatchRows({ patchPath: path })
+          .filter(
+            (row) =>
+              typeof row.id === "string" &&
+              row.id.startsWith(SECTION_PREFIX) &&
+              row.name === SECTION_NAME &&
+              row.hasConfig &&
+              !row.disabled,
+          )
+          .map((row) => row.id),
+      );
     } catch {
       return new Set();
     }
@@ -810,6 +804,7 @@ export function createOperations(deps) {
   const profileSelectable = (profileId) => {
     const entry = service.profiles().find((row) => row.id === profileId);
     if (!entry) return false;
+    // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
     let rows;
     try {
       const path = patchPath();
@@ -868,23 +863,17 @@ export function createOperations(deps) {
   deps.resolve = resolveRow;
 
   /**
-   * settings.replace / settings.mutate wrapped in the bundle's shared write
-   * serializer so API updates never interleave with writer operations in this
-   * process (verify-step4-sol defect 1). settings takes its own hmr/file
-   * locks. Revision conflicts map to a clean 409.
-   *
-   * LIVE BUG (empty 400 on update): dsh-settings `replace(ns, section)`
-   * validates EVERY key of `section` against the row Config's volatile
-   * fields (`validatePaths` → `isVolatilePath`); the section/profile row
-   * Configs mark only `title`/`body`/`sections` volatile, so passing `id`
-   * threw `Config field "id" is not volatile`. Updates therefore replace
-   * ONLY the volatile fields — the row's `id` belongs to the inherited
-   * insert layer and is never reset. Known settings-layer failures are
-   * mapped to clean statuses with their REAL message (never a bare 500).
+   * @purpose Replace settings writes wrapped in the bundle's shared write
+   *   serializer, so operation updates never interleave with writer mutations
+   *   in this process. Updates replace ONLY the volatile fields — `id` belongs
+   *   to the inherited insert layer, and dsh-settings `replace(ns, section)`
+   *   rejects every key that is not marked volatile in the row Config.
+   *   Known settings-layer failures map to clean statuses with their real
+   *   message (never a bare 500).
    */
-  /** Map known settings-layer failures to clean statuses with their REAL message. */
   const mapSettingsError = (error, revision) => {
-    if (error?.code === "SETTINGS_CONFLICT") throw new ApiError(409, `configuration changed since read (expected revision ${revision})`);
+    if (error?.code === "SETTINGS_CONFLICT")
+      throw new ApiError(409, `configuration changed since read (expected revision ${revision})`);
     const message = errorText(error);
     if (/is not volatile/.test(message)) throw new ApiError(400, message);
     if (/No configurable plugin entry/.test(message)) throw new ApiError(404, message);
@@ -896,7 +885,8 @@ export function createOperations(deps) {
       await withWriteLock(() =>
         method === "replace"
           ? store.replace(ns, value, typeof revision === "number" ? revision : undefined)
-          : store.mutate(ns, value, typeof revision === "number" ? revision : undefined));
+          : store.mutate(ns, value, typeof revision === "number" ? revision : undefined),
+      );
     } catch (error) {
       mapSettingsError(error, revision);
     }
@@ -908,66 +898,74 @@ export function createOperations(deps) {
   /** The current `prompt-profiles` settings revision (undefined when unknown). */
   const currentRevision = () => {
     try {
-      return settingsStore()?.describe?.().find((entry) => entry.ns === "prompt-profiles")?.revision;
+      return settingsStore()
+        ?.describe?.()
+        .find((entry) => entry.ns === "prompt-profiles")?.revision;
     } catch {
       return undefined;
     }
   };
   /**
-   * Atomic read-modify-write of the `prompt-profiles` config, correct WITH or
-   * WITHOUT a settings revision:
+   * @purpose Atomic read-modify-write of the `prompt-profiles` config, correct
+   *   WITH or WITHOUT a settings revision:
    *  - `buildOps` runs inside the bundle write lock and emits PER-KEY ops
    *    (`set`/`unset` on `lastByWorkspace.<key>`, or `default`), which
-   *    `settings.mutate` applies to the value it reads at write time
-   *    (dsh-settings `write`→`configEditor.edit`). A whole-dict write is never
-   *    sent, so a concurrent writer's keys cannot be clobbered by a stale
-   *    read — the lost-update class is gone by construction, revision or not.
-   *  - When a revision IS available it is also passed as `expectedRevision`
-   *    (extra protection against writers that bypass this lock);
-   *    SETTINGS_CONFLICT re-reads and retries, and the cap yields a clean 409
-   *    — never a silent unchecked write.
+   *    `settings.mutate` applies to the value it reads at write time. A
+   *    whole-dict write is never sent, so a concurrent writer's keys cannot be
+   *    clobbered by a stale read.
+   *  - When a revision IS available it is also passed as `expectedRevision`;
+   *    SETTINGS_CONFLICT re-reads and retries, and the cap yields a clean 409 —
+   *    never a silent unchecked write.
    * Never nests the non-reentrant lock: `withWriteLock` is taken ONCE around
    * the whole attempt loop and `settings.mutate` is called directly.
    * @param {() => Array<{op: string, path: string[], value?: unknown}>} buildOps
-   *   - receives `{ revisionAvailable }`; ops that are safe only under CAS must
-   *     consult it.
-   * @param {{ clientRevision?: number }} [options] - revision the caller read.
+   *   receives `{ revisionAvailable }`; ops that are safe only under CAS must
+   *   consult it.
    * @returns {Promise<boolean>} whether anything was written.
    */
-  const mutateWithRetry = async (buildOps, { clientRevision } = {}) => withWriteLock(async () => {
-    for (let attempt = 1; ; attempt += 1) {
-      const expected = currentRevision();
-      if (attempt === 1 && typeof clientRevision === "number" && typeof expected === "number" && clientRevision !== expected) {
-        throw new ApiError(409, `configuration changed since read (expected revision ${clientRevision})`);
-      }
-      const ops = buildOps({ revisionAvailable: typeof expected === "number" }); // read + decide INSIDE the lock
-      if (ops.length === 0) return false;
-      try {
-        await settingsStore().mutate("prompt-profiles", ops, typeof expected === "number" ? expected : undefined);
-        return true;
-      } catch (error) {
-        if (error?.code !== "SETTINGS_CONFLICT") mapSettingsError(error, expected);
-        if (attempt >= MAX_MUTATE_ATTEMPTS) {
-          throw new ApiError(409, `configuration kept changing; gave up after ${MAX_MUTATE_ATTEMPTS} attempts`);
+  const mutateWithRetry = async (buildOps, { clientRevision } = {}) =>
+    withWriteLock(async () => {
+      for (let attempt = 1; ; attempt += 1) {
+        const expected = currentRevision();
+        if (
+          attempt === 1 &&
+          typeof clientRevision === "number" &&
+          typeof expected === "number" &&
+          clientRevision !== expected
+        ) {
+          throw new ApiError(409, `configuration changed since read (expected revision ${clientRevision})`);
         }
-        // conflict: re-read the config/revision and retry
+        const ops = buildOps({ revisionAvailable: typeof expected === "number" }); // read + decide INSIDE the lock
+        if (ops.length === 0) return false;
+        try {
+          await settingsStore().mutate("prompt-profiles", ops, typeof expected === "number" ? expected : undefined);
+          return true;
+        } catch (error) {
+          if (error?.code !== "SETTINGS_CONFLICT") mapSettingsError(error, expected);
+          if (attempt >= MAX_MUTATE_ATTEMPTS) {
+            throw new ApiError(409, `configuration kept changing; gave up after ${MAX_MUTATE_ATTEMPTS} attempts`);
+          }
+          // conflict: re-read the config/revision and retry
+        }
       }
-    }
-  });
+    });
   // #endregion FUNC_mutateWithRetry
 
   // #region FUNC_clearProfileReferences
   /**
-   * Best-effort orphan cleanup after a profile row was deleted: remove the
-   * profile's id from `lastByWorkspace` (per-key `unset` ops) and reset
-   * `default` to "" when it named it. A concurrent /last cannot lose its
-   * choice (per-key ops + the write lock). A failure here is NOT fatal: the
-   * resolver silently resets a dangling profile id, so the user just re-picks.
-   * @param {{ id: string, rowId: string }} profile - the deleted row.
+   * @purpose Best-effort orphan cleanup after a profile row was deleted:
+   *   remove the profile's id from `lastByWorkspace` (per-key `unset` ops) and
+   *   reset `default` to "" when it named it. Per-key ops plus the write lock
+   *   keep a concurrent /last from losing its choice; a failure here is not
+   *   fatal, because the resolver resets a dangling profile id anyway.
    * @returns {Promise<boolean>} whether references were cleared.
    */
   const clearProfileReferences = async (profile) => {
-    const aliases = new Set([profile.id, profile.rowId, toPatchId(profile.rowId)].filter((value) => typeof value === "string" && value !== ""));
+    const aliases = new Set(
+      [profile.id, profile.rowId, toPatchId(profile.rowId)].filter(
+        (value) => typeof value === "string" && value !== "",
+      ),
+    );
     return mutateWithRetry(() => {
       const ops = [];
       for (const [key, value] of Object.entries(service.config.lastByWorkspace.get() ?? {})) {
@@ -995,7 +993,10 @@ export function createOperations(deps) {
     const registry = svc("workspaceRegistry");
     const stale = [];
     for (const [key, entry] of Object.entries(value ?? {})) {
-      if (entry !== "" && !profileIds.has(entry)) { stale.push(key); continue; } // dangling profile choice
+      if (entry !== "" && !profileIds.has(entry)) {
+        stale.push(key);
+        continue;
+      } // dangling profile choice
       if (WORKSPACE_ID.test(key) && typeof registry?.get === "function") {
         let known = true;
         try {
@@ -1012,12 +1013,9 @@ export function createOperations(deps) {
 
   /**
    * Every FULL id string a NEW row of `kind` must not reuse: the row ids and
-   * config ids of the registered rows (raw and `toPatchId`-normalized, so
-   * both the qualified `include:` form and the unqualified patch id are
-   * covered) plus every id present in the patch file. Generated ids are
-   * always `prompt-<kind>-<token>`, so string equality on the full form is
-   * what keeps a fresh id from duplicating an existing row id OR an existing
-   * config.id.
+   * config ids of the registered rows (raw and `toPatchId`-normalized, so both
+   * the qualified `include:` form and the unqualified patch id are covered)
+   * plus every id present in the patch file.
    */
   const takenIds = (kind) => {
     const rows = kind === "section" ? service.sections() : service.profiles();
@@ -1042,21 +1040,16 @@ export function createOperations(deps) {
 
   // #region OPS_definitions
   /**
-   * THE operation set. Keys are the transport-neutral operation names (the
-   * Remote method names; the HTTP route table below maps its paths onto the
-   * same functions). `defaultSet` keeps the HTTP `/default` body contract
-   * (`{default: id|""|null, revision?}`); the Remote adapter translates its
-   * own `{profileId}` shape into it, so the behaviour lives in ONE place.
+   * THE operation set. Keys are the operation names every surface publishes
+   * as its method names. `defaultSet` takes the `{default: id|""|null,
+   * revision?}` shape; a surface whose input names the field `profileId` maps
+   * onto it, so the behaviour lives in ONE place.
    */
   const ops = {
     /** Read the full editor state (degrades per optional service). */
     state: () => stateResponse(deps),
 
-    /**
-     * Illustrative profile preview. `input.profileId` must be a non-empty
-     * id (the HTTP layer reads it from its query parameter, hence the
-     * historical message text).
-     */
+    /** Illustrative preview of `profileId`, optionally against a session cwd. */
     preview: (input) => {
       const profileId = input?.profileId;
       if (typeof profileId !== "string" || profileId === "") {
@@ -1098,7 +1091,12 @@ export function createOperations(deps) {
       const { row, patchId } = resolveRow("section", payload.rowId);
       // VOLATILE-ONLY whole-object write: `id` stays in the inherited insert
       // layer (settings would reject it — see settingsWrite docblock).
-      await settingsWrite("replace", patchId, { title: payload.value.title, body: payload.value.body }, payload.revision);
+      await settingsWrite(
+        "replace",
+        patchId,
+        { title: payload.value.title, body: payload.value.body },
+        payload.revision,
+      );
       return { rowId: row.rowId, patchId, emits: payload.value.body.trim() !== "" };
     },
 
@@ -1120,7 +1118,10 @@ export function createOperations(deps) {
     /** Create a profile row. */
     profileCreate: (body) => {
       requireStorage();
-      const payload = validate("profile/create", body, { sectionTargets: sectionTargets(), pendingSectionIds: pendingSectionIds() });
+      const payload = validate("profile/create", body, {
+        sectionTargets: sectionTargets(),
+        pendingSectionIds: pendingSectionIds(),
+      });
       // An explicit id may never duplicate a registered profile's config.id;
       // patch row-id duplicates fall to the writer's own duplicate guard.
       if (payload.id !== null && takenConfigIds("profile").has(payload.id)) {
@@ -1143,11 +1144,19 @@ export function createOperations(deps) {
     /** Whole-object update of a profile's volatile fields. */
     profileUpdate: async (body) => {
       requireStorage();
-      const payload = validate("profile/update", body, { sectionTargets: sectionTargets(), pendingSectionIds: pendingSectionIds() });
+      const payload = validate("profile/update", body, {
+        sectionTargets: sectionTargets(),
+        pendingSectionIds: pendingSectionIds(),
+      });
       const { row, patchId } = resolveRow("profile", payload.rowId);
       // VOLATILE-ONLY whole-object write (see settingsWrite docblock): the
       // `sections` array replaces wholesale, `id` is inherited.
-      await settingsWrite("replace", patchId, { title: payload.value.title, sections: payload.value.sections }, payload.revision);
+      await settingsWrite(
+        "replace",
+        patchId,
+        { title: payload.value.title, sections: payload.value.sections },
+        payload.revision,
+      );
       return { rowId: row.rowId, patchId };
     },
 
@@ -1166,9 +1175,13 @@ export function createOperations(deps) {
         await clearProfileReferences(row);
       } catch (error) {
         try {
-          deps.log?.warn?.("prompt-profiles: profile deleted but its default/lastByWorkspace references were not cleared", {
-            profileId: row.id, error: errorText(error),
-          });
+          deps.log?.warn?.(
+            "prompt-profiles: profile deleted but its default/lastByWorkspace references were not cleared",
+            {
+              profileId: row.id,
+              error: errorText(error),
+            },
+          );
         } catch {
           // logging must never turn a successful delete into a failure
         }
@@ -1177,22 +1190,24 @@ export function createOperations(deps) {
     },
 
     /**
-     * Set (`""`/null = clear) the default profile. Body contract:
-     * `{default: profileId | "" | null, revision?}` — the Remote adapter
-     * renames `default` to `profileId` but shares this implementation.
+     * Set (`""`/null = clear) the default profile. Input contract:
+     * `{default: profileId | "" | null, revision?}`.
      */
     defaultSet: async (body) => {
       requireSettings();
       const payload = validate("default", body);
-      // B2: validate against the authoritative patch INSIDE the lock, so a
-      // profile whose row is already gone cannot become the default while
-      // HMR still exposes it.
-      await mutateWithRetry(() => {
-        if (payload.default !== "" && !profileSelectable(payload.default)) {
-          throw new ApiError(404, `profile "${payload.default}" is not registered`);
-        }
-        return [{ op: "set", path: ["default"], value: payload.default }];
-      }, { clientRevision: body.revision });
+      // Validate against the authoritative patch INSIDE the lock, so a profile
+      // whose row is already gone cannot become the default while HMR still
+      // exposes it.
+      await mutateWithRetry(
+        () => {
+          if (payload.default !== "" && !profileSelectable(payload.default)) {
+            throw new ApiError(404, `profile "${payload.default}" is not registered`);
+          }
+          return [{ op: "set", path: ["default"], value: payload.default }];
+        },
+        { clientRevision: body.revision },
+      );
     },
 
     /** Record the workspace's last chosen profile (SPEC §2 #11). */
@@ -1213,62 +1228,40 @@ export function createOperations(deps) {
       // write time: a parallel /last can never lose another workspace's
       // choice, and the (non-reentrant) write lock is taken once around the
       // whole attempt loop.
-      await mutateWithRetry(({ revisionAvailable }) => {
-        // Validity is decided INSIDE the locked mutation, after the awaited
-        // key resolution, against the AUTHORITATIVE patch (not the
-        // HMR-lagged registry): a profile deleted while we were resolving —
-        // or already gone from the file but still listed — must yield 404,
-        // never a resurrected dangling choice (B2 race).
-        if (payload.profileId !== "" && !profileSelectable(payload.profileId)) {
-          throw new ApiError(404, `profile "${payload.profileId}" is not registered`);
-        }
-        // Housekeeping unset is computed from the live config inside the
-        // lock. It is applied ONLY when a settings revision is available:
-        // without CAS a concurrent out-of-lock writer could make a scanned
-        // key valid between this scan and settings.mutate, and the unset
-        // would delete that choice. No revision → skip pruning (safe), the
-        // caller's own key is still set (per-key ops are race-free).
-        const ops = revisionAvailable
-          ? staleWorkspaceKeys(service.config.lastByWorkspace.get())
-            .map((key) => ({ op: "unset", path: ["lastByWorkspace", key] }))
-          : [];
-        // Explicit "none" is STORED as an own-property empty string (astra
-        // finding E): the resolver treats it as a decision that beats the
-        // default; deleting the key would silently fall back to `default`.
-        ops.push({ op: "set", path: ["lastByWorkspace", workspaceKey], value: payload.profileId });
-        return ops;
-      }, { clientRevision: payload.revision });
+      await mutateWithRetry(
+        ({ revisionAvailable }) => {
+          // Validity is decided INSIDE the locked mutation, after the awaited
+          // key resolution, against the AUTHORITATIVE patch (not the HMR-lagged
+          // registry): a profile deleted while we were resolving — or already
+          // gone from the file but still listed — must yield 404, never a
+          // resurrected dangling choice.
+          if (payload.profileId !== "" && !profileSelectable(payload.profileId)) {
+            throw new ApiError(404, `profile "${payload.profileId}" is not registered`);
+          }
+          // Housekeeping unset is computed from the live config inside the
+          // lock. It is applied ONLY when a settings revision is available:
+          // without CAS a concurrent out-of-lock writer could make a scanned
+          // key valid between this scan and settings.mutate, and the unset
+          // would delete that choice. No revision → skip pruning (safe), the
+          // caller's own key is still set (per-key ops are race-free).
+          const ops = revisionAvailable
+            ? staleWorkspaceKeys(service.config.lastByWorkspace.get()).map((key) => ({
+                op: "unset",
+                path: ["lastByWorkspace", key],
+              }))
+            : [];
+          // Explicit "none" is STORED as an own-property empty string: the
+          // resolver treats it as a decision that beats the default; deleting
+          // the key would silently fall back to `default`.
+          ops.push({ op: "set", path: ["lastByWorkspace", workspaceKey], value: payload.profileId });
+          return ops;
+        },
+        { clientRevision: payload.revision },
+      );
     },
   };
   // #endregion OPS_definitions
 
-  // #region CONST_routeTable
-  /**
-   * The HTTP route table: each entry names its operation (`op`) and adapts
-   * the HTTP body/query onto it. The Fetch envelope (lib/api.ts) and the
-   * tests share this table; the Remote surface calls `ops` directly.
-   */
-  const routes = [
-    { path: "/state", method: "GET", op: "state", run: () => ops.state() },
-    {
-      path: "/preview", method: "GET", op: "preview",
-      run: (body, query) => ops.preview({
-        profileId: query.get("profileId") ?? undefined,
-        cwd: query.get("cwd") ?? undefined,
-      }),
-    },
-    { path: "/section/create", method: "POST", op: "sectionCreate", run: (body) => ops.sectionCreate(body) },
-    { path: "/section/update", method: "POST", op: "sectionUpdate", run: (body) => ops.sectionUpdate(body) },
-    { path: "/section/delete", method: "POST", op: "sectionDelete", run: (body) => ops.sectionDelete(body) },
-    { path: "/section/rename", method: "POST", op: "sectionRename", run: (body) => ops.sectionRename(body) },
-    { path: "/profile/create", method: "POST", op: "profileCreate", run: (body) => ops.profileCreate(body) },
-    { path: "/profile/update", method: "POST", op: "profileUpdate", run: (body) => ops.profileUpdate(body) },
-    { path: "/profile/delete", method: "POST", op: "profileDelete", run: (body) => ops.profileDelete(body) },
-    { path: "/default", method: "POST", op: "defaultSet", run: (body) => ops.defaultSet(body) },
-    { path: "/last", method: "POST", op: "last", run: (body) => ops.last(body) },
-  ];
-  // #endregion CONST_routeTable
-
-  return { ops, routes };
+  return { ops };
 }
 // #endregion FUNC_createOperations

@@ -48,9 +48,8 @@
  * #endregion moduleContract
  */
 
-import { readFileSync } from "node:fs";
-import { promises as fsp } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { promises as fsp, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { isMap, isSeq, parseDocument } from "yaml";
 
@@ -70,11 +69,14 @@ const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (val
 let mutexTail = Promise.resolve();
 function withMutex(fn) {
   const run = mutexTail.then(fn, fn);
-  mutexTail = run.then(() => {}, () => {});
+  mutexTail = run.then(
+    () => {},
+    () => {},
+  );
   return run;
 }
 /**
- * Public alias shared with the API's settings.mutate writes (lib/api.js).
+ * Public alias shared with the operations' settings.mutate writes.
  * NOT reentrant — never call writer mutations from inside it.
  */
 export const withWriteLock = withMutex;
@@ -113,6 +115,7 @@ function runGated(section) {
  * document it fully understood.
  */
 function loadDocument(patchPath) {
+  // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
   let text;
   try {
     text = readFileSync(patchPath, "utf8");
@@ -193,9 +196,10 @@ function validateRow(row) {
   if (!row || typeof row !== "object") throw new TypeError("writer: row must be an object");
   if (typeof row.id !== "string" || row.id === "") throw new TypeError("writer: row.id must be a non-empty string");
   if (!SAFE_ID.test(row.id) || row.id.includes("..")) {
-    throw new TypeError(`writer: row.id must be a slug without '/', '\' or '..' segments (got "${row.id}")`);
+    throw new TypeError(`writer: row.id must be a slug without '/', '' or '..' segments (got "${row.id}")`);
   }
-  if (typeof row.name !== "string" || row.name === "") throw new TypeError("writer: row.name must be a non-empty string");
+  if (typeof row.name !== "string" || row.name === "")
+    throw new TypeError("writer: row.name must be a non-empty string");
 }
 // #endregion FUNC_validateRow
 
@@ -264,9 +268,10 @@ function preserveLeadingComment(document, index) {
   if (typeof comment !== "string" || comment === "") return;
   const next = document.contents.items[index + 1];
   if (next) next.commentBefore = next.commentBefore ? `${comment}\n${next.commentBefore}` : comment;
-  else document.contents.commentBefore = document.contents.commentBefore
-    ? `${document.contents.commentBefore}\n${comment}`
-    : comment;
+  else
+    document.contents.commentBefore = document.contents.commentBefore
+      ? `${document.contents.commentBefore}\n${comment}`
+      : comment;
 }
 // #endregion FUNC_preserveLeadingComment
 
@@ -357,7 +362,7 @@ export function disableRow({ patchPath, rowId, name }) {
  * leading `<parent>:` qualification chain (`include:group:prompt-section-1` →
  * `prompt-section-1`) and keep the last segment. An already-unqualified id —
  * or a non-string / empty value — passes through unchanged. THE low-level
- * normalizer; lib/api.js imports this instead of keeping a second copy.
+ * normalizer; every other module imports this instead of keeping a copy.
  * @param {string} value - row id as received.
  * @returns {string} the last `:`-separated segment (value for non-strings).
  */
@@ -499,11 +504,13 @@ export function readPatchRows({ patchPath }) {
  * @returns {Promise<boolean>} whether the file was written.
  */
 export function renameSectionRow({ patchPath, row, oldRowId, oldName, bundleOwned }) {
-  return withPatchBatch({ patchPath }, (edit) => edit((document) => {
-    insertMutation(row)(document);
-    if (bundleOwned) disableMutation(oldRowId, oldName)(document);
-    else removeMutation(oldRowId)(document);
-  }));
+  return withPatchBatch({ patchPath }, (edit) =>
+    edit((document) => {
+      insertMutation(row)(document);
+      if (bundleOwned) disableMutation(oldRowId, oldName)(document);
+      else removeMutation(oldRowId)(document);
+    }),
+  );
 }
 // #endregion FUNC_renameSectionRow
 
@@ -526,25 +533,28 @@ export function renameSectionRow({ patchPath, row, oldRowId, oldName, bundleOwne
  * @throws the original error, after the backup was restored when a write happened.
  */
 export async function withPatchBatch({ patchPath }, run) {
-  return withMutex(() => runGated(async () => {
-    let backup;
-    try {
-      backup = await fsp.readFile(patchPath, "utf8");
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-      backup = "[]\n";
-    }
-    let wrote = false;
-    try {
-      return await run(async (mutate) => {
-        const result = await editUnlocked(patchPath, mutate);
-        if (result === true) wrote = true;
-        return result;
-      });
-    } catch (error) {
-      if (wrote) await writeAtomic(patchPath, backup);
-      throw error;
-    }
-  }));
+  return withMutex(() =>
+    runGated(async () => {
+      // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
+      let backup;
+      try {
+        backup = await fsp.readFile(patchPath, "utf8");
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+        backup = "[]\n";
+      }
+      let wrote = false;
+      try {
+        return await run(async (mutate) => {
+          const result = await editUnlocked(patchPath, mutate);
+          if (result === true) wrote = true;
+          return result;
+        });
+      } catch (error) {
+        if (wrote) await writeAtomic(patchPath, backup);
+        throw error;
+      }
+    }),
+  );
 }
 // #endregion FUNC_withPatchBatch
