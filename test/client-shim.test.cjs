@@ -285,7 +285,13 @@ const chipButton = chipMenu.props.anchor;
 assert.equal(chipButton.type, primitives.Button, 'the Menu anchor is the installed Button primitive');
 assert.equal(chipButton.props.variant, 'ghost', 'ghost carries the primitive hover/focus background');
 assert.equal(chipButton.props.size, 'sm', 'compact composer size');
-assert.equal(chipButton.props.icon.type, primitives.IconChevronDownOutlineRegular, 'the chevron rides the Button icon slot');
+assert.equal(chipButton.props.icon, undefined, 'the chevron no longer rides the LEADING icon slot');
+assert.equal(chipButton.children.length, 2, 'the button content is label + trailing chevron');
+assert.equal(chipButton.children[1].type, primitives.IconChevronDownOutlineRegular,
+  'the chevron is a TRAILING child, after the label (Button has no trailing-icon slot)');
+assert.equal(chipButton.children[0].type, 'span', 'the label stays first');
+assert.equal(chipMenu.props.side, 'top', 'the dropdown opens UPWARD like conversation.input.permission');
+assert.equal(chipMenu.props.portal, true, 'and is portaled out of the composer clipping, like the neighbours');
 assert.equal(chipButton.props['aria-label'], 'menuLabel');
 assert.equal(chipButton.props.title, 'menuLabel');
 // The ONLY inline style left is the composer control's max width: the Button
@@ -637,6 +643,8 @@ assert.ok(defaultMenuEl, 'the «Default for new sessions» selector renders');
 const defaultMenuRendered = defaultMenuEl.type(defaultMenuEl.props);
 assert.equal(defaultMenuRendered.type, Menu, 'the default selector is a Menu primitive');
 assert.equal(defaultMenuRendered.props.anchor.type, primitives.Button, 'the default selector anchor is also the installed Button primitive');
+assert.equal(defaultMenuRendered.props.anchor.children[1].type, primitives.IconChevronDownOutlineRegular,
+  'the default selector also puts the chevron in the TAIL (label first)');
 console.log('PASS tabs: modal-free create buttons wired to the flow with default titles');
 // #endregion SECTION_tabsNoCreateModal
 
@@ -682,20 +690,37 @@ assert.equal(H.escapesDrillDown(escEvent('Escape'), { document: { querySelector:
 assert.equal(H.escapesDrillDown(escEvent('Escape'), { document: { querySelector: () => null } }), true,
   'no overlay → Esc still closes');
 
-// insertionOrders — the DnD insertion boundaries. Built-in orders are valid
-// neighbours; broken refs carry no order; NO built-in +0.5 anywhere.
+// insertionOrders — the DnD insertion boundaries. INTEGER orders only: the order
+// of the row that ends up directly above the drop, +1 (built-in orders included);
+// broken refs carry no order.
 const irows = [
   { kind: 'builtin', order: 100 },
   { kind: 'ours', order: 100 },
   { kind: 'ours', order: 200 },
 ];
-assert.deepStrictEqual(plain(H.insertionOrders(irows)), [99, 100, 150, 201],
-  'one boundary per gap (above first, between rows, below last); built-ins participate');
+assert.deepStrictEqual(plain(H.insertionOrders(irows)), [99, 101, 101, 201],
+  'top = first−1; a middle drop = the row above + 1; bottom = last + 1');
 assert.deepStrictEqual(plain(H.insertionOrders([{ kind: 'ours', order: 500 }])), [499, 501],
-  'a lone row still has a boundary above (±1) and below (±1)');
+  'a lone row still has a boundary above (−1) and below (+1)');
 assert.deepStrictEqual(plain(H.insertionOrders([{ kind: 'broken', order: 7 }, { kind: 'ours', order: 100 }])), [99, 99, 101],
   'a broken ref carries no order, so both its gaps resolve against the next ordered row (before it)');
 assert.deepStrictEqual(plain(H.insertionOrders([])), [100], 'an empty outline has one boundary');
+// No halves anywhere: dropping between 499 and 500 gives 500, not 499.5.
+const gap = H.insertionOrders([{ kind: 'ours', order: 499 }, { kind: 'ours', order: 500 }]);
+assert.deepStrictEqual(plain(gap), [498, 500, 501], 'between 499 and 500 the boundary is 500 (never 499.5)');
+assert.ok(plain(gap).every(Number.isInteger), 'and every boundary is an integer');
+assert.ok([...H.insertionOrders(irows), ...gap].every(Number.isInteger),
+  'no insertion order is ever fractional');
+// Dropping just BELOW a built-in that shares the order must land AFTER it: the
+// host inserts our section BEFORE a built-in at an equal order, so copying 100
+// would hoist it above — the +1 is what keeps the visual position.
+const belowBuiltin = H.insertionOrders([{ kind: 'builtin', order: 100 }, { kind: 'ours', order: 100 }]);
+assert.equal(belowBuiltin[1], 101, 'a drop below the built-in gets its order + 1');
+assert.deepStrictEqual(plain(H.outlineRows(
+  { sections: [{ id: 'a', order: belowBuiltin[1], scope: 'inherit' }] },
+  { a: { id: 'a', title: 'A' } },
+  { 'plan:policy': 100 },
+)).map((r) => r.kind), ['builtin', 'ours'], 'and the resulting visual position is BELOW the built-in');
 assert.equal(typeof H.planReorder, 'undefined', 'the row-to-row helper is GONE with the row-target model');
 assert.equal(typeof H.effectiveOrder, 'undefined', 'the client +0.5 helper is GONE (equal orders are normal)');
 assert.equal(typeof H.planMove, 'undefined', 'the arrow-move helper is GONE with the ↑↓ buttons');
@@ -1312,21 +1337,68 @@ assert.ok(rowEditBtn.length >= 2 && rowEditBtn.every((b) => b.props.variant === 
   'row icon actions use the installed Button primitive (ghost/sm), not a hand-styled button');
 assert.equal(rowA.children[idxScope].props.anchor.type, primitives.Button,
   'the scope selector anchor is the installed Button primitive');
-// Functional drop: below the LAST row (its neighbour is our sec-b, order 200).
+// The drop result is judged by the VISUAL position (outlineRows over the new
+// refs), not just by the number, and every produced order must be an integer.
+const outlineSectionsById = new Map(outlineState.sections.map((s) => [s.configId, s]));
+const visualOurs = (nextRefs) => plain(H.outlineRows(
+  { ...outlineProfile, sections: nextRefs }, outlineSectionsById, outlineState.builtinOrders,
+)).filter((r) => r.kind === 'ours').map((r) => r.ref.id);
+// Functional drop: below the LAST row (neighbour above is our sec-b, order 200).
 const dataTransfer = { effectAllowed: '', payload: '', setData(_k, v) { this.payload = v; }, getData() { return this.payload; } };
 handle.props.onDragStart({ dataTransfer });
 lastSetState = undefined;
 dropZones[3].props.onDrop({ preventDefault() {}, dataTransfer });
-assert.deepStrictEqual(plain(lastSetState).map((r) => [r.id, r.order]),
-  [['sec-a', 201], ['sec-b', 200]],
-  'drop below the last row lands +1 after its order (no +0.5)');
+assert.equal(plain(lastSetState).find((r) => r.id === 'sec-a').order, 201,
+  'drop below the last row takes the last order + 1 (integer, no +0.5)');
+assert.deepStrictEqual(visualOurs(plain(lastSetState)), ['sec-b', 'sec-a'],
+  'and lands visually BELOW the row it was dropped under');
 // Functional drop: above the FIRST row, which is a BUILT-IN (order 100).
 handleB.props.onDragStart({ dataTransfer });
 lastSetState = undefined;
 dropZones[0].props.onDrop({ preventDefault() {}, dataTransfer });
-assert.deepStrictEqual(plain(lastSetState).map((r) => [r.id, r.order]),
-  [['sec-a', 100], ['sec-b', 99]],
-  'drop above the first (built-in) row lands -1 before it — built-in boundaries are usable');
+assert.equal(plain(lastSetState).find((r) => r.id === 'sec-b').order, 99,
+  'drop at the very top takes the first order − 1');
+assert.deepStrictEqual(visualOurs(plain(lastSetState)), ['sec-b', 'sec-a'],
+  'and lands visually ABOVE the built-in row');
+// Functional drop between 499 and 500: the answer is the integer 500 (never
+// 499.5) and the row still lands visually between the two.
+const gapProfile = {
+  rowId: 'prompt-profile-gap', patchId: 'prompt-profile-gap', configId: 'prompt-profile-gap', title: 'Gap',
+  sections: [
+    { id: 'sec-a', order: 499, scope: 'inherit' },
+    { id: 'sec-b', order: 500, scope: 'inherit' },
+    { id: 'sec-c', order: 700, scope: 'inherit' },
+  ],
+};
+const gapState = {
+  profiles: [gapProfile],
+  sections: [
+    { configId: 'sec-a', patchId: 'prompt-section-sec-a', title: 'A', body: 'a' },
+    { configId: 'sec-b', patchId: 'prompt-section-sec-b', title: 'B', body: 'b' },
+    { configId: 'sec-c', patchId: 'prompt-section-sec-c', title: 'C', body: 'c' },
+  ],
+  builtinOrders: {}, modes: [],
+};
+stateQueue = ['Gap', gapProfile.sections.slice(), false, null, '', null, null, null];
+const gapEl = loaded.components.ProfileOutline({
+  profile: gapProfile, state: gapState, api: {}, reload: noop, t: (k) => k, notify: noop,
+  onBack: noop, onOpenSection: noop, autoFocusTitle: false,
+});
+stateQueue = [];
+const gapZones = [];
+walk(gapEl, (n) => { if (n.props && typeof n.props['data-drop-index'] === 'number') gapZones.push(n); });
+let gapHandleC = null;
+walk(gapEl, (n) => { if (!gapHandleC && isButton(n) && n.props?.['data-drag-handle'] === 'sec-c') gapHandleC = n; });
+gapHandleC.props.onDragStart({ dataTransfer });
+lastSetState = undefined;
+gapZones[1].props.onDrop({ preventDefault() {}, dataTransfer });
+const gapRefs = plain(lastSetState);
+assert.equal(gapRefs.find((r) => r.id === 'sec-c').order, 500, 'a drop between 499 and 500 yields the integer 500');
+assert.ok(gapRefs.every((r) => Number.isInteger(r.order)), 'no fractional order is ever produced');
+const gapSectionsById = new Map(gapState.sections.map((s) => [s.configId, s]));
+assert.deepStrictEqual(plain(H.outlineRows({ ...gapProfile, sections: gapRefs }, gapSectionsById, {}))
+  .map((r) => r.ref.id), ['sec-a', 'sec-c', 'sec-b'],
+  'and the tied 500 still renders between 499 and 500 (profile position resolves the tie)');
 // Dropping into the dragged row's own two gaps is a no-op.
 handle.props.onDragStart({ dataTransfer });
 lastSetState = undefined;
@@ -1359,14 +1431,19 @@ const kbGrip = (refId) => {
   return found;
 };
 assert.ok(kbGrip('sec-a') && kbGrip('sec-b'), 'both grips are focusable Buttons with the dragHandle label');
+const kbSectionsById = new Map(kbState.sections.map((s) => [s.configId, s]));
+const kbVisual = (nextRefs) => plain(H.outlineRows({ ...kbProfile, sections: nextRefs }, kbSectionsById, {}))
+  .map((r) => r.ref.id);
 lastSetState = 'sentinel';
 kbGrip('sec-a').props.onKeyDown({ key: 'ArrowDown', preventDefault() {} });
-assert.deepStrictEqual(plain(lastSetState).map((r) => [r.id, r.order]), [['sec-a', 301], ['sec-b', 300]],
-  'ArrowDown on the grip moves the row one rendered position (boundary order, no +0.5)');
+assert.deepStrictEqual(kbVisual(plain(lastSetState)), ['sec-b', 'sec-a'],
+  'ArrowDown on the grip moves the row one rendered position down');
+assert.ok(plain(lastSetState).every((r) => Number.isInteger(r.order)), 'the keyboard path also yields integers only');
 lastSetState = 'sentinel';
 kbGrip('sec-b').props.onKeyDown({ key: 'ArrowUp', preventDefault() {} });
-assert.deepStrictEqual(plain(lastSetState).map((r) => [r.id, r.order]), [['sec-a', 100], ['sec-b', 99]],
+assert.deepStrictEqual(kbVisual(plain(lastSetState)), ['sec-b', 'sec-a'],
   'ArrowUp on the grip moves it one position up');
+assert.equal(plain(lastSetState).find((r) => r.id === 'sec-b').order, 99, 'the top boundary is the first order − 1');
 lastSetState = 'sentinel';
 kbGrip('sec-a').props.onKeyDown({ key: 'ArrowUp', preventDefault() {} });
 assert.equal(lastSetState, 'sentinel', 'the first row cannot move up (no state churn)');
@@ -1484,7 +1561,22 @@ const untitledMenu = chipUntitled.children.find((child) => child.type === Menu);
 const untitledLabel = untitledMenu.props.anchor.children[0].children[0];
 assert.equal(untitledLabel, 'light', 'an empty-title selection shows its id instead of "None"');
 assert.notEqual(untitledLabel, 'none', 'the made choice is never reported as no selection');
-console.log('PASS audit D/E: deterministic ties, sections·broken counter, preview empty state, confirmed ref removal, untitled chip, grip keyboard');
+
+// The numeric order field stays free-form but only FINITE numbers are written.
+let orderInput = null;
+walk(removeEl, (n) => { if (!orderInput && n.type === 'input' && n.props?.type === 'number') orderInput = n; });
+assert.ok(orderInput, 'the order field renders as a number input');
+lastSetState = 'sentinel';
+orderInput.props.onChange({ target: { value: '42' } });
+assert.deepStrictEqual(plain(lastSetState).map((r) => [r.id, r.order]), [['sec-a', 42], ['sec-b', 200]],
+  'a finite typed order is written through');
+lastSetState = 'sentinel';
+orderInput.props.onChange({ target: { value: 'not-a-number' } });
+assert.equal(lastSetState, 'sentinel', 'a non-numeric entry is ignored (no NaN persisted)');
+lastSetState = 'sentinel';
+orderInput.props.onChange({ target: { value: 'Infinity' } });
+assert.equal(lastSetState, 'sentinel', 'a non-finite entry is ignored too');
+console.log('PASS audit D/E: deterministic ties, sections·broken counter, preview empty state, confirmed ref removal, untitled chip, grip keyboard, integer orders');
 // #endregion SECTION_auditDE
 
 // #region SECTION_bundleRenameLock We own only our layer: a bundle-owned section's
