@@ -18,12 +18,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
 import {
   parseBuiltinOrders,
   loadBuiltinOrders,
-  resolveSystemPromptFile,
-  sameOrders,
 } from "../lib/mirror.js";
 import { BUILTIN_ORDERS, builtinOrdersByName } from "../lib/builtin-orders.js";
 
@@ -60,17 +57,19 @@ test("parseBuiltinOrders throws descriptively on garbage input", () => {
 // #endregion SECTION_parse
 
 // #region SECTION_realFile
-test("parseBuiltinOrders parses the real installed dsh-system-prompt", { skip: (() => {
+test("loadBuiltinOrders parses the real installed dsh-system-prompt", { skip: (() => {
   try { createRequire(import.meta.url).resolve("@deepseek-ai/dsh-system-prompt"); return false; }
   catch { return "dsh-system-prompt not resolvable from here"; }
 })() }, () => {
-  const file = resolveSystemPromptFile({ resolveFrom: undefined });
-  assert.ok(file, "resolveSystemPromptFile found the file");
-  const orders = parseBuiltinOrders(readFileSync(file, "utf8"));
-  assert.equal(Object.keys(orders).length, 32);
-  assert.equal(orders.HARNESS_IDENTITY, -1000);
-  assert.equal(orders.DEPLOYMENT_PERSONA_SUFFIX, 10200);
-  assert.ok(sameOrders(orders, BUILTIN_ORDERS), "runtime table matches frozen copy");
+  const warnings = [];
+  const result = loadBuiltinOrders({ warn: (message) => warnings.push(message) });
+  assert.equal(result.origin, "runtime", "resolved and parsed the installed package");
+  assert.ok(result.file, "resolved the package lib/index.js");
+  assert.equal(Object.keys(result.orders).length, 32);
+  assert.equal(result.orders.HARNESS_IDENTITY, -1000);
+  assert.equal(result.orders.DEPLOYMENT_PERSONA_SUFFIX, 10200);
+  assert.deepEqual(result.orders, BUILTIN_ORDERS, "runtime table matches the frozen copy");
+  assert.deepEqual(warnings, [], "no fallback and no divergence warning");
 });
 // #endregion SECTION_realFile
 

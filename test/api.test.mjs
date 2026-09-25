@@ -16,21 +16,10 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument, isSeq } from "yaml";
-import { registerApi, toPatchId, tokenSource } from "../lib/api.js";
-import { resolveProfileId } from "../lib/resolve.js";
+import { registerApi, tokenSource } from "../lib/api.js";
+import { resolveProfileId, planInsertion } from "../lib/resolve.js";
 
 const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value) => value }] };
-
-// #region FUNC_toPatchId_unit
-/** @purpose Unit-pin the normalization helper: strip `<parent>:` chains, keep the last segment, pass through unqualified ids. */
-test("toPatchId strips qualified prefix chains and passes unqualified ids through", () => {
-  assert.equal(toPatchId("include:prompt-section-1"), "prompt-section-1");
-  assert.equal(toPatchId("include:group:prompt-section-1"), "prompt-section-1");
-  assert.equal(toPatchId("prompt-section-1"), "prompt-section-1");
-  assert.equal(toPatchId(""), "");
-  assert.equal(toPatchId(null), null);
-});
-// #endregion FUNC_toPatchId_unit
 
 // #region FUNC_fakes
 /** @purpose Drive handlers without node sockets: minimal req/res stand-ins. */
@@ -71,7 +60,7 @@ function fakeResponse() {
  *   return a `call(method, path, body)` driver. The fake settings records
  *   BOTH mutate ops and whole-object replace calls.
  */
-async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, entries, workspaceRegistry, settings: settingsOverride } = {}) {
+async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, entries, workspaceRegistry, builtinOrdersByName, settings: settingsOverride } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "dsh-pp-api-"));
   const patchPath = join(dir, "cordis.patch.yml");
   await writeFile(patchPath, "# comment\n[]\n", { mode: 0o600 });
@@ -103,7 +92,7 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
     usedIn: (id) => profiles.flatMap((profile) =>
       profile.sections.filter((ref) => ref.id === id).map((ref) => ({ profileId: profile.id, scope: ref.scope ?? "inherit" }))),
     builtinOrders: () => ({ TOOL_BASH: 1000 }),
-    builtinOrdersByName: () => ({ "tool:bash": 1000 }),
+    builtinOrdersByName: () => builtinOrdersByName ?? { "tool:bash": 1000 },
     config: { default: { get: () => defaultId }, lastByWorkspace: { get: () => lastByWorkspace } },
   };
   const routes = new Map();
@@ -631,30 +620,32 @@ test("delete removes a user insert row (qualified rowId); a bundle row gets a ba
 // #endregion TEST_delete
 
 // #region TEST_rename
-/** @purpose Rename is ONE writer commit: new insert row, referencing profile rows rewritten in the same document, old row gone. */
-test("rename creates the new row, rewrites profile refs, and removes the old row in one commit", async () => {
+/** @purpose Rename is ONE writer commit that changes the SECTION only: the new row lands, the old row goes, and every profile reference stays OLD — the response reports the affected profiles. */
+test("rename creates the new row, leaves profile refs untouched, removes the old row, and reports affectedProfiles", async () => {
   const api = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
     await api.call("POST", "/section/create", { id: "tone", title: "Tone", body: "Be brief." });
     await api.call("POST", "/profile/create", { id: "light", title: "Light", sections: [{ id: "tone", order: 1050, scope: "inherit" }] });
     const { status, body } = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "short-tone" });
     assert.equal(status, 200);
-    // The new id is the FULL prefixed form everywhere (task 4).
-    assert.deepEqual(body, { ok: true, rowId: "prompt-section-short-tone", patchId: "prompt-section-short-tone", id: "prompt-section-short-tone" });
+    // The new id is the FULL prefixed form, plus the profiles left behind.
+    assert.deepEqual(body, {
+      ok: true,
+      rowId: "prompt-section-short-tone", patchId: "prompt-section-short-tone", id: "prompt-section-short-tone",
+      affectedProfiles: [{ profileId: "light", title: "Light" }],
+    });
     assert.deepEqual(api.replacements, [], "rename performs no settings.replace calls");
     const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
-    const profileEntry = document.contents.items.find((item) => {
-      const insert = item?.get?.("insert");
-      return isSeq(insert) && insert.items.some((row) => row.get("id") === "prompt-profile-light");
-    });
-    assert.ok(profileEntry, "profile insert row rewritten in place");
-    const profileRow = profileEntry.get("insert").items.find((row) => row.get("id") === "prompt-profile-light");
-    assert.deepEqual(profileRow.get("config").get("sections").toJS(document), [{ id: "prompt-section-short-tone", order: 1050, scope: "inherit" }]);
-    assert.ok(!document.contents.items.some((item) => item?.get?.("id") === "prompt-profile-light"), "no bare override written for the insert-owned profile");
-    const renamed = document.contents.items
-      .flatMap((item) => (isSeq(item?.get?.("insert")) ? item.get("insert").items : []))
-      .find((row) => row.get("id") === "prompt-section-short-tone");
+    assert.ok(isSeq(document.contents), "patch stays a valid YAML sequence");
+    const inserted = document.contents.items.flatMap((item) => (isSeq(item?.get?.("insert")) ? item.get("insert").items : []));
+    const renamed = inserted.find((row) => row.get("id") === "prompt-section-short-tone");
+    assert.ok(renamed, "new section row present");
     assert.equal(renamed.get("config").get("id"), "prompt-section-short-tone", "renamed config.id is the full new row id");
+    assert.ok(!inserted.some((row) => row.get("id") === "prompt-section-tone"), "old section row removed");
+    assert.ok(!document.contents.items.some((item) => item?.get?.("id") === "prompt-profile-light"), "no bare override written");
+    const profileRow = inserted.find((row) => row.get("id") === "prompt-profile-light");
+    assert.deepEqual(profileRow.get("config").get("sections").toJS(document), [{ id: "tone", order: 1050, scope: "inherit" }],
+      "profile refs are NOT rewritten: they still name the old id");
     const text = await readFile(api.patchPath, "utf8");
     assert.match(text, /prompt-section-short-tone/);
     assert.doesNotMatch(text, /prompt-section-tone\b/);
@@ -667,61 +658,59 @@ test("rename accepts the qualified include:… rowId", async () => {
   try {
     await api.call("POST", "/section/create", { id: "tone", title: "Tone", body: "Be brief." });
     await api.call("POST", "/profile/create", { id: "light", title: "Light", sections: [{ id: "tone", order: 1050, scope: "inherit" }] });
-    const { status } = await api.call("POST", "/section/rename", { rowId: "include:prompt-section-tone", id: "short-tone" });
+    const { status, body } = await api.call("POST", "/section/rename", { rowId: "include:prompt-section-tone", id: "short-tone" });
     assert.equal(status, 200);
+    assert.deepEqual(body.affectedProfiles, [{ profileId: "light", title: "Light" }]);
     const text = await readFile(api.patchPath, "utf8");
     assert.match(text, /prompt-section-short-tone/);
     assert.doesNotMatch(text, /prompt-section-tone\b/);
+    assert.match(text, /id: tone/, "the profile ref keeps the old id");
   } finally { await api.cleanup(); }
 });
 
-/** @purpose A referencing profile from a LOWER layer is rewritten as a bare override carrying its REAL plugin name from configEditor.entries(). */
-test("rename names a foreign profile from configEditor.entries() for its bare override", async () => {
-  const foreignName = "@foreign/bundle/profile";
+/** @purpose A referencing profile from a LOWER layer is NEVER given a bare override from rename — it is reported instead. */
+test("rename never writes a bare override for a foreign profile; it reports it", async () => {
   const api = await harness({
     sections: [userSection], profiles: [userProfile],
-    entries: () => [{ options: { id: "prompt-profile-light", name: foreignName } }],
+    entries: () => [{ options: { id: "prompt-profile-light", name: "@foreign/bundle/profile" } }],
   });
   try {
     await api.call("POST", "/section/create", { title: "Tone", body: "Be brief." });
-    const { status } = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "short-tone" });
+    const { status, body } = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "short-tone" });
     assert.equal(status, 200);
+    assert.deepEqual(body.affectedProfiles, [{ profileId: "light", title: "Light" }]);
     const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
-    const bare = document.contents.items.find((item) => item?.get?.("id") === "prompt-profile-light");
-    assert.ok(bare, "bare override written for the foreign profile");
-    assert.equal(bare.get("name"), foreignName, "override carries the real plugin name");
-    assert.deepEqual(bare.get("config").get("sections").toJS(document), [{ id: "prompt-section-short-tone", order: 1050, scope: "inherit" }]);
+    assert.ok(!document.contents.items.some((item) => item?.get?.("id") === "prompt-profile-light"),
+      "no bare override written for the foreign profile");
+    assert.equal(api.replacements.length, 0, "no settings.replace either");
   } finally { await api.cleanup(); }
 });
 
-/** @purpose When a referencing profile can be named NOWHERE, the rename is refused with 409 and the patch is untouched. */
-test("rename is refused when a referencing profile cannot be named safely", async () => {
+/** @purpose A profile that cannot be named safely no longer refuses the rename — the section is renamed and the profile is reported. */
+test("rename succeeds when a referencing profile cannot be named; affectedProfiles lists it", async () => {
   const api = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
     await api.call("POST", "/section/create", { title: "Tone", body: "Be brief." });
-    const before = await readFile(api.patchPath, "utf8");
     const { status, body } = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "short-tone" });
-    assert.equal(status, 409);
-    assert.match(body.error.message, /could not name every referencing profile/);
-    assert.equal(await readFile(api.patchPath, "utf8"), before, "file untouched by the refused rename");
+    assert.equal(status, 200);
+    assert.deepEqual(body.affectedProfiles, [{ profileId: "light", title: "Light" }]);
   } finally { await api.cleanup(); }
 });
 
-/** @purpose Any failure inside the single-commit rename leaves the patch file byte-identical. */
-test("rename rolls the patch file back byte-identically when a batch step fails", async () => {
+/** @purpose A repeat rename into the same id is a 400, and any failure inside the single-commit rename leaves the patch byte-identical. */
+test("rename rejects a repeat/duplicate id with 400 and rolls the patch back byte-identically", async () => {
   const before = "# comment\n[]\n"; // harness's initial patch file, byte-for-byte
   const api = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
-    const duplicate = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "tone" });
-    assert.equal(duplicate.status, 200, "renaming onto the same id is a no-op success");
+    // Repeating the same id (it already names this row) is a clean 400.
+    const same = await api.call("POST", "/section/rename", { rowId: "prompt-section-tone", id: "tone" });
+    assert.equal(same.status, 400);
+    assert.match(same.body.error.message, /already taken/);
     const missing = await api.call("POST", "/section/rename", { rowId: "prompt-section-ghost", id: "whatever" });
     assert.equal(missing.status, 404);
     assert.equal(await readFile(api.patchPath, "utf8"), before);
   } finally { await api.cleanup(); }
-  const api2 = await harness({
-    sections: [userSection], profiles: [userProfile],
-    entries: () => [{ options: { id: "prompt-profile-light", name: "@knopki/dsh-prompt-profiles/profile" } }],
-  });
+  const api2 = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
     await api2.call("POST", "/section/create", { id: "taken", title: "Taken", body: "x" });
     const before2 = await readFile(api2.patchPath, "utf8");
@@ -793,6 +782,66 @@ test("/last accepts cwd, resolves the workspace key, and rejects an addressless 
     assert.equal((await api.call("POST", "/last", { profileId: "light" })).status, 400);
     assert.equal((await api.call("POST", "/last", { workspaceId: 42, profileId: "light" })).status, 400);
   } finally { await api.cleanup(); }
+});
+/** @purpose Orphan cleanup on delete: the removed profile's id disappears from every lastByWorkspace value and default resets. */
+test("deleting a profile clears default and lastByWorkspace references in the same settings write", async () => {
+  const api = await harness({
+    profiles: [userProfile],
+    defaultId: "light",
+    lastByWorkspace: { ws1: "light", ws2: "", "2af243f0-f678-4ef8-9b9a-f79e4ea5bc75": "light" },
+  });
+  try {
+    const { status } = await api.call("POST", "/profile/delete", { rowId: "light", revision: 7 });
+    assert.equal(status, 200);
+    const cleanup = api.mutations.at(-1);
+    assert.equal(cleanup.ns, "prompt-profiles");
+    const byPath = Object.fromEntries(cleanup.ops.map((op) => [op.path[0], op.value]));
+    assert.deepEqual(byPath.lastByWorkspace, { ws2: "" }, "matching values removed, explicit none kept");
+    assert.equal(byPath.default, "", "default reset");
+    assert.equal(cleanup.expected, 7, "cleanup uses the request revision");
+    const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
+    assert.ok(isSeq(document.contents), "patch stays a valid YAML sequence");
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose /last pruning: dangling profile values and stale UUID keys go, cwd keys and explicit none stay. */
+test("/last prunes dangling profile values and stale workspace-id keys", async () => {
+  const liveId = "2af243f0-f678-4ef8-9b9a-f79e4ea5bc75";
+  const staleId = "00000000-0000-4000-8000-000000000000";
+  const api = await harness({
+    profiles: [userProfile],
+    lastByWorkspace: {
+      "ws-path": "ghost",                    // dangling value → dropped
+      "ws-none": "",                         // explicit none → kept
+      "/work/dir": "light",                  // cwd key → kept
+      [liveId]: "light",                     // UUID the registry knows → kept
+      [staleId]: "light",                    // UUID absent from the registry → dropped
+    },
+    workspaceRegistry: {
+      list: () => [],
+      resolveByPath: async () => undefined,
+      get: (id) => (id === liveId ? { id } : undefined),
+    },
+  });
+  try {
+    const { status } = await api.call("POST", "/last", { cwd: "/new", profileId: "light" });
+    assert.equal(status, 200);
+    assert.deepEqual(api.mutations.at(-1).ops[0].value, {
+      "ws-none": "",
+      "/work/dir": "light",
+      [liveId]: "light",
+      "/new": "light",
+    });
+  } finally { await api.cleanup(); }
+  // Without a workspace registry a UUID key cannot be PROVEN stale: keep it.
+  const api2 = await harness({
+    profiles: [userProfile],
+    lastByWorkspace: { [staleId]: "light" },
+  });
+  try {
+    await api2.call("POST", "/last", { workspaceId: "ws-plain", profileId: "" });
+    assert.deepEqual(api2.mutations.at(-1).ops[0].value, { [staleId]: "light", "ws-plain": "" });
+  } finally { await api2.cleanup(); }
 });
 // #endregion TEST_defaults
 
@@ -881,7 +930,7 @@ test("state modes mark complete presets and degrade without agentPresets", async
 // #endregion TEST_modes
 
 // #region TEST_preview
-/** @purpose preview orders our sections, interpolates {{cwd}}, reports the profile's order verbatim (no +0.5), and reports skipped refs with reasons. */
+/** @purpose preview orders our sections, interpolates {{cwd}}, reports the profile's order verbatim (no +0.5), places built-in placeholders, and reports skipped refs with reasons. */
 test("preview renders ordered sections with interpolation and skip reasons", async () => {
   const blank = { id: "blank", title: "Blank", body: " ", rowId: "prompt-section-blank", source: "user" };
   const cwdSection = { id: "cwd-note", title: "Cwd", body: "Work in {{cwd}} with {{model}}.", rowId: "prompt-section-cwd-note", source: "user" };
@@ -889,7 +938,7 @@ test("preview renders ordered sections with interpolation and skip reasons", asy
     id: "light", title: "Light",
     sections: [
       // 1000 EQUALS the built-in tool:bash order: the preview must report 1000,
-      // not a shifted 1000.5.
+      // not a shifted 1000.5, and place the section BEFORE that built-in.
       { id: "cwd-note", order: 1000, scope: "inherit" },
       { id: "missing", order: 1100 },
       { id: "blank", order: 1200 },
@@ -903,16 +952,103 @@ test("preview renders ordered sections with interpolation and skip reasons", asy
     const { status, body } = await api.call("GET", "/preview?profileId=light");
     assert.equal(status, 200);
     assert.equal(body.title, "Light");
-    assert.deepEqual(body.sections, [{
-      id: "cwd-note", title: "Cwd", order: 1000, scope: "inherit",
-      text: `Work in ${process.cwd()} with {{model}}.`, emits: true,
-    }]);
+    assert.deepEqual(body.sections, [
+      {
+        id: "cwd-note", title: "Cwd", order: 1000, scope: "inherit",
+        text: `Work in ${process.cwd()} with {{model}}.`, emits: true,
+      },
+      { kind: "builtin", name: "tool:bash", title: "tool:bash", order: 1000 },
+    ], "our equal-order section stands BEFORE the built-in placeholder");
     assert.deepEqual(body.skipped, [
-      { id: "missing", reason: "section not found" },
-      { id: "blank", reason: "empty body" },
+      { id: "missing", title: "missing", reason: "section not found" },
+      { id: "blank", title: "Blank", reason: "empty body" },
     ]);
     assert.equal(body.variables.cwd, process.cwd());
     assert.equal(body.variables.model, null);
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose Preview applies the RUNTIME selection rule (main agent) and the SAME insertion plan: scope filtering, built-in placeholders, equal-order-before-builtin, planInsertion parity. */
+test("preview filters scope like the runtime and merges built-in placeholders via planInsertion", async () => {
+  const builtinOrdersByName = {
+    "plan:policy": 500,
+    "tool:bash": 1000,
+    "deployment:persona-suffix": 10200,
+  };
+  const makeSection = (id, title, body) => ({ id, title, body, rowId: `prompt-section-${id}`, source: "user" });
+  const profile = {
+    id: "light", title: "Light",
+    sections: [
+      { id: "cwd-note", order: 1000, scope: "inherit" },   // equal to tool:bash
+      { id: "main-note", order: 1200, scope: "main-only" }, // emitted for the main agent
+      { id: "sub-note", order: 1300, scope: "subagents-only" }, // skipped
+    ],
+    rowId: "prompt-profile-light", source: "user",
+  };
+  const api = await harness({
+    sections: [makeSection("cwd-note", "Cwd", "C"), makeSection("main-note", "Main", "M"), makeSection("sub-note", "Sub", "S")],
+    profiles: [profile],
+    builtinOrdersByName,
+  });
+  try {
+    const { status, body } = await api.call("GET", "/preview?profileId=light");
+    assert.equal(status, 200);
+    const tags = body.sections.map((s) => (s.kind === "builtin" ? `builtin:${s.name}` : `ours:${s.id}`));
+    // (а) subagents-only is skipped with a reason; (б) main-only is emitted;
+    // (в) built-in placeholders sit in engine order; (г) our order==1000 section
+    //     stands BEFORE tool:bash.
+    assert.deepEqual(tags, [
+      "builtin:plan:policy",
+      "ours:cwd-note",
+      "builtin:tool:bash",
+      "ours:main-note",
+      "builtin:deployment:persona-suffix",
+    ]);
+    assert.deepEqual(body.skipped, [
+      { id: "sub-note", title: "Sub", reason: "scope subagents-only outside a plain subagent" },
+    ]);
+    assert.ok(body.sections.filter((s) => s.kind !== "builtin").every((s) => s.emits === true && typeof s.text === "string"),
+      "emitted sections carry their text");
+    // (д) our sections' order matches planInsertion on the same fixture.
+    const assemblySections = Object.keys(builtinOrdersByName)
+      .map((name) => ({ name, order: builtinOrdersByName[name] }))
+      .sort((a, b) => a.order - b.order)
+      .map(({ name }) => ({ name }));
+    const plan = planInsertion({
+      snapshot: { sections: [
+        { id: "cwd-note", order: 1000, text: "C" },
+        { id: "main-note", order: 1200, text: "M" },
+      ] },
+      assemblySections,
+      builtinOrdersByName,
+    });
+    const merged = assemblySections.map(({ name }) => ({ kind: "builtin", name }));
+    const expectedOurs = [{ id: "cwd-note" }, { id: "main-note" }];
+    for (let i = plan.length - 1; i >= 0; i--) merged.splice(plan[i].index, 0, expectedOurs[i]);
+    assert.deepEqual(
+      body.sections.map((s) => (s.kind === "builtin" ? `builtin:${s.name}` : `ours:${s.id}`)),
+      merged.map((s) => (s.kind === "builtin" ? `builtin:${s.name}` : `ours:${s.id}`)),
+      "preview order equals planInsertion's result on the same fixture",
+    );
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose Disabled and empty sections are skipped with the shared runtime reasons. */
+test("preview reports disabled and empty sections with the runtime reasons", async () => {
+  const disabled = { id: "off", title: "Off", body: "B", rowId: "prompt-section-off", source: "user", disabled: true };
+  const blank = { id: "empty", title: "Empty", body: " \n ", rowId: "prompt-section-empty", source: "user" };
+  const profile = {
+    id: "light", title: "Light",
+    sections: [{ id: "off", order: 1000, scope: "inherit" }, { id: "empty", order: 1100, scope: "inherit" }],
+    rowId: "prompt-profile-light", source: "user",
+  };
+  const api = await harness({ sections: [disabled, blank], profiles: [profile] });
+  try {
+    const { body } = await api.call("GET", "/preview?profileId=light");
+    assert.deepEqual(body.skipped, [
+      { id: "off", title: "Off", reason: "section disabled" },
+      { id: "empty", title: "Empty", reason: "empty body" },
+    ]);
   } finally { await api.cleanup(); }
 });
 // #endregion TEST_preview

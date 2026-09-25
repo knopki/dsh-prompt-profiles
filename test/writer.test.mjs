@@ -14,10 +14,21 @@ import { mkdtemp, readFile, writeFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument, isSeq } from "yaml";
-import { insertRow, removeRow, disableRow, provenance, withPatchBatch, setWriteGate, renameSectionRow } from "../lib/writer.js";
+import { insertRow, removeRow, disableRow, provenance, withPatchBatch, setWriteGate, renameSectionRow, toPatchId } from "../lib/writer.js";
 
 const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value) => value }] };
 const SECTION_NAME = "@knopki/dsh-prompt-profiles/section";
+
+// #region FUNC_toPatchId_unit
+/** @purpose Unit-pin the shared normalizer: strip `<parent>:` chains, keep the last segment, pass unqualified/non-string values through. */
+test("toPatchId strips qualified prefix chains and passes unqualified ids through", () => {
+  assert.equal(toPatchId("include:prompt-section-1"), "prompt-section-1");
+  assert.equal(toPatchId("include:group:prompt-section-1"), "prompt-section-1");
+  assert.equal(toPatchId("prompt-section-1"), "prompt-section-1");
+  assert.equal(toPatchId(""), "");
+  assert.equal(toPatchId(null), null);
+});
+// #endregion FUNC_toPatchId_unit
 
 const samplePatch = `# Your patch layer for this dsh profile, applied after every bundle layer:
 # a top-level YAML array of loader patch entries (id-targeted config
@@ -198,16 +209,16 @@ test("disableRow for an unknown id yields a bare (non-insert) row the loader ski
 /** @purpose Batch rollback restores the in-memory backup when a later step throws. */
 test("withPatchBatch restores the backup when a step throws", async () => {
   const { dir, patchPath } = await workspace();
+  const addRow = (row) => (document) => { document.add(document.createNode({ insert: [row] })); };
   try {
     const before = await readFile(patchPath, "utf8");
-    await assert.rejects(withPatchBatch({ patchPath }, async (ops) => {
-      await ops.insertRow({ row: sectionRow("doomed") });
-      await ops.disableRow({ rowId: "ui-settings-general", name: "@deepseek-ai/dsh-client-ui-settings-general" });
+    await assert.rejects(withPatchBatch({ patchPath }, async (edit) => {
+      await edit(addRow(sectionRow("doomed")));
       throw new Error("later step failed");
     }), /later step failed/);
     assert.equal(await readFile(patchPath, "utf8"), before);
-    const ok = await withPatchBatch({ patchPath }, async (ops) => {
-      await ops.insertRow({ row: sectionRow("kept") });
+    const ok = await withPatchBatch({ patchPath }, async (edit) => {
+      await edit(addRow(sectionRow("kept")));
       return "done";
     });
     assert.equal(ok, "done");
@@ -292,8 +303,8 @@ test("a failing batch never restores a stale backup over an external edit", asyn
       await writeFile(patchPath, "- id: external-edit\n  name: some/plugin\n", "utf8");
     });
     const ours = assert.rejects(
-      withPatchBatch({ patchPath }, async (ops) => {
-        await ops.insertRow({ row: sectionRow("doomed") });
+      withPatchBatch({ patchPath }, async (edit) => {
+        await edit((document) => { document.add(document.createNode({ insert: [sectionRow("doomed")] })); });
         throw new Error("later step failed");
       }),
       /later step failed/,
@@ -308,10 +319,11 @@ test("a failing batch never restores a stale backup over an external edit", asyn
   }
 });
 
-/** @purpose renameSectionRow is a SINGLE commit: one read, one write, one gate
- *  section — the new row, the rewritten profile sections, and the old row's
- *  removal all land (or roll back) together. */
-test("renameSectionRow inserts the new row, rewrites profile refs, and drops the old row in one commit", async () => {
+/** @purpose renameSectionRow is a SINGLE commit — one read, one write, one
+ *  gate section — and it touches the SECTION ONLY: the new row and the old
+ *  row's removal land (or roll back) together, while profile refs are left
+ *  EXACTLY as they were (frozen decision: no profile rewriting). */
+test("renameSectionRow inserts the new row and drops the old one in one commit, leaving profile refs untouched", async () => {
   const { dir, patchPath } = await workspace("[]\n");
   try {
     await insertRow({ patchPath, row: sectionRow("tone") });
@@ -321,12 +333,8 @@ test("renameSectionRow inserts the new row, rewrites profile refs, and drops the
     } });
     await renameSectionRow({
       patchPath,
-      row: { id: "prompt-section-short-tone", name: SECTION_NAME, config: { id: "short-tone", title: "Title tone", body: "Line one\nLine two" } },
+      row: { id: "prompt-section-short-tone", name: SECTION_NAME, config: { id: "prompt-section-short-tone", title: "Title tone", body: "Line one\nLine two" } },
       oldRowId: "prompt-section-tone", oldName: SECTION_NAME, bundleOwned: false,
-      profileUpdates: [{
-        rowId: "prompt-profile-light", name: "@knopki/dsh-prompt-profiles/profile",
-        sections: [{ id: "short-tone", order: 1050, scope: "main-only" }],
-      }],
     });
     const document = parseDocument(await readFile(patchPath, "utf8"), parseOptions);
     const ids = [];
@@ -338,7 +346,8 @@ test("renameSectionRow inserts the new row, rewrites profile refs, and drops the
     const profileEntry = document.contents.items
       .find((item) => item?.get?.("insert")?.items?.some((row) => row.get("id") === "prompt-profile-light"));
     const profile = profileEntry.get("insert").items.find((row) => row.get("id") === "prompt-profile-light");
-    assert.deepEqual(profile.get("config").get("sections").toJS(document), [{ id: "short-tone", order: 1050, scope: "main-only" }]);
+    assert.deepEqual(profile.get("config").get("sections").toJS(document), [{ id: "tone", order: 1050, scope: "main-only" }],
+      "profile refs keep the OLD id — rename never rewrites profiles");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -357,7 +366,7 @@ test("rename and removeRow keep the file-leading comment of a removed first entr
     await renameSectionRow({
       patchPath,
       row: { id: "prompt-section-short-tone", name: SECTION_NAME, config: { id: "short-tone", title: "T", body: "B" } },
-      oldRowId: "prompt-section-tone", oldName: SECTION_NAME, bundleOwned: false, profileUpdates: [],
+      oldRowId: "prompt-section-tone", oldName: SECTION_NAME, bundleOwned: false,
     });
     const after = await readFile(patchPath, "utf8");
     assert.match(after, /# File-leading header comment:/, "leading comment survives the rename");

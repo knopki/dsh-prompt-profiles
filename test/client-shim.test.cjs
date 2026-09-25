@@ -211,7 +211,12 @@ function makeStrictCtx(services) {
 }
 const ctx = makeStrictCtx({
   locale: {
-    register: (ns, d) => { assert.equal(ns, 'promptProfiles'); dict.en = { ...dict.en, ...d.en }; },
+    // Capture EVERY registered locale so the ru/zh dictionaries can be checked
+    // against `en` (a key drifting out of sync would silently fall back).
+    register: (ns, d) => {
+      assert.equal(ns, 'promptProfiles');
+      for (const [id, entries] of Object.entries(d)) dict[id] = { ...(dict[id] ?? {}), ...entries };
+    },
     bind: (ns) => (key) => dict.en[key] ?? key,
   },
   slots: {
@@ -272,27 +277,28 @@ assert.equal(dict.en.manage, undefined, 'the `manage` locale string is gone');
 assert.equal(dict.en.manageUnavailable, undefined, 'the `manageUnavailable` locale string is gone');
 assert.equal(dict.en.profile, undefined, 'the `profile:` prefix locale string is gone');
 
-// Appearance: the anchor button mirrors the installed composer controls
-// (`conversation.input.permission` / model-selector `.trigger`).
-const chipButton = chipMenu.props.anchor.children[0];
-assert.equal(chipButton.type, 'button', 'anchor is a real button');
-assert.equal(chipButton.props.style.height, '28px', 'composer control height (h28)');
-assert.equal(chipButton.props.style.borderRadius, '24px', 'composer capsule radius (r24)');
-assert.equal(chipButton.props.style.padding, '0 4px 0 8px', 'composer control padding');
-assert.equal(chipButton.props.style.gap, '4px');
-assert.equal(chipButton.props.style.fontSize, '13px');
-assert.equal(chipButton.props.style.fontWeight, 500);
-assert.equal(chipButton.props.style.lineHeight, '20px');
-assert.equal(chipButton.props.style.display, 'inline-flex');
-assert.equal(chipButton.props.style.border, 'none');
-assert.equal(chipButton.props.style.background, 'transparent');
-assert.equal(chipButton.props.style.color, 'var(--dsw-alias-label-secondary)');
+// The chip is built on PRIMITIVES: a Button anchor (with its own hover/focus/
+// active states) inside the Menu — not a div/native button with a hand-written
+// style sheet (which is why the hover background had gone missing).
+assert.equal(chipEl.type, React.Fragment, 'chip returns a Fragment (Menu + toast banner) — no wrapper div with inline layout');
+const chipButton = chipMenu.props.anchor;
+assert.equal(chipButton.type, primitives.Button, 'the Menu anchor is the installed Button primitive');
+assert.equal(chipButton.props.variant, 'ghost', 'ghost carries the primitive hover/focus background');
+assert.equal(chipButton.props.size, 'sm', 'compact composer size');
+assert.equal(chipButton.props.icon.type, primitives.IconChevronDownOutlineRegular, 'the chevron rides the Button icon slot');
+assert.equal(chipButton.props['aria-label'], 'menuLabel');
+assert.equal(chipButton.props.title, 'menuLabel');
+// The ONLY inline style left is the composer control's max width: the Button
+// primitive exposes neither a max width nor a truncation slot.
+assert.deepStrictEqual(Object.keys(chipButton.props.style), ['maxWidth'], 'no hand-written geometry remains on the button');
+assert.equal(chipButton.props.style.maxWidth, '220px');
+const chipLabel = chipButton.children[0];
+assert.equal(chipLabel.type, 'span', 'long names still get an ellipsis span (no truncation slot on the primitive)');
+assert.equal(chipLabel.props.style.textOverflow, 'ellipsis');
 const chipText = elementText(chipButton);
 assert.ok(chipText.includes('Light'), 'the button shows the profile NAME');
 assert.ok(!chipText.includes('profile:'), 'the "profile:" prefix is gone');
-assert.ok(!chipText.includes('▾'), 'the text glyph is replaced by the installed chevron icon');
-assert.ok(hasElement(chipButton, (n) => n.type === primitives.IconChevronDownOutlineRegular),
-  'the button ends with the installed chevron icon');
+assert.ok(!chipText.includes('▾'), 'the text glyph is gone (the chevron is an icon)');
 
 // The choice must ALWAYS be delivered: workspaceId when known, else the cwd.
 // (`request`/`choose` call fetch/pick synchronously before their first await,
@@ -312,7 +318,26 @@ stateQueue = [];
 chipWithPick.children.find((child) => child.type === Menu).props.onSelect('light');
 assert.deepStrictEqual(plain(picks), [{ profileId: 'light', cwd: '/work/repo' }],
   'choose ALWAYS delivers {profileId, cwd} even when workspaceId is unknown');
-const picksNoCwd = [];
+// With a Workspace accounted to the Session, the choice is keyed by workspaceId
+// alone (cwd is not sent alongside it).
+const picksWs = [];
+stateQueue = [{
+  profiles: [{ rowId: 'prompt-profile-light', patchId: 'profile-light', configId: 'light', title: 'Light', sections: [] }],
+  sections: [], builtinOrders: {}, default: 'light', lastByWorkspace: {},
+}];
+const chipWithWs = chip.component({
+  ...chipStyle,
+  useWorkspaces: (select) => select({ items: [{ workspaceId: 'ws1', path: '/work/repo', sessionIds: ['sid'] }] }),
+  pick: (choice) => { picksWs.push(choice); return Promise.resolve({}); },
+});
+stateQueue = [];
+chipWithWs.children.find((child) => child.type === Menu).props.onSelect('light');
+assert.deepStrictEqual(plain(picksWs), [{ profileId: 'light', workspaceId: 'ws1' }],
+  'with a known workspaceId the choice is {workspaceId, profileId} — one key only');
+
+// With NEITHER workspaceId NOR cwd there is no key to store the choice under:
+// the chip blocks the selection and explains — it must not POST.
+const picksNoKey = [];
 stateQueue = [{
   profiles: [{ rowId: 'prompt-profile-light', patchId: 'profile-light', configId: 'light', title: 'Light', sections: [] }],
   sections: [], builtinOrders: {}, default: 'light', lastByWorkspace: {},
@@ -320,12 +345,19 @@ stateQueue = [{
 const chipNoKeys = chip.component({
   ...chipStyle,
   useSessions: (select) => select({ byId: {} }),
-  pick: (choice) => { picksNoCwd.push(choice); return Promise.resolve({}); },
+  pick: (choice) => { picksNoKey.push(choice); return Promise.resolve({}); },
 });
 stateQueue = [];
-chipNoKeys.children.find((child) => child.type === Menu).props.onSelect('light');
-assert.deepStrictEqual(plain(picksNoCwd), [{ profileId: 'light' }],
-  'with neither workspaceId nor cwd the choice still reaches the host (profileId)');
+const noKeyMenu = chipNoKeys.children.find((child) => child.type === Menu);
+assert.equal(noKeyMenu.props.anchor.props.title, 'chooseNeedsWorkspace',
+  'the blocked chip explains itself (hover title) instead of silently failing');
+fetchCalls.length = 0;
+lastSetState = undefined;
+noKeyMenu.props.onSelect('light');
+assert.deepStrictEqual(plain(picksNoKey), [], 'with no workspaceId AND no cwd the choice is BLOCKED — no pick');
+assert.equal(fetchCalls.length, 0, 'the blocked choice issues NO request');
+assert.deepStrictEqual(plain(lastSetState), { seq: 1, text: 'chooseNeedsWorkspace' },
+  'the blocked chip shows the localized "choose a workspace first" hint');
 console.log('PASS loader syntax; slot conversation.input.left / prompt-profile / order 10');
 console.log('PASS inject(sessionId) provides sessionId and pick callback');
 console.log('PASS component returns null for non-blank session and empty profile state');
@@ -357,6 +389,55 @@ assert.equal(sectionEl.props.style.height, '100%', 'page fills the host options 
 assert.equal(sectionEl.props.style.boxSizing, 'border-box');
 console.log('PASS settings.section / prompt-profiles / order 25 / label + api inject + loading render');
 // #endregion SECTION_settings
+
+// #region SECTION_i18n ru/zh register alongside en with IDENTICAL key sets.
+const enKeys = Object.keys(dict.en).sort();
+assert.ok(dict.ru && Object.keys(dict.ru).length > 0, 'the ru dictionary was registered');
+assert.ok(dict.zh && Object.keys(dict.zh).length > 0, 'the zh dictionary was registered');
+assert.deepStrictEqual(Object.keys(dict.ru).sort(), enKeys,
+  'ru carries exactly the same keys as en — no drift, so no key silently falls back');
+assert.deepStrictEqual(Object.keys(dict.zh).sort(), enKeys, 'zh carries exactly the same keys as en');
+for (const id of ['en', 'ru', 'zh']) {
+  for (const [key, value] of Object.entries(dict[id])) {
+    assert.equal(typeof value, 'string', `${id}.${key} is a string`);
+    assert.ok(value.trim() !== '', `${id}.${key} is non-empty (blank would render instead of falling back)`);
+  }
+}
+// Keys with no remaining call site are deleted from ALL three dictionaries.
+// (`previewEmpty` is back as a LIVE key: the no-output preview state.)
+for (const dead of ['selected', 'sourceUser', 'newIdLabel']) {
+  for (const id of ['en', 'ru', 'zh']) {
+    assert.equal(dict[id][dead], undefined, `dead key "${dead}" is gone from ${id}`);
+  }
+}
+console.log(`PASS i18n: ru + zh registered; ${enKeys.length} keys identical across en/ru/zh`);
+// #endregion SECTION_i18n
+
+// #region SECTION_previewWords Preview labels/markers go through the dictionary.
+stateQueue = ['main', {
+  plan: [
+    { kind: 'builtins', names: ['persona-prefix', 'plan:policy'] },
+    { kind: 'ours', id: 's1', title: 'S1', order: 10, text: 'text' },
+  ],
+  skipped: [{ id: 's2', title: 'S2', reason: 'scope' }],
+}];
+const previewEl = loaded.components.PreviewTab({
+  state: {
+    profiles: [{ rowId: 'prompt-profile-main', patchId: 'profile-main', configId: 'main', title: 'Main', sections: [] }],
+    sections: [], builtinOrders: {}, default: 'main', modes: [],
+  },
+  api: {}, t: (k) => k, notify: () => {},
+});
+stateQueue = [];
+const previewText = elementText(previewEl);
+assert.ok(previewText.includes('profileWord'), 'the preview selector label comes from the dictionary');
+assert.ok(previewText.includes('builtinMarker'), 'the built-in group marker comes from the dictionary');
+assert.ok(previewText.includes('skippedMarker'), 'the skipped marker comes from the dictionary');
+assert.ok(!previewText.includes('"Profile"'), 'no hardcoded "Profile" literal remains');
+assert.ok(!previewText.includes('⟨built-in⟩') && !previewText.includes('⟨skipped⟩'),
+  'no hardcoded English markers remain');
+console.log('PASS preview words: profile label + built-in/skipped markers are dictionary-driven');
+// #endregion SECTION_previewWords
 
 // #region SECTION_apiShapes Frozen write contract: patchId in `rowId`, whole-object `value`, no ops.
 const sent = [];
@@ -541,6 +622,21 @@ assert.equal(createProfileBtn.props.disabled, false, 'profile create button enab
 createProfileBtn.props.onClick();
 assert.deepEqual(plain(flowCalls.at(-1)), ['profile', { title: 'defaultProfileTitle', sections: [] }],
   'profile create click POSTs the default title payload');
+// The default profile carries NO ★ marker in the list — the «Default for new
+// sessions» selector below already states it.
+stateQueue = [false, null, null, false];
+const profTabDefault = loaded.components.ProfilesTab({
+  state: { ...tabState, default: 'main' }, api: {}, reload: noop, t: (k) => k, notify: noop,
+  drill: null, setDrill: noop, onOpenSection: noop, setState: noop, createFlow: fakeFlow,
+});
+stateQueue = [];
+assert.ok(!elementText(profTabDefault).includes('★'), 'the default profile shows NO ★ marker in the list');
+let defaultMenuEl = null;
+walk(profTabDefault, (n) => { if (n.type?.name === 'DefaultMenu') defaultMenuEl = n; });
+assert.ok(defaultMenuEl, 'the «Default for new sessions» selector renders');
+const defaultMenuRendered = defaultMenuEl.type(defaultMenuEl.props);
+assert.equal(defaultMenuRendered.type, Menu, 'the default selector is a Menu primitive');
+assert.equal(defaultMenuRendered.props.anchor.type, primitives.Button, 'the default selector anchor is also the installed Button primitive');
 console.log('PASS tabs: modal-free create buttons wired to the flow with default titles');
 // #endregion SECTION_tabsNoCreateModal
 
@@ -563,14 +659,28 @@ assert.ok(H, 'helpers are exported on the module object');
 assert.equal(H.idOf(profileEntry), 'main', 'idOf prefers the unqualified configId');
 assert.equal(H.idOf({ patchId: 'p' }), 'p', 'idOf falls back to patchId');
 
-// slugify + uniqueSlug
-assert.equal(H.slugify('Light tone!'), 'light-tone');
-assert.equal(H.slugify(''), 'item', 'fallback slug for empty title');
-assert.equal(H.slugify('', 'section'), 'section', 'explicit fallback');
-assert.equal(H.slugify('Тон', 'section'), 'section', 'non-latin title falls back');
-assert.equal(H.uniqueSlug('light', { light: 1 }), 'light-2');
-assert.equal(H.uniqueSlug('light', new Set(['light', 'light-2'])), 'light-3');
-assert.match(H.uniqueSlug('Light tone!', new Set()), /^[a-z0-9][a-z0-9-]*$/);
+// slugify/uniqueSlug were dead (no production call site) and are deleted.
+assert.equal(H.slugify, undefined, 'the dead slugify helper is gone');
+assert.equal(H.uniqueSlug, undefined, 'the dead uniqueSlug helper is gone');
+
+// profileLabel — a chosen profile with an empty bundle title never reads "None".
+assert.equal(H.profileLabel({ configId: 'light', title: 'Light tone' }, (k) => k), 'Light tone');
+assert.equal(H.profileLabel({ configId: 'light', title: '' }, (k) => k), 'light', 'empty title falls back to the id');
+assert.equal(H.profileLabel({ patchId: 'p1' }, (k) => k), 'p1');
+assert.equal(H.profileLabel(null, (k) => k), 'none', 'no selection reads as None');
+assert.equal(H.profileLabel({ title: '' }, (k) => k), 'untitled', 'no title AND no id falls back to the dictionary');
+
+// escapesDrillDown — Esc closes the drill only outside editable fields and
+// open dialogs/menus (Esc while typing used to discard the user's place).
+const escEvent = (key, closest) => ({ key, target: { closest: closest ?? (() => null) } });
+assert.equal(H.escapesDrillDown(escEvent('Escape')), true, 'a plain Esc closes the drill');
+assert.equal(H.escapesDrillDown(escEvent('Enter')), false, 'other keys never close it');
+assert.equal(H.escapesDrillDown(escEvent('Escape', () => ({}))), false, 'Esc inside an editable field is ignored');
+assert.equal(H.escapesDrillDown(undefined), false, 'a missing event is tolerated');
+assert.equal(H.escapesDrillDown(escEvent('Escape'), { document: { querySelector: () => ({}) } }), false,
+  'an open dialog/menu blocks the drill reset');
+assert.equal(H.escapesDrillDown(escEvent('Escape'), { document: { querySelector: () => null } }), true,
+  'no overlay → Esc still closes');
 
 // insertionOrders — the DnD insertion boundaries. Built-in orders are valid
 // neighbours; broken refs carry no order; NO built-in +0.5 anywhere.
@@ -617,6 +727,29 @@ assert.equal(H.sourceKindOf(undefined), null, 'an unrecognised source is not sho
 assert.equal(H.usedInProfileName({ profiles: [{ configId: 'light', title: 'Light tone' }] }, 'light'), 'Light tone', 'used-in shows the profile TITLE');
 assert.equal(H.usedInProfileName({ profiles: [] }, 'ghost'), 'ghost', 'a missing profile falls back to the raw id');
 assert.equal(H.usedInProfileName({ profiles: [{ configId: 'x', title: '' }] }, 'x'), 'x', 'a blank title falls back to the id');
+// scopeKeyOf — one mapping so no view ever renders the raw enum value.
+assert.equal(H.scopeKeyOf('main-only'), 'scopeMainOnly');
+assert.equal(H.scopeKeyOf('subagents-only'), 'scopeSubagentsOnly');
+assert.equal(H.scopeKeyOf('inherit'), 'scopeInherit');
+assert.equal(H.scopeKeyOf(undefined), 'scopeInherit', 'an absent scope reads as inherit');
+
+// renameNotice — the post-rename report. The host no longer rewrites refs, so a
+// rename must surface the profiles still holding the old id (and never throw on
+// the older payload without `affectedProfiles`). An empty/absent list means there
+// is nothing to flag: no notice at all.
+assert.equal(H.renameNotice({ affectedProfiles: [] }, (k) => k), null,
+  'an EMPTY affectedProfiles list produces NO notice');
+assert.equal(H.renameNotice(undefined, (k) => k), null,
+  'a MISSING affectedProfiles (older host) produces no notice and does not throw');
+assert.equal(H.renameNotice({}, (k) => k), null, 'a response without the field is tolerated');
+assert.equal(H.renameNotice({ affectedProfiles: 'nope' }, (k) => k), null, 'a non-array field is ignored');
+assert.equal(H.renameNotice({ affectedProfiles: [{ profileId: 'p1', title: 'Main' }, { profileId: 'p2', title: 'Review' }] }, (k) => k),
+  'renameAffected Main, Review',
+  'a NON-EMPTY list names the titles under the localized prefix');
+assert.equal(H.renameNotice({ affectedProfiles: [{ profileId: 'p9' }] }, (k) => k),
+  'renameAffected p9', 'a profile without a title falls back to its id');
+assert.equal(H.renameNotice({ affectedProfiles: [{}] }, (k) => k),
+  'renameAffected 1', 'a nameless entry still yields a countable report');
 
 // filterSections
 const sections = [
@@ -642,7 +775,7 @@ assert.deepStrictEqual(plain(plan).plan[0].names, ['persona-prefix', 'plan:polic
 assert.equal(plan.plan[1].text, 'Be brief.');
 assert.equal(plan.skipped[0].reason, 'scope subagents-only');
 assert.deepStrictEqual(plain(H.previewPlan({}).plan), [], 'tolerant to an empty response');
-console.log('PASS helpers: idOf, slugify/uniqueSlug, insertionOrders, outlineRows, filterSections, previewPlan, save gate, used-in/source');
+console.log('PASS helpers: idOf, insertionOrders, outlineRows, filterSections, previewPlan, save gate, used-in/source, rename notice, profileLabel, escapesDrillDown');
 // #endregion SECTION_helpers
 
 // #region SECTION_refs Section refs carry configId VERBATIM — never a doubled prefix.
@@ -805,12 +938,13 @@ console.log('PASS refs: configId verbatim, doubled-prefix guard, picker/outline 
   };
   const statePushes = [];
   const renamed = [];
+  const renameNotes = [];
   // User typed the BARE token: sent as-is — the host owns prefixing.
   // SectionForm useState order: title, body, confirmDelete, renameValue, confirmRename, error, mutating.
   stateQueue = ['Greeting', 'Be kind.', false, '123123', true, '', false];
   const formEl = loaded.components.SectionForm({
     section: { rowId: 'prompt-section-f01aa4a5', patchId: 'prompt-section-f01aa4a5', configId: 'prompt-section-f01aa4a5', title: 'Greeting', body: 'Be kind.', usedIn: [], source: 'user' },
-    state: renamedState, api: renameApi, reload: async () => {}, t: (k) => k, notify: () => {},
+    state: renamedState, api: renameApi, reload: async () => {}, t: (k) => k, notify: (m) => renameNotes.push(m),
     onBack: () => {}, onRenamed: (id) => renamed.push(id), setState: (s) => statePushes.push(s),
     autoFocusTitle: false,
   });
@@ -818,7 +952,13 @@ console.log('PASS refs: configId verbatim, doubled-prefix guard, picker/outline 
   let dialog = null;
   walk(formEl, (n) => { if (n.type && n.type.name === 'ConfirmDialog') dialog = n; });
   assert.ok(dialog, 'rename ConfirmDialog rendered');
-  const input = dialog.props.extraChildren;
+  assert.equal(dialog.props.body, 'renameNote', 'the confirmation body is the localized warning string');
+  assert.match(dict.en.renameNote, /NOT updated/,
+    'the confirmation warns that profile references are NOT updated automatically');
+  assert.doesNotMatch(dict.en.renameNote, /will be updated\./,
+    'the old "references will be updated" promise is gone');
+  const extra = dialog.props.extraChildren;
+  const input = extra.children.find((child) => child && child.type === 'input');
   assert.equal(input.props.value, '123123', 'rename input is pre-filled with the current configId');
   const modal = dialog.type(dialog.props);
   let confirmBtn = null;
@@ -829,6 +969,8 @@ console.log('PASS refs: configId verbatim, doubled-prefix guard, picker/outline 
     'rename sends the typed id VERBATIM (no client-side prefix, no slugify)');
   assert.equal(renamed[0], 'prompt-section-123123',
     'drill follows the STORED new configId (the host canonicalizes the bare token to prompt-section-123123)');
+  assert.deepStrictEqual(plain(renameNotes), [],
+    'a response without affectedProfiles (older host) shows NO extra notice and does not crash');
   // User pasted a DOUBLED prefix: collapsed, not stripped.
   renameCalls.length = 0;
   // The host stores the canonical single-prefix id, so the polled state must
@@ -861,6 +1003,99 @@ console.log('PASS refs: configId verbatim, doubled-prefix guard, picker/outline 
   console.log('PASS rename id: pre-filled configId, verbatim bare id sent, doubled-prefix guard, drill follows new id');
 })();
 // #endregion SECTION_rename
+
+// #region SECTION_renameAffected A successful rename surfaces the profiles still
+// holding the old id (the host no longer rewrites references): non-empty list,
+// empty list, and a missing field (older host payload).
+(async () => {
+  const cases = [
+    [[{ profileId: 'p1', title: 'Main' }, { profileId: 'p2', title: 'Review' }],
+      ['renameAffected Main, Review']],
+    [[], []],
+    [undefined, []],
+  ];
+  for (const [affected, expected] of cases) {
+    const notes = [];
+    const nextState = {
+      profiles: [],
+      sections: [{ rowId: 'prompt-section-f1', patchId: 'prompt-section-f1', configId: 'prompt-section-new', title: 'Greeting', body: '' }],
+      builtinOrders: {},
+    };
+    // SectionForm useState order: title, body, confirmDelete, renameValue, confirmRename, error, mutating.
+    stateQueue = ['Greeting', 'Be kind.', false, 'new', true, '', false];
+    const form = loaded.components.SectionForm({
+      section: { rowId: 'prompt-section-f1', patchId: 'prompt-section-f1', configId: 'prompt-section-f1', title: 'Greeting', body: 'Be kind.', usedIn: [], source: 'user' },
+      state: nextState,
+      api: {
+        sectionRename: async () => ({
+          rowId: 'prompt-section-f1', patchId: 'prompt-section-f1', configId: 'prompt-section-new',
+          ...(affected === undefined ? {} : { affectedProfiles: affected }),
+        }),
+        loadState: async () => nextState,
+      },
+      reload: async () => {}, t: (k) => k, notify: (m) => notes.push(m),
+      onBack: noop, onRenamed: () => {}, setState: () => {}, autoFocusTitle: false,
+    });
+    stateQueue = [];
+    let dlg = null;
+    walk(form, (n) => { if (n.type && n.type.name === 'ConfirmDialog') dlg = n; });
+    const modal = dlg.type(dlg.props);
+    let confirm = null;
+    walk(modal, (n) => { if ((n.type?.name === 'Button' || n.type === primitives.Button) && elementText(n).includes('confirm') && n.props.onClick) confirm = n; });
+    await confirm.props.onClick();
+    assert.deepStrictEqual(plain(notes), expected,
+      `affectedProfiles=${affected === undefined ? 'ABSENT' : JSON.stringify(affected)} → ${JSON.stringify(expected)}`);
+  }
+  console.log('PASS rename affected: non-empty list, empty list, and missing field all surface correctly');
+})();
+// #endregion SECTION_renameAffected
+
+// #region SECTION_renameNoop An unchanged id is a client-side no-op (the host now
+// answers 400) — the dialog just closes; an empty/whitespace id is blocked with
+// an inline hint. Neither ever sends a request or a toast.
+for (const [value, expectHint] of [['prompt-section-f01aa4a5', null], ['   ', 'renameEmpty'], ['', 'renameEmpty']]) {
+  const calls = [];
+  const notes = [];
+  // SectionForm useState order: title, body, confirmDelete, renameValue, confirmRename, error, mutating, renameHint.
+  stateQueue = ['Greeting', 'Be kind.', false, value, true, '', false];
+  const form = loaded.components.SectionForm({
+    section: { rowId: 'prompt-section-f01aa4a5', patchId: 'prompt-section-f01aa4a5', configId: 'prompt-section-f01aa4a5', title: 'Greeting', body: 'Be kind.', usedIn: [], source: 'user' },
+    state: { profiles: [], sections: [{ patchId: 'prompt-section-f01aa4a5', configId: 'prompt-section-f01aa4a5' }], builtinOrders: {} },
+    api: { sectionRename: async (rowId, id) => { calls.push([rowId, id]); return {}; }, loadState: async () => ({}) },
+    reload: async () => {}, t: (k) => k, notify: (m) => notes.push(m),
+    onBack: noop, onRenamed: noop, setState: noop, autoFocusTitle: false,
+  });
+  stateQueue = [];
+  let dlg = null;
+  walk(form, (n) => { if (n.type && n.type.name === 'ConfirmDialog') dlg = n; });
+  assert.ok(dlg, `renameValue="${value}": the dialog is open`);
+  const modal = dlg.type(dlg.props);
+  let confirm = null;
+  walk(modal, (n) => { if ((n.type?.name === 'Button' || n.type === primitives.Button) && elementText(n).includes('confirm') && n.props.onClick) confirm = n; });
+  lastSetState = 'sentinel';
+  confirm.props.onClick();
+  assert.deepStrictEqual(calls, [], `renameValue="${value}": NO section/rename request is sent`);
+  assert.deepStrictEqual(notes, [], `renameValue="${value}": no toast`);
+  if (expectHint) {
+    assert.equal(lastSetState, expectHint, `renameValue="${value}": the empty-id hint state is set`);
+  } else {
+    assert.equal(lastSetState, false, `renameValue="${value}": unchanged id just closes the dialog`);
+  }
+}
+// The hint renders inside the dialog when present (8th stateQueue entry).
+stateQueue = ['Greeting', 'Be kind.', false, '', true, '', false, 'renameEmpty'];
+const hintForm = loaded.components.SectionForm({
+  section: { rowId: 'prompt-section-f01aa4a5', patchId: 'prompt-section-f01aa4a5', configId: 'prompt-section-f01aa4a5', title: 'Greeting', body: 'Be kind.', usedIn: [], source: 'user' },
+  state: { profiles: [], sections: [{ patchId: 'prompt-section-f01aa4a5', configId: 'prompt-section-f01aa4a5' }], builtinOrders: {} },
+  api: {}, reload: noop, t: (k) => k, notify: noop, onBack: noop, setState: noop, autoFocusTitle: false,
+});
+stateQueue = [];
+let hintDlg = null;
+walk(hintForm, (n) => { if (n.type && n.type.name === 'ConfirmDialog') hintDlg = n; });
+assert.ok(elementText(hintDlg.type(hintDlg.props)).includes('renameEmpty'),
+  'the empty-id hint renders inside the Change-id dialog');
+console.log('PASS rename no-op: unchanged id closes silently; empty id is blocked with a hint (no request, no toast)');
+// #endregion SECTION_renameNoop
 
 // #region SECTION_disabledControls Every row-lifecycle mutation disables its control while in flight.
 // ProfilesTab with mutating=true: duplicate/delete icon buttons + create disabled.
@@ -948,6 +1183,27 @@ const usedForm = loaded.components.SectionForm({
 stateQueue = [];
 assert.ok(elementText(usedForm).includes('Light tone'), 'used-in renders the profile TITLE, not its id');
 assert.ok(elementText(usedForm).includes('ghost'), 'a profile missing from /state falls back to the raw id');
+assert.ok(elementText(usedForm).includes('scopeLabel: scopeMainOnly'),
+  'the used-in scope is localized through the dictionary, never the raw enum');
+let usedInVisible = '';
+walk(usedForm, (n) => {
+  if (n.type === 'span' && Array.isArray(n.children)) {
+    usedInVisible += n.children.filter((child) => typeof child === 'string').join('|');
+  }
+});
+assert.ok(!usedInVisible.includes('main-only'),
+  'the raw scope enum never appears in VISIBLE text (it only rides the unique key)');
+// Two refs of the same profile must not collide on the React key.
+const twoRefs = loaded.components.SectionForm({
+  section: { ...sectionEntry, usedIn: [{ profileId: 'light', scope: 'inherit' }, { profileId: 'light', scope: 'main-only' }] },
+  state: { ...tabState, profiles: [{ configId: 'light', title: 'Light tone' }] },
+  api: {}, reload: noop, t: (k) => k, notify: noop, onBack: noop, setState: noop, autoFocusTitle: false,
+});
+stateQueue = [];
+const refKeys = [];
+walk(twoRefs, (n) => { if (n.type === 'span' && n.props && typeof n.props.key === 'string' && n.props.key.startsWith('light:')) refKeys.push(n.props.key); });
+assert.equal(refKeys.length, 2, 'both used-in rows render');
+assert.equal(new Set(refKeys).size, 2, 'the React keys are unique for two refs of the same profile');
 for (const [source, expected] of [['bundle', 'sourceBundle'], ['unknown', 'sourceUnknown']]) {
   stateQueue = ['Greeting', 'Be kind.', false, 'sec-1', false, '', false];
   const badgeForm = loaded.components.SectionForm({
@@ -1017,11 +1273,20 @@ const rowB = ourRows.find((r) => hasElement(r, (n) => n.type === 'input' && n.pr
 assert.ok(rowA && rowB, 'each row keeps its numeric order INPUT');
 assert.ok(!hasElement(rowA, (n) => n.type === 'span' && Array.isArray(n.children) && n.children.includes('100')),
   'the order is NOT also rendered as duplicate text — the input replaces it');
-const handle = rowA.children.find((child) => child && child.props && child.props.draggable === true);
-const handleB = rowB.children.find((child) => child && child.props && child.props.draggable === true);
+const gripOf = (refId) => {
+  let found = null;
+  walk(outlineEl, (n) => {
+    if (!found && isButton(n) && n.props?.['aria-label'] === 'dragHandle' && n.props?.['data-drag-handle'] === refId) found = n;
+  });
+  return found;
+};
+const handle = gripOf('sec-a');
+const handleB = gripOf('sec-b');
 assert.ok(handle && handleB, 'each OUR row has a draggable grip');
+assert.equal(handle.type, primitives.Button, 'the grip is the installed Button primitive — focusable and semantic, not a bare span');
 assert.equal(typeof handle.props.onDragStart, 'function', 'the grip starts the drag');
 assert.equal(typeof handle.props.onDragEnd, 'function', 'the grip ends the drag');
+assert.equal(typeof handle.props.onKeyDown, 'function', 'the grip accepts keyboard reordering');
 // The built-in row has no draggable grip anywhere in its subtree.
 let builtinRow = null;
 walk(outlineEl, (n) => {
@@ -1067,6 +1332,47 @@ handle.props.onDragStart({ dataTransfer });
 lastSetState = undefined;
 dropZones[1].props.onDrop({ preventDefault() {}, dataTransfer });
 assert.equal(lastSetState, null, 'dropping into the dragged row\u2019s own gap is a no-op');
+// Keyboard reordering on the grip. A dedicated built-in-free outline so each
+// move lands strictly between neighbours and the visible order really changes.
+const kbProfile = {
+  rowId: 'prompt-profile-kb', patchId: 'prompt-profile-kb', configId: 'prompt-profile-kb',
+  title: 'KB',
+  sections: [{ id: 'sec-a', order: 100, scope: 'inherit' }, { id: 'sec-b', order: 300, scope: 'inherit' }],
+};
+const kbState = {
+  profiles: [kbProfile],
+  sections: [
+    { configId: 'sec-a', patchId: 'prompt-section-sec-a', title: 'A', body: 'a', source: 'user' },
+    { configId: 'sec-b', patchId: 'prompt-section-sec-b', title: 'B', body: 'b', source: 'user' },
+  ],
+  builtinOrders: {}, modes: [],
+};
+stateQueue = ['KB', kbProfile.sections.slice(), false, null, '', null, null, null];
+const kbEl = loaded.components.ProfileOutline({
+  profile: kbProfile, state: kbState, api: {}, reload: noop, t: (k) => k, notify: noop,
+  onBack: noop, onOpenSection: noop, autoFocusTitle: false,
+});
+stateQueue = [];
+const kbGrip = (refId) => {
+  let found = null;
+  walk(kbEl, (n) => { if (!found && isButton(n) && n.props?.['aria-label'] === 'dragHandle' && n.props?.['data-drag-handle'] === refId) found = n; });
+  return found;
+};
+assert.ok(kbGrip('sec-a') && kbGrip('sec-b'), 'both grips are focusable Buttons with the dragHandle label');
+lastSetState = 'sentinel';
+kbGrip('sec-a').props.onKeyDown({ key: 'ArrowDown', preventDefault() {} });
+assert.deepStrictEqual(plain(lastSetState).map((r) => [r.id, r.order]), [['sec-a', 301], ['sec-b', 300]],
+  'ArrowDown on the grip moves the row one rendered position (boundary order, no +0.5)');
+lastSetState = 'sentinel';
+kbGrip('sec-b').props.onKeyDown({ key: 'ArrowUp', preventDefault() {} });
+assert.deepStrictEqual(plain(lastSetState).map((r) => [r.id, r.order]), [['sec-a', 100], ['sec-b', 99]],
+  'ArrowUp on the grip moves it one position up');
+lastSetState = 'sentinel';
+kbGrip('sec-a').props.onKeyDown({ key: 'ArrowUp', preventDefault() {} });
+assert.equal(lastSetState, 'sentinel', 'the first row cannot move up (no state churn)');
+lastSetState = 'sentinel';
+kbGrip('sec-a').props.onKeyDown({ key: 'Enter', preventDefault() {} });
+assert.equal(lastSetState, 'sentinel', 'non-arrow keys are ignored');
 // "+ Add section": the icon is kept, the plus is removed from the TEXT.
 let addBtn = null;
 walk(outlineEl, (n) => { if (isButton(n) && Array.isArray(n.children) && n.children.includes('addSection')) addBtn = n; });
@@ -1078,6 +1384,135 @@ assert.ok(!addBtn.children.some((child) => typeof child === 'string' && child.in
 assert.ok(!elementText(outlineEl).includes('+ Add section'), 'the old "+ Add section" string is gone');
 console.log('PASS ui round 2: back icon, autosave gate/hint, used-in titles, source badge, DnD outline (no arrows, no +0.5)');
 // #endregion SECTION_uiRound2
+
+// #region SECTION_auditDE Deterministic ties, honest counter, preview empty state,
+// confirmed ref removal, and untitled profiles (gap-audit D).
+// outlineRows: equal orders now tie-break by built-in first, then the ref's
+// position in the profile — transitive, so the visible order cannot flap.
+const tieRows = H.outlineRows(
+  { sections: [{ id: 'b', order: 100, scope: 'inherit' }, { id: 'a', order: 100, scope: 'inherit' }] },
+  { a: { id: 'a', title: 'A' }, b: { id: 'b', title: 'B' } },
+  {});
+assert.deepStrictEqual(plain(tieRows).map((r) => r.ref.id), ['b', 'a'],
+  'equal orders follow the ref position in the profile (not comparator luck)');
+const tieRows2 = H.outlineRows(
+  { sections: [{ id: 'a', order: 100, scope: 'inherit' }, { id: 'b', order: 100, scope: 'inherit' }] },
+  { a: { id: 'a', title: 'A' }, b: { id: 'b', title: 'B' } },
+  {});
+assert.deepStrictEqual(plain(tieRows2).map((r) => r.ref.id), ['a', 'b'], 'and it is symmetric for the reversed input');
+assert.deepStrictEqual(
+  plain(H.outlineRows({ sections: [{ id: 'a', order: 100, scope: 'inherit' }] }, { a: { id: 'a', title: 'A' } }, { 'plan:policy': 100 }))
+    .map((r) => r.kind),
+  ['builtin', 'ours'], 'a built-in still sorts first at an equal order');
+
+// Header counter: resolvable sections only, broken refs called out.
+const brokenProfile = {
+  rowId: 'prompt-profile-b', patchId: 'prompt-profile-b', configId: 'prompt-profile-b', title: 'B',
+  sections: [{ id: 'sec-a', order: 100, scope: 'inherit' }, { id: 'ghost', order: 200, scope: 'inherit' }],
+};
+const brokenState = {
+  profiles: [brokenProfile],
+  sections: [{ configId: 'sec-a', patchId: 'prompt-section-sec-a', title: 'A', body: 'a', source: 'user' }],
+  builtinOrders: {}, modes: [],
+};
+stateQueue = ['B', brokenProfile.sections.slice(), false, null, '', null, null, null];
+const brokenEl = loaded.components.ProfileOutline({
+  profile: brokenProfile, state: brokenState, api: {}, reload: noop, t: (k) => k, notify: noop,
+  onBack: noop, onOpenSection: noop, autoFocusTitle: false,
+});
+stateQueue = [];
+let counterText = null;
+walk(brokenEl, (n) => {
+  if (n.type === primitives.Tag && Array.isArray(n.children)) {
+    const text = n.children.filter((child) => typeof child === 'string').join('');
+    if (text.includes('broken')) counterText = text;
+  }
+});
+assert.ok(counterText && counterText.includes('1 sections') && counterText.includes('1 broken'),
+  `the header counts resolvable sections and calls out the broken ones (got: ${counterText})`);
+assert.ok(!elementText(brokenEl).includes('2 sections'), 'the header never counts broken refs as sections');
+
+// Preview: an empty plan (only broken/skipped refs) gets an explicit state.
+stateQueue = ['main', { plan: [], skipped: [{ id: 'ghost', title: 'Ghost', reason: 'missing' }] }];
+const emptyPreview = loaded.components.PreviewTab({
+  state: { profiles: [{ configId: 'main', title: 'Main' }], sections: [], builtinOrders: {}, default: 'main', modes: [] },
+  api: {}, t: (k) => k, notify: () => {},
+});
+stateQueue = [];
+assert.ok(elementText(emptyPreview).includes('previewEmpty'), 'a profile that emits nothing shows the explicit empty state');
+assert.ok(elementText(emptyPreview).includes('skippedMarker'), 'the skipped refs are still listed underneath');
+
+// Removing a ref asks for confirmation (same as the other destructive actions).
+stateQueue = ['P9', outlineProfile.sections.slice(), false, null, '', null, null, null];
+const removeEl = loaded.components.ProfileOutline({
+  profile: outlineProfile, state: outlineState, api: {}, reload: noop, t: (k) => k, notify: noop,
+  onBack: noop, onOpenSection: noop, autoFocusTitle: false,
+});
+stateQueue = [];
+let trashBtn = null;
+walk(removeEl, (n) => { if (!trashBtn && isButton(n) && n.props?.['aria-label'] === 'remove') trashBtn = n; });
+assert.ok(trashBtn, 'the per-row remove icon renders');
+lastSetState = 'sentinel';
+trashBtn.props.onClick();
+assert.equal(lastSetState, 'sec-a', 'remove opens a confirmation (the ref id is staged) instead of deleting at once');
+stateQueue = ['P9', outlineProfile.sections.slice(), false, null, '', null, null, 'sec-a'];
+const confirmEl = loaded.components.ProfileOutline({
+  profile: outlineProfile, state: outlineState, api: {}, reload: noop, t: (k) => k, notify: noop,
+  onBack: noop, onOpenSection: noop, autoFocusTitle: false,
+});
+stateQueue = [];
+let removeDialog = null;
+walk(confirmEl, (n) => { if (n.type?.name === 'ConfirmDialog') removeDialog = n; });
+assert.ok(removeDialog, 'the remove confirmation renders');
+assert.equal(removeDialog.props.title, 'confirmRemoveRef', 'the confirmation names the action');
+const removeModal = removeDialog.type(removeDialog.props);
+let removeConfirm = null;
+walk(removeModal, (n) => { if (!removeConfirm && (n.type?.name === 'Button' || n.type === primitives.Button) && Array.isArray(n.children) && n.children.includes('remove')) removeConfirm = n; });
+assert.ok(removeConfirm, 'the confirmation has the Remove action');
+lastSetState = 'sentinel';
+removeConfirm.props.onClick();
+assert.deepStrictEqual(plain(lastSetState).map((r) => r.id), ['sec-b'], 'confirming actually removes the ref');
+
+// A chosen profile with an empty bundle title shows its id, never "None".
+stateQueue = [{
+  profiles: [{ rowId: 'prompt-profile-light', patchId: 'profile-light', configId: 'light', title: '', sections: [] }],
+  sections: [], builtinOrders: {}, default: 'light', lastByWorkspace: {},
+}];
+const chipUntitled = chip.component({ ...chipStyle });
+stateQueue = [];
+const untitledMenu = chipUntitled.children.find((child) => child.type === Menu);
+const untitledLabel = untitledMenu.props.anchor.children[0].children[0];
+assert.equal(untitledLabel, 'light', 'an empty-title selection shows its id instead of "None"');
+assert.notEqual(untitledLabel, 'none', 'the made choice is never reported as no selection');
+console.log('PASS audit D/E: deterministic ties, sections·broken counter, preview empty state, confirmed ref removal, untitled chip, grip keyboard');
+// #endregion SECTION_auditDE
+
+// #region SECTION_bundleRenameLock We own only our layer: a bundle-owned section's
+// id cannot be changed (the control is disabled with a plain-language reason);
+// `user` stays renameable and `unknown` behaves like `user`.
+for (const [source, locked] of [['bundle', true], ['user', false], ['unknown', false]]) {
+  const lockEntry = { ...sectionEntry, source };
+  // SectionForm useState order: title, body, confirmDelete, renameValue, confirmRename, error, mutating.
+  stateQueue = ['Greeting', 'Be kind.', false, 'sec-1', false, '', false];
+  const lockForm = loaded.components.SectionForm({
+    section: lockEntry, state: { ...tabState, sections: [lockEntry] },
+    api: {}, reload: noop, t: (k) => k, notify: noop, onBack: noop, setState: noop, autoFocusTitle: false,
+  });
+  stateQueue = [];
+  let lockBtn = null;
+  walk(lockForm, (n) => { if (isButton(n) && Array.isArray(n.children) && n.children.includes('renameId')) lockBtn = n; });
+  assert.ok(lockBtn, `source "${source}": the rename-id control still renders`);
+  assert.equal(lockBtn.props.disabled, locked, `source "${source}": rename ${locked ? 'is DISABLED' : 'stays enabled'}`);
+  assert.equal(typeof lockBtn.props.onClick, 'function');
+  if (locked) {
+    assert.equal(lockBtn.props.title, 'renameIdLocked', 'the locked control explains itself on hover');
+    assert.ok(elementText(lockForm).includes('renameIdLocked'), 'bundle rows show the "cannot change id" reason inline');
+  } else {
+    assert.ok(!elementText(lockForm).includes('renameIdLocked'), `source "${source}" shows no lock note`);
+  }
+}
+console.log('PASS bundle rename lock: bundle-owned ids are read-only (disabled + reason); user/unknown stay renameable');
+// #endregion SECTION_bundleRenameLock
 
 // #region SECTION_duplicateOpensCopy Duplicate drills into the COPY, like create does.
 (async () => {

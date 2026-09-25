@@ -7,7 +7,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolveProfileId, resolveWorkspaceKey, buildSnapshot, planInsertion, isSubagent, isFork, sealSnapshot, retryingCache, interpolateSealedText } from "../lib/resolve.js";
+import { resolveProfileId, resolveWorkspaceKey, buildSnapshot, planInsertion, sectionSkipReason, isSubagent, isFork, sealSnapshot, retryingCache, interpolateSealedText } from "../lib/resolve.js";
 import { builtinOrdersByName } from "../lib/builtin-orders.js";
 
 const orders = builtinOrdersByName();
@@ -119,6 +119,25 @@ test("buildSnapshot reports skip reasons without letting the sink break sealing"
     sectionsById: sections, onSkip: () => { throw new Error("sink down"); }, warn: () => {},
   });
   assert.deepEqual(robust.sections.map((row) => row.id), ["inherited"]);
+});
+
+/** @purpose The SAME predicate the host preview uses; main-agent scope matrix. */
+test("sectionSkipReason is the shared selection rule (scope first, then state)", () => {
+  const body = { title: "T", body: "B" };
+  // inherit + main-only emit for the main agent; subagents-only does not.
+  assert.equal(sectionSkipReason({ id: "a", scope: "inherit" }, body, { subagent: false }), null);
+  assert.equal(sectionSkipReason({ id: "a", scope: "main-only" }, body, { subagent: false }), null);
+  assert.match(sectionSkipReason({ id: "a", scope: "subagents-only" }, body, { subagent: false }), /subagents-only/);
+  // …and the reverse for a plain subagent / a fork.
+  assert.match(sectionSkipReason({ id: "a", scope: "main-only" }, body, { subagent: true }), /main-only/);
+  assert.equal(sectionSkipReason({ id: "a", scope: "subagents-only" }, body, { subagent: true }), null);
+  assert.match(sectionSkipReason({ id: "a", scope: "subagents-only" }, body, { subagent: true, fork: true }), /subagents-only/);
+  // Scope wins over state; then existence / disabled / empty body.
+  assert.match(sectionSkipReason({ id: "a", scope: "subagents-only" }, undefined, { subagent: false }), /subagents-only/);
+  assert.equal(sectionSkipReason({ id: "a" }, undefined), "section not found");
+  assert.equal(sectionSkipReason({ id: "a" }, { ...body, disabled: true }), "section disabled");
+  assert.equal(sectionSkipReason({ id: "a" }, { ...body, body: "  " }), "empty body");
+  assert.match(sectionSkipReason({ id: "a", scope: "everywhere" }, body), /unknown scope/);
 });
 // #endregion TEST_skipDiagnostics
 
