@@ -70,6 +70,7 @@ import {
   TYPERT_PACKAGE,
 } from "../shared/remote-contract.ts";
 import { InternalError } from "./domain/errors.ts";
+import { createHostPorts } from "./infra/index.ts";
 import { createOperations } from "./operations.ts";
 
 export { REMOTE_NAMESPACE, REMOTE_SERVICE_KEY, TYPERT_PACKAGE };
@@ -179,8 +180,8 @@ export class PromptProfilesRemote extends TypertRemoteService {
    * fail with «Receiver must be an instance of class». Arrow closures ignore
    * the receiver entirely, so proxied dispatch behaves exactly like a direct
    * call.
-   * @param {object} options - { service, getService?, warn?, log? } forwarded
-   *   to createOperations.
+   * @param {object} options - { service, getService?, warn?, log? }; composed
+   *   into the host ports passed to createOperations.
    */
   constructor(ctx, options = {}) {
     super(ctx, REMOTE_SERVICE_KEY, { namespace: REMOTE_NAMESPACE });
@@ -193,12 +194,14 @@ export class PromptProfilesRemote extends TypertRemoteService {
           return undefined; // absent/throwing service: degrade, never block
         }
       });
-    const { ops } = createOperations({
-      service: options.service,
-      getService,
-      warn: options.warn,
-      log: options.log,
-    });
+    const { ops } = createOperations(
+      createHostPorts({
+        service: options.service,
+        getService,
+        warn: options.warn,
+        log: options.log,
+      }),
+    );
     const dispatch = new Map(METHOD_SPECS.map((spec) => [spec.method, spec]));
 
     // #region METHOD_invoke

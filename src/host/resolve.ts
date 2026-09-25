@@ -1,23 +1,18 @@
 /**
  * #region moduleContract
  * @modulecontract
- * @purpose Resolve and seal a session's chosen prompt profile into
- *   immutable-by-convention text, independently of Cordis.
+ * @purpose Resolve a session's chosen prompt profile and freeze its FINAL text,
+ *   independently of Cordis.
  * @scope
- *  - Profile selection, seal-time interpolation, once-per-session decision
- *    pinning, and a retry-on-failure promise cache for storage opens.
+ *  - Profile selection, seal-time interpolation and the snapshot builder.
  *  - Selection and insertion RULES live in domain/ordering.ts and are
  *    re-exported here for the consumers that reach them through this module.
- *  - NOT: plugin lifecycle or storage implementation.
+ *  - NOT: durable storage (infra/session-snapshots.ts), workspace key
+ *    resolution (infra/workspace-adapter.ts), plugin lifecycle.
  * @invariants
- *  - A persisted snapshot is NEVER rebuilt from live configuration — an EMPTY
- *    one included, so a session that started without a profile stays
- *    unprofiled (SPEC §2 decision 9).
  *  - Sealed text is FINAL: interpolation resolved at seal time and inserted
  *    with `interpolate: false`.
- *  - The per-session decision is made once per process and survives storage
- *    outages.
- * @keywords profile selection, workspace keys, sealing, interpolation, snapshot
+ * @keywords profile selection, sealing, interpolation, snapshot
  * #endregion moduleContract
  */
 
@@ -71,70 +66,6 @@ export function resolveProfileId({
   return { profileId: valid(defaultId) ? defaultId : null, reset: false };
 }
 // #endregion FUNC_resolveProfileId
-
-// #region TYPE_workspaceRegistry
-/** The optional workspace registry the key resolution reads (structural port). */
-export interface WorkspaceRegistryLike {
-  list?: () => Array<{ id?: string; sessionIds?: readonly string[] }>;
-  resolveByPath?: (path: string) => Promise<{ id?: string } | null | undefined> | { id?: string } | null | undefined;
-}
-// #endregion TYPE_workspaceRegistry
-
-// #region FUNC_resolveWorkspaceKeys
-/**
- * @purpose Make the write side of the chip choice (`last` operation) and the
- *   assembler derive the SAME ordered keys, so an explicit choice reaches
- *   `resolveProfileId` and the prompt across both key shapes. The first
- *   candidate is where NEW choices are written; reading walks the whole list,
- *   so a choice stored under a UUID key and one stored under the cwd key for
- *   the same workspace are both honoured.
- *
- * RESOLUTION ORDER (duplicates removed, first hit wins): the workspace
- * registry's membership for THIS session (`list()` + `sessionIds`), the
- * canonical workspace id owning `cwd` (`resolveByPath`), the raw `cwd`, an
- * explicit `workspaceId`. Nothing derivable degrades to [""].
- */
-export async function resolveWorkspaceKeys({
-  workspaceRegistry,
-  session,
-  workspaceId,
-  cwd,
-}: {
-  workspaceRegistry?: WorkspaceRegistryLike | null;
-  session?: { id?: string } | null;
-  workspaceId?: string;
-  cwd?: string | null;
-} = {}): Promise<string[]> {
-  const path = typeof cwd === "string" && cwd !== "" ? cwd : null;
-  const candidates: string[] = [];
-  const add = (value: unknown) => {
-    if (typeof value === "string" && value !== "" && !candidates.includes(value)) candidates.push(value);
-  };
-  const sessionId = session?.id;
-  if (typeof sessionId === "string" && sessionId !== "" && typeof workspaceRegistry?.list === "function") {
-    try {
-      const owner = workspaceRegistry.list().find((workspace) => {
-        const ids = workspace?.sessionIds;
-        return Array.isArray(ids) && ids.includes(sessionId);
-      });
-      add(owner?.id);
-    } catch {
-      // registry unavailable/opaque: fall through to path resolution
-    }
-  }
-  if (path !== null && typeof workspaceRegistry?.resolveByPath === "function") {
-    try {
-      const owner = await workspaceRegistry.resolveByPath(path);
-      add(owner?.id);
-    } catch {
-      // nonexistent/unregistered path: the raw cwd is the fallback key
-    }
-  }
-  add(path);
-  add(workspaceId);
-  return candidates.length > 0 ? candidates : [""];
-}
-// #endregion FUNC_resolveWorkspaceKeys
 
 // #region FUNC_isSubagent
 /** @purpose Classify a delegated child from its durable session header, tolerating absent agent data. */
@@ -262,90 +193,3 @@ export function buildSnapshot({
   return { profileId: profile?.id ?? null, sections };
 }
 // #endregion FUNC_buildSnapshot
-
-// #region FUNC_sealSnapshot
-/**
- * @purpose Decide a session's snapshot EXACTLY ONCE and keep it stable: an
- *   already-persisted record — EMPTY INCLUDED — is the session's final
- *   decision, so a session that started without a profile never receives one
- *   mid-session. A fresh decision is memoized and written durable-first (an
- *   explicit empty record for "no profile"); storage failures degrade to the
- *   in-memory decision and are retried on the next assembly.
- */
-export async function sealSnapshot<T>({
-  sessionId,
-  createSnapshot,
-  memo,
-  openTable,
-  warn = () => {},
-}: {
-  sessionId: string;
-  createSnapshot: () => T;
-  memo: Map<string, { snapshot: T; persisted: boolean }>;
-  openTable: () => Promise<{ get(key: string): T | undefined; put(key: string, value: T): unknown }>;
-  warn?: (message: string, details?: unknown) => void;
-}): Promise<T> {
-  let entry = memo.get(sessionId);
-  if (entry === undefined) {
-    let snapshot: T;
-    let persisted = false;
-    try {
-      const table = await openTable();
-      const saved = table.get(sessionId);
-      if (saved !== undefined) {
-        // Any persisted record — empty included — is the final decision.
-        snapshot = saved;
-        persisted = true;
-      } else {
-        snapshot = createSnapshot();
-      }
-    } catch (error) {
-      warn("prompt-profiles storage unavailable; snapshot decision pinned in memory", { sessionId, error });
-      snapshot = createSnapshot();
-    }
-    entry = { snapshot, persisted };
-    memo.set(sessionId, entry);
-  }
-  if (!entry.persisted) {
-    try {
-      const table = await openTable();
-      // Never clobber a record that landed concurrently.
-      if (table.get(sessionId) === undefined) await table.put(sessionId, entry.snapshot);
-      entry.persisted = true;
-    } catch {
-      // Still down: the in-memory decision stays authoritative, retried on the
-      // next assembly.
-    }
-  }
-  return entry.snapshot;
-}
-// #endregion FUNC_sealSnapshot
-
-// #region FUNC_retryingCache
-/** A cached async getter that also exposes the pending promise without starting one. */
-export type RetryingCache<T> = (() => Promise<T>) & { cached: () => Promise<T> | null };
-
-/**
- * @purpose Cache a pending asynchronous open (storage domain) but DROP the
- *   cache on rejection, so a transient failure disables nothing permanently —
- *   the next call starts a fresh attempt.
- * @invariants A fulfilled promise stays cached forever; a rejected one is
- *   removed synchronously before the rejection propagates.
- */
-export function retryingCache<T>(create: () => Promise<T>): RetryingCache<T> {
-  let cached: Promise<T> | null = null;
-  const get = () => {
-    cached ??= Promise.resolve()
-      .then(create)
-      .then(
-        (value) => value,
-        (error) => {
-          cached = null;
-          throw error;
-        },
-      );
-    return cached;
-  };
-  return Object.assign(get, { cached: () => cached });
-}
-// #endregion FUNC_retryingCache

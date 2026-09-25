@@ -43,15 +43,18 @@ const hostBanner = {
 const hostEntries = [
   "src/host/index.ts",
   "src/host/domain/index.ts",
+  "src/host/infra/index.ts",
+  "src/host/infra/patch-writer.ts",
+  "src/host/infra/loader-registry.ts",
+  "src/host/infra/builtin-orders.ts",
+  "src/host/infra/session-snapshots.ts",
+  "src/host/infra/settings-adapter.ts",
+  "src/host/infra/workspace-adapter.ts",
   "src/host/section.ts",
   "src/host/profile.ts",
   "src/host/operations.ts",
   "src/host/remote.ts",
   "src/host/resolve.ts",
-  "src/host/writer.ts",
-  "src/host/registry.ts",
-  "src/host/mirror.ts",
-  "src/host/builtin-orders.ts",
 ];
 
 // Start from a clean lib/: esbuild names chunks by content hash, so a changed

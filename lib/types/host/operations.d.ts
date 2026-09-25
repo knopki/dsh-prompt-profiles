@@ -22,19 +22,21 @@
  *    (`prompt-<kind>-<token>`) and the returned `configId`; existing rows with
  *    old bare config ids are never rewritten.
  *  - `last` stores the choice under the SAME key the assembler reads
- *    (resolveWorkspaceKeys), so a chip choice always reaches the prompt;
+ *    (the workspace-keys adapter), so a chip choice always reaches the prompt;
  *    `profileId: ""` still means an explicit "none" and an unknown profile id
  *    is a NotFoundError.
  *  - EVERY mutating path runs inside the bundle's one in-process serializer
- *    (withWriteLock), preventing same-process lost updates.
+ *    (the write-lock port), preventing same-process lost updates.
  *  - Results are plain JSON-safe objects (no class instances, no functions):
  *    surfaces serialize them verbatim.
- * @dependencies USES API: ctx.settings.replace/mutate/describe,
- *   ctx.configEditor.documentPath/entries and ctx.promptProfiles views — all
- *   OPTIONAL, read lazily through the caller-provided getService reader.
- * @keywords operations, validation, CRUD, settings.replace, withWriteLock, ids
+ * @dependencies USES: the driven ports in host/application/ports.ts (registry
+ *   views, built-in orders, patch rows, settings, workspace keys, agent
+ *   presets) — all OPTIONAL services are read through the ports' per-call
+ *   resolvers, never directly.
+ * @keywords operations, validation, CRUD, settings.replace, ids, ports
  * #endregion moduleContract
  */
+import type { HostPorts } from "./application/ports.ts";
 /** The create-token source the tests drive to force id collisions. */
 export { tokenSource } from "./domain/ids.ts";
 /**
@@ -42,13 +44,14 @@ export { tokenSource } from "./domain/ids.ts";
  *   Each operation validates, performs at most one logical write path, and
  *   returns a plain JSON result; `undefined` means "nothing to report" and the
  *   surface renders its own acknowledgement for it.
- * @param {object} deps - { service, getService?, settings?, configEditor?,
- *   workspaceRegistry?, agentPresets?, warn?, log? }. Optional services are
- *   read per call through `getService`, so a late-appearing service is picked
- *   up and a missing one degrades per operation instead of blocking the mount.
+ * @param {HostPorts} deps - the driven ports (host/application/ports.ts).
+ *   Optional services are read per call through the ports' resolvers, so a
+ *   late-appearing service is picked up and a missing one degrades per
+ *   operation instead of blocking the mount. `deps.resolve` is added for the
+ *   rename path (internal).
  * @returns {{ ops: Record<string, (input: object) => any> }}
  */
-export declare function createOperations(deps: any): {
+export declare function createOperations(deps: HostPorts): {
     ops: {
         /** Read the full editor state (degrades per optional service). */
         state: () => Promise<{
@@ -92,7 +95,7 @@ export declare function createOperations(deps: any): {
         }>;
         /** Whole-object update of a section's volatile fields. */
         sectionUpdate: (body: any) => Promise<{
-            rowId: string | null | undefined;
+            rowId: string | null;
             patchId: unknown;
             emits: boolean;
         }>;
@@ -117,7 +120,7 @@ export declare function createOperations(deps: any): {
         }>;
         /** Whole-object update of a profile's volatile fields. */
         profileUpdate: (body: any) => Promise<{
-            rowId: string | null | undefined;
+            rowId: string | null;
             patchId: unknown;
         }>;
         /** Delete a profile row and best-effort-clear its default/last references. */

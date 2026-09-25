@@ -14,8 +14,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BUILTIN_ORDERS, builtinOrdersByName } from "../lib/builtin-orders.js";
-import { insertionIndex, PromptProfilesRegistry } from "../lib/registry.js";
+import { BUILTIN_ORDERS, builtinOrdersByName } from "../lib/infra/builtin-orders.js";
+import { insertionIndex, PromptProfilesRegistry } from "../lib/infra/loader-registry.js";
 
 function fixtureRegistry() {
   const warnings = [];

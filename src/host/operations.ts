@@ -1,5 +1,5 @@
 // @ts-nocheck
-// TODO(refactor B2): remove after typing, when this module moves to src/host/application/
+// TODO(refactor B3): remove after typing, when this module moves to src/host/application/
 /**
  * #region moduleContract
  * @modulecontract
@@ -24,21 +24,23 @@
  *    (`prompt-<kind>-<token>`) and the returned `configId`; existing rows with
  *    old bare config ids are never rewritten.
  *  - `last` stores the choice under the SAME key the assembler reads
- *    (resolveWorkspaceKeys), so a chip choice always reaches the prompt;
+ *    (the workspace-keys adapter), so a chip choice always reaches the prompt;
  *    `profileId: ""` still means an explicit "none" and an unknown profile id
  *    is a NotFoundError.
  *  - EVERY mutating path runs inside the bundle's one in-process serializer
- *    (withWriteLock), preventing same-process lost updates.
+ *    (the write-lock port), preventing same-process lost updates.
  *  - Results are plain JSON-safe objects (no class instances, no functions):
  *    surfaces serialize them verbatim.
- * @dependencies USES API: ctx.settings.replace/mutate/describe,
- *   ctx.configEditor.documentPath/entries and ctx.promptProfiles views — all
- *   OPTIONAL, read lazily through the caller-provided getService reader.
- * @keywords operations, validation, CRUD, settings.replace, withWriteLock, ids
+ * @dependencies USES: the driven ports in host/application/ports.ts (registry
+ *   views, built-in orders, patch rows, settings, workspace keys, agent
+ *   presets) — all OPTIONAL services are read through the ports' per-call
+ *   resolvers, never directly.
+ * @keywords operations, validation, CRUD, settings.replace, ids, ports
  * #endregion moduleContract
  */
 
 import { parse } from "yaml";
+import type { HostPorts } from "./application/ports.ts";
 import {
   ConflictError,
   configIds,
@@ -75,17 +77,6 @@ import {
   toPatchId,
   UnavailableError,
 } from "./domain/index.ts";
-import { resolveWorkspaceKeys } from "./resolve.ts";
-import {
-  disableRow,
-  insertRow,
-  listRowIds,
-  provenance,
-  readPatchRows,
-  removeRow,
-  renameSectionRow,
-  withWriteLock,
-} from "./writer.ts";
 
 /** The create-token source the tests drive to force id collisions. */
 export { tokenSource } from "./domain/ids.ts";
@@ -293,24 +284,23 @@ async function modeViews(agentPresets, warn) {
  *   `rowId` (fully qualified loader entry id, display/debug) and `patchId`
  *   (unqualified patch row id used for writes).
  */
-async function stateResponse(deps) {
-  const { service, warn, patchIdOf } = deps;
+async function stateResponse(deps, patchIdOf) {
+  const { registry, orders, warn } = deps;
   // PER-OPERATION DEGRADATION: reading state must work without the optional
   // settings/agentPresets services; revision is null when unreadable.
-  const settings = deps.getService?.("settings") ?? deps.settings;
-  const revision = settings?.describe?.().find((descriptor) => descriptor.ns === "prompt-profiles")?.revision ?? null;
+  const revision = deps.settings()?.revision() ?? null;
   return {
-    profiles: service.profiles().map((profile) => ({ ...profile, patchId: patchIdOf(profile.rowId) })),
-    sections: service.sections().map((section) => ({
+    profiles: registry.profiles().map((profile) => ({ ...profile, patchId: patchIdOf(profile.rowId) })),
+    sections: registry.sections().map((section) => ({
       ...section,
       patchId: patchIdOf(section.rowId),
-      usedIn: service.usedIn(section.id),
+      usedIn: registry.usedIn(section.id),
       emits: typeof section.body === "string" && section.body.trim() !== "",
     })),
-    builtinOrders: service.builtinOrders(),
-    modes: await modeViews(deps.getService?.("agentPresets") ?? deps.agentPresets, warn),
-    default: service.config.default.get(),
-    lastByWorkspace: service.config.lastByWorkspace.get(),
+    builtinOrders: orders.orders(),
+    modes: await modeViews(deps.presets(), warn),
+    default: registry.defaultId(),
+    lastByWorkspace: registry.lastByWorkspace(),
     revision,
   };
 }
@@ -336,11 +326,11 @@ async function stateResponse(deps) {
  *   variables: Record<string, string|null> }}
  */
 function previewResponse(deps, profileId, { cwd } = {}) {
-  const { service } = deps;
-  const profile = findRow(service.profiles(), profileId);
+  const { registry, orders } = deps;
+  const profile = findRow(registry.profiles(), profileId);
   if (!profile) throw new NotFoundError(`profile "${profileId}" is not registered`);
-  const sectionsById = new Map(service.sections().map((row) => [row.id, row]));
-  const builtinOrdersByName = service.builtinOrdersByName?.() ?? {};
+  const sectionsById = new Map(registry.sections().map((row) => [row.id, row]));
+  const builtinOrdersByName = orders.ordersByName();
   const sessionCwd = typeof cwd === "string" && cwd !== "" ? cwd : process.cwd();
   // Variables actually referenced by the rendered text, with the value the
   // preview substituted (null = unknown host-side / substituted at session start).
@@ -405,8 +395,8 @@ function previewResponse(deps, profileId, { cwd } = {}) {
 // #endregion FUNC_previewResponse
 
 /**
- * @purpose Map the writer's duplicate guard («already exists» from insertRow /
- *   renameSectionRow) to a clean 400, so a duplicate id never surfaces as a
+ * @purpose Map the patch port's duplicate guard («already exists» from insert /
+ *   renameSection) to a clean 400, so a duplicate id never surfaces as a
  *   500 in sectionCreate, profileCreate or sectionRename.
  */
 function mapDuplicate(error) {
@@ -423,16 +413,15 @@ function mapDuplicate(error) {
  *   already be NORMALIZED (the patch file addresses unqualified row ids).
  */
 async function deleteRow(deps, patchId, name) {
-  const configEditor = deps.getService?.("configEditor") ?? deps.configEditor;
-  if (!configEditor) throw new UnavailableError("profile storage service is unavailable");
-  const patchPath = configEditor.documentPath;
-  const ownership = provenance({ patchPath, rowId: patchId });
+  const patch = deps.patch();
+  if (!patch) throw new UnavailableError("profile storage service is unavailable");
+  const ownership = patch.ownership(patchId);
   if (ownership.source === "user") {
-    const removed = await removeRow({ patchPath, rowId: patchId });
+    const removed = await patch.remove(patchId);
     if (!removed) throw new NotFoundError(`row "${patchId}" not found in the profile patch`);
     return { disabled: false };
   }
-  await disableRow({ patchPath, rowId: patchId, name });
+  await patch.disable(patchId, name);
   return { disabled: true };
 }
 // #endregion FUNC_deleteRow
@@ -453,15 +442,15 @@ async function deleteRow(deps, patchId, name) {
  * the OLD id — and the user fixes those references by hand.
  */
 async function renameSection(deps, { rowId: received, id: newId }) {
-  const { service, resolve } = deps;
-  const configEditor = deps.getService?.("configEditor") ?? deps.configEditor;
-  if (!configEditor) throw new UnavailableError("profile storage service is unavailable");
+  const { registry, resolve } = deps;
+  const patch = deps.patch();
+  if (!patch) throw new UnavailableError("profile storage service is unavailable");
   const { row: section, patchId } = resolve("section", received);
   const oldRowId = patchId;
   // Every id that names THIS section, used for the no-op check AND for the
   // affectedProfiles report.
   const aliases = rowAliases(section);
-  const affectedProfiles = service
+  const affectedProfiles = registry
     .profiles()
     .filter((profile) => profile.sections.some((ref) => refNamesRow(ref.id, aliases)))
     .map((profile) => ({ profileId: profile.id, title: profile.title }));
@@ -473,22 +462,20 @@ async function renameSection(deps, { rowId: received, id: newId }) {
   // registered section's config.id or row id. A duplicate row id already in
   // the patch surfaces from the writer's duplicate guard inside the batch
   // below (mapped to a clean 400 with the rollback already applied).
-  const clash = service
+  const clash = registry
     .sections()
     .some(
       (row) =>
         row.rowId !== section.rowId && (row.id === newId || row.rowId === newId || toPatchId(row.rowId) === newId),
     );
   if (clash) throw new InvalidInputError(`section id "${newId}" is already taken`);
-  const patchPath = configEditor.documentPath;
   // Only a row THIS patch inserted may be physically removed; a bare override
   // or a lower-layer row we can only override is disabled instead. `.inserted`
   // (not `.source === 'bundle'`) keeps this correct now that an absent row
   // reports 'unknown' rather than 'bundle'.
-  const bundleOwned = !provenance({ patchPath, rowId: oldRowId }).inserted;
+  const bundleOwned = !patch.ownership(oldRowId).inserted;
   try {
-    await renameSectionRow({
-      patchPath,
+    await patch.renameSection({
       row: { id: newId, name: SECTION_PLUGIN_NAME, config: { id: newId, title: section.title, body: section.body } },
       oldRowId,
       oldName: SECTION_PLUGIN_NAME,
@@ -510,42 +497,33 @@ async function renameSection(deps, { rowId: received, id: newId }) {
  *   Each operation validates, performs at most one logical write path, and
  *   returns a plain JSON result; `undefined` means "nothing to report" and the
  *   surface renders its own acknowledgement for it.
- * @param {object} deps - { service, getService?, settings?, configEditor?,
- *   workspaceRegistry?, agentPresets?, warn?, log? }. Optional services are
- *   read per call through `getService`, so a late-appearing service is picked
- *   up and a missing one degrades per operation instead of blocking the mount.
+ * @param {HostPorts} deps - the driven ports (host/application/ports.ts).
+ *   Optional services are read per call through the ports' resolvers, so a
+ *   late-appearing service is picked up and a missing one degrades per
+ *   operation instead of blocking the mount. `deps.resolve` is added for the
+ *   rename path (internal).
  * @returns {{ ops: Record<string, (input: object) => any> }}
  */
-export function createOperations(deps) {
-  const { service } = deps;
+export function createOperations(deps: HostPorts) {
+  const { registry } = deps;
   const SECTION_PREFIX = "prompt-section-";
-  /** Lazy per-call service resolution through the caller's REFLECT reader. */
-  const svc = (name) => {
-    try {
-      return deps.getService?.(name) ?? deps[name];
-    } catch {
-      return deps[name];
-    }
-  };
-  const settingsStore = () => svc("settings");
-  const editorStore = () => svc("configEditor");
   /** Mutations that store volatile config require settings. */
   const requireSettings = () => {
-    const store = settingsStore();
+    const store = deps.settings();
     if (!store) throw new UnavailableError("profile storage service is unavailable");
     return store;
   };
   /** Row mutations additionally need the profile patch (configEditor). */
   const requireStorage = () => {
-    const store = settingsStore();
-    const editor = editorStore();
-    if (!store || !editor) throw new UnavailableError("profile storage service is unavailable");
-    return { settings: store, configEditor: editor };
+    const store = deps.settings();
+    const patch = deps.patch();
+    if (!store || !patch) throw new UnavailableError("profile storage service is unavailable");
+    return { settings: store, patch };
   };
-  const patchPath = () => editorStore()?.documentPath;
+  const patchPath = () => deps.patch()?.path();
 
   /** Registered sections' id targets — see domain/refs.ts sectionRefTargets. */
-  const sectionTargets = () => sectionRefTargets(service.sections());
+  const sectionTargets = () => sectionRefTargets(registry.sections());
 
   /**
    * Section row ids already written to the profile patch but not yet
@@ -558,10 +536,9 @@ export function createOperations(deps) {
    */
   const pendingSectionIds = () => {
     try {
-      const path = patchPath();
-      if (path === undefined) return new Set();
+      if (patchPath() === undefined) return new Set();
       return new Set(
-        readPatchRows({ patchPath: path })
+        (deps.patch()?.rows() ?? [])
           .filter(
             (row) =>
               typeof row.id === "string" &&
@@ -586,13 +563,13 @@ export function createOperations(deps) {
    * lives outside this file). An unreadable patch falls back to the registry.
    */
   const profileSelectable = (profileId) => {
-    const entry = service.profiles().find((row) => row.id === profileId);
+    const entry = registry.profiles().find((row) => row.id === profileId);
     if (!entry) return false;
     let rows = [];
     try {
-      const path = patchPath();
-      if (path === undefined) return true; // no patch view: trust the registry
-      rows = readPatchRows({ patchPath: path });
+      const patch = deps.patch();
+      if (!patch || patch.path() === undefined) return true; // no patch view: trust the registry
+      rows = patch.rows();
     } catch {
       return true; // the registry already said yes and we cannot prove absence
     }
@@ -607,7 +584,7 @@ export function createOperations(deps) {
    * patch are caught by the writer's own duplicate guard on the FULL row id
    * (an id matching only a bundle row's id is an override, by design).
    */
-  const registeredConfigIds = (kind) => configIds(kind === "section" ? service.sections() : service.profiles());
+  const registeredConfigIds = (kind) => configIds(kind === "section" ? registry.sections() : registry.profiles());
 
   /**
    * The canonical patch row id for a registry rowId. PREFERRED: the true id
@@ -616,19 +593,7 @@ export function createOperations(deps) {
    * normalized. DOCUMENTED FALLBACK: `toPatchId` — strip the leading
    * `<parent>:` prefix chain and keep the last segment.
    */
-  const patchIdOf = (rowIdValue) => {
-    try {
-      const entry = (editorStore()?.entries?.() ?? []).find((candidate) => {
-        const id = candidate?.options?.id;
-        return typeof id === "string" && (id === rowIdValue || toPatchId(id) === toPatchId(rowIdValue));
-      });
-      if (entry) return toPatchId(entry.options.id);
-    } catch {
-      // entries() unavailable or threw: fall through to the string fallback.
-    }
-    return toPatchId(rowIdValue);
-  };
-  deps.patchIdOf = patchIdOf;
+  const patchIdOf = (rowIdValue) => deps.patch()?.patchIdOf(rowIdValue) ?? toPatchId(rowIdValue);
 
   /**
    * Resolve a row received in ANY of the accepted forms (qualified loader
@@ -637,7 +602,7 @@ export function createOperations(deps) {
    * then derive the normalized patchId used for every settings/writer address.
    */
   const resolveRow = (kind, received) => {
-    const rows = kind === "section" ? service.sections() : service.profiles();
+    const rows = kind === "section" ? registry.sections() : registry.profiles();
     const row = findRow(rows, received);
     if (!row) throw new NotFoundError(`${kind} row "${received}" is not registered`);
     return { row, patchId: patchIdOf(row.rowId) };
@@ -664,7 +629,7 @@ export function createOperations(deps) {
   const settingsWrite = async (method, ns, value, revision) => {
     try {
       const store = requireSettings();
-      await withWriteLock(() =>
+      await deps.lock.run(() =>
         method === "replace"
           ? store.replace(ns, value, typeof revision === "number" ? revision : undefined)
           : store.mutate(ns, value, typeof revision === "number" ? revision : undefined),
@@ -680,9 +645,7 @@ export function createOperations(deps) {
   /** The current `prompt-profiles` settings revision (undefined when unknown). */
   const currentRevision = () => {
     try {
-      return settingsStore()
-        ?.describe?.()
-        .find((entry) => entry.ns === "prompt-profiles")?.revision;
+      return deps.settings()?.revision();
     } catch {
       return undefined;
     }
@@ -698,7 +661,7 @@ export function createOperations(deps) {
    *  - When a revision IS available it is also passed as `expectedRevision`;
    *    SETTINGS_CONFLICT re-reads and retries, and the cap yields a clean 409 —
    *    never a silent unchecked write.
-   * Never nests the non-reentrant lock: `withWriteLock` is taken ONCE around
+   * Never nests the non-reentrant lock: `deps.lock` is taken ONCE around
    * the whole attempt loop and `settings.mutate` is called directly.
    * @param {() => Array<{op: string, path: string[], value?: unknown}>} buildOps
    *   receives `{ revisionAvailable }`; ops that are safe only under CAS must
@@ -706,7 +669,7 @@ export function createOperations(deps) {
    * @returns {Promise<boolean>} whether anything was written.
    */
   const mutateWithRetry = async (buildOps, { clientRevision } = {}) =>
-    withWriteLock(async () => {
+    deps.lock.run(async () => {
       for (let attempt = 1; ; attempt += 1) {
         const expected = currentRevision();
         if (
@@ -720,7 +683,7 @@ export function createOperations(deps) {
         const ops = buildOps({ revisionAvailable: typeof expected === "number" }); // read + decide INSIDE the lock
         if (ops.length === 0) return false;
         try {
-          await settingsStore().mutate("prompt-profiles", ops, typeof expected === "number" ? expected : undefined);
+          await deps.settings().mutate("prompt-profiles", ops, typeof expected === "number" ? expected : undefined);
           return true;
         } catch (error) {
           if (error?.code !== "SETTINGS_CONFLICT") mapSettingsError(error, expected);
@@ -746,10 +709,10 @@ export function createOperations(deps) {
     const aliases = rowAliases(profile);
     return mutateWithRetry(() => {
       const ops = [];
-      for (const [key, value] of Object.entries(service.config.lastByWorkspace.get() ?? {})) {
+      for (const [key, value] of Object.entries(registry.lastByWorkspace() ?? {})) {
         if (aliases.has(value)) ops.push({ op: "unset", path: ["lastByWorkspace", key] });
       }
-      if (aliases.has(service.config.default.get())) ops.push({ op: "set", path: ["default"], value: "" });
+      if (aliases.has(registry.defaultId())) ops.push({ op: "set", path: ["default"], value: "" });
       return ops;
     });
   };
@@ -767,23 +730,15 @@ export function createOperations(deps) {
    */
   const WORKSPACE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const staleWorkspaceKeys = (value) => {
-    const profileIds = new Set(service.profiles().map((row) => row.id));
-    const registry = svc("workspaceRegistry");
+    const profileIds = new Set(registry.profiles().map((row) => row.id));
+    const workspaces = deps.workspaces();
     const stale = [];
     for (const [key, entry] of Object.entries(value ?? {})) {
       if (entry !== "" && !profileIds.has(entry)) {
         stale.push(key);
         continue;
       } // dangling profile choice
-      if (WORKSPACE_ID.test(key) && typeof registry?.get === "function") {
-        let known = true;
-        try {
-          known = Boolean(registry.get(key));
-        } catch {
-          known = true; // unreadable registry: do not drop a possibly-live key
-        }
-        if (!known) stale.push(key); // stale workspace id
-      }
+      if (WORKSPACE_ID.test(key) && workspaces.knows(key) === false) stale.push(key); // stale workspace id
     }
     return stale;
   };
@@ -794,13 +749,13 @@ export function createOperations(deps) {
    * every id already present in the patch file (domain/ids.ts takenIds).
    */
   const idsInUse = (kind) => {
-    const rows = kind === "section" ? service.sections() : service.profiles();
+    const rows = kind === "section" ? registry.sections() : registry.profiles();
     let fromPatch = [];
     try {
-      const path = patchPath();
-      if (path !== undefined) fromPatch = [...listRowIds({ patchPath: path })];
+      const patch = deps.patch();
+      if (patch && patch.path() !== undefined) fromPatch = [...patch.rowIds()];
     } catch {
-      // patch unreadable: insertRow's own duplicate guard still protects us
+      // patch unreadable: the insert port's own duplicate guard still protects us
     }
     return takenRowIds(rows, fromPatch);
   };
@@ -814,7 +769,7 @@ export function createOperations(deps) {
    */
   const ops = {
     /** Read the full editor state (degrades per optional service). */
-    state: () => stateResponse(deps),
+    state: () => stateResponse(deps, patchIdOf),
 
     /** Illustrative preview of `profileId`, optionally against a session cwd. */
     preview: (input) => {
@@ -839,7 +794,8 @@ export function createOperations(deps) {
       // full `prompt-section-<token>` string, so a profile ref (which is a
       // config.id) addresses the row exactly.
       const row = { id, name: SECTION_PLUGIN_NAME, config: { id, title: payload.title, body: payload.body } };
-      return insertRow({ patchPath: requireStorage().configEditor.documentPath, row })
+      return requireStorage()
+        .patch.insert(row)
         .catch(mapDuplicate)
         .then(() => ({
           rowId: row.id,
@@ -897,7 +853,8 @@ export function createOperations(deps) {
       const id = payload.id ?? newRowId("profile", idsInUse("profile"));
       // FROZEN ID SCHEME: row id === stored config.id (full form).
       const row = { id, name: PROFILE_PLUGIN_NAME, config: { id, title: payload.title, sections: payload.sections } };
-      return insertRow({ patchPath: requireStorage().configEditor.documentPath, row })
+      return requireStorage()
+        .patch.insert(row)
         .catch(mapDuplicate)
         .then(() => ({
           rowId: row.id,
@@ -985,8 +942,7 @@ export function createOperations(deps) {
       // (the workspace UUID when known, else the cwd) so we stop creating
       // new path keys; reading still walks ALL candidates, so legacy
       // path-keyed choices keep working (no migration, no cleanup).
-      const workspaceKeys = await resolveWorkspaceKeys({
-        workspaceRegistry: svc("workspaceRegistry"),
+      const workspaceKeys = await deps.workspaces().keys({
         workspaceId: payload.workspaceId,
         cwd: payload.cwd,
       });
@@ -1012,7 +968,7 @@ export function createOperations(deps) {
           // would delete that choice. No revision → skip pruning (safe), the
           // caller's own key is still set (per-key ops are race-free).
           const ops = revisionAvailable
-            ? staleWorkspaceKeys(service.config.lastByWorkspace.get()).map((key) => ({
+            ? staleWorkspaceKeys(registry.lastByWorkspace()).map((key) => ({
                 op: "unset",
                 path: ["lastByWorkspace", key],
               }))

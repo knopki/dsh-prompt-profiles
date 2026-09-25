@@ -614,3 +614,100 @@ both keys empty is still a 400).
   (sha256 over the file set). `lib/domain/index.js` is now a built entry so
   the node suite can import the domain by path; `test/api.test.mjs` imports
   `errorMessage` from it.
+
+## Refactor B2 — ports and infra
+
+Goal: introduce `src/host/application/ports.ts` (the driven ports the operation
+set needs) and `src/host/infra/` (the adapters implementing them) without moving
+the use cases (B3) and without changing behaviour.
+
+### The ports
+
+- `application/ports.ts` (207) — interfaces only, no `node:fs` and no service:
+  `LoaderRegistryPort` (rows + live default/last), `BuiltinOrdersPort`,
+  `PatchPort` (+ `PatchRowRecord`/`PatchRowInput`/`RowOwnership`/
+  `SectionRenameRequest`), `SettingsPort` (+ `SettingsOp`),
+  `WorkspaceRegistryPort`/`WorkspaceKeysPort`, `SessionSnapshotsPort`
+  (+ `SnapshotTable`), `AgentPresetsPort`, `LogPort`, `WriteLockPort` and the
+  `HostPorts` bag. Optional services are reached through per-CALL resolvers
+  (`settings()`, `patch()`, `presets()`, `workspaces()`), so a late-appearing
+  service is picked up and a missing one degrades per operation exactly as
+  before. A types-only module gets no runtime entry in `lib/`.
+
+### What infra owns now
+
+- `infra/patch-writer.ts` (613, was writer.ts 547) — the patch file adapter:
+  fs + yaml, comments/`!!js` preserved, atomic write, module mutex, hmr gate,
+  provenance/read queries — plus `writeLock` (the `WriteLockPort`, same instance
+  as the patch writes) and `createPatchPort` binding it to configEditor.
+- `infra/loader-registry.ts` (194, was registry.ts 194) — moved unchanged; only
+  the domain import paths changed.
+- `infra/builtin-orders.ts` (344; mirror.ts 205 + builtin-orders.ts 165 merged)
+  — frozen table, name mapping and runtime parse with warn-and-fallback.
+- `infra/session-snapshots.ts` (164) — the `prompt_profiles` storage adapter:
+  `retryingCache` + `sealSnapshot` moved out of resolve.ts, and
+  `createSessionSnapshots` owning open/seal/memo/close per fiber.
+- `infra/settings-adapter.ts` (40) — `createSettingsPort`: revision read plus
+  replace/mutate, both resolved at call time.
+- `infra/workspace-adapter.ts` (105) — `resolveWorkspaceKeys` moved out of
+  resolve.ts plus `createWorkspaceKeys` (key candidates + registry membership).
+- `infra/index.ts` (135) — adapter barrel and `createHostPorts`, the one place
+  raw Cordis services become the `HostPorts` bag.
+
+### Re-pointed modules
+
+- `operations.ts` 1034 → 990: no direct writer/fs/service access; patch rows,
+  settings replace/mutate, the write lock, workspace keys, builtin orders and
+  registry views all arrive as ports. Domain rules stay in domain/. The
+  `deps.resolve` hook remains internal for the rename path (B3 removes it).
+- `index.ts` 485 → 474: ports built once in the constructor; the assembler seals
+  through `createSessionSnapshots`, resolves keys through `createWorkspaceKeys`
+  and proves provenance through the patch port.
+- `remote.ts` 319 → 322: composes `createHostPorts` from ctx.get and hands it to
+  `createOperations`.
+- `resolve.ts` 351 → 195: workspace key resolution and the storage/sealing
+  helpers moved to infra; selection, interpolation and the snapshot builder
+  stay.
+- `section.ts`/`profile.ts` untouched (B3 moves them to entrypoints/).
+
+### Deviations kept deliberately
+
+- `settings-adapter.ts` and `workspace-adapter.ts` ARE separate files (the task
+  allowed saying otherwise); the mutex stayed inside patch-writer and is exposed
+  as the `WriteLockPort` rather than a new module, because it must be the SAME
+  module-level instance as the patch writes.
+- The `promptProfilesDomain` zod spec stays in index.ts; the storage adapter
+  takes an `openDomain` seam instead of importing zod/dsh-storage-domain.
+
+### `@ts-nocheck`
+
+- REMOVED (moved and typed): `writer.ts` (→ infra/patch-writer.ts),
+  `mirror.ts` and `builtin-orders.ts` (→ infra/builtin-orders.ts). That is all
+  three headers that B1 had left on moved code.
+- LEFT, with the reason: `operations.ts` (B3 moves it to application/),
+  `index.ts`, `remote.ts`, `section.ts`, `profile.ts` (B3).
+
+### Behaviour gate (now permanent)
+
+The B1 differential bench lived outside the repo; it is recreated inside as
+`test/differential.test.mjs` (667 lines, runs under `pnpm test`). It extracts the
+pre-B2 `lib/` with `git archive 4ce8c7c lib`, replays 68 operation cases against
+both builds over the same fake host, and compares status, result JSON, patch
+bytes, settings replace/mutate calls and diagnostics: identical everywhere,
+zero diffs. The gate self-checks so a green run cannot be vacuous — the two
+sides are distinct module graphs, a control spec difference must be detected,
+and coverage is pinned (>=35 clean, >=25 failing, >=12 patch-writing, >=8
+settings-writing cases; actual 38/30/18/13).
+
+### Sizes and verification
+
+- Host sources: 17 files / 4434 lines → 21 files / 4917 (domain 970 unchanged;
+  application +207; infra 1595 for seven adapters; host root files 2145).
+- `lib/`: 68 files / 5 876 707 B → 86 files / 5 905 191 B; `lib/client.js`
+  byte-identical (914 628 B); `lib/index.js` 15 198 → 14 640 B.
+- `pnpm run typecheck` clean, `pnpm run lint` clean, `pnpm test` 125/125
+  (124 behavioural + the bench), `node --test test/smoke-cordis.test.mjs` 8/8,
+  `node test/client-shim.test.cjs` ALL OK, `pnpm run test:remote` 4/4.
+- Two consecutive `pnpm run build` runs produce a byte-identical `lib/`
+  (sha256 34efeadd6878284b50d76ddc389a8cb421ec724a654fb96db89797284a28db73 over
+  the sorted file set).

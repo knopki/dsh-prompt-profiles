@@ -24,7 +24,7 @@ import {
   setWriteGate,
   toPatchId,
   withPatchBatch,
-} from "../lib/writer.js";
+} from "../lib/infra/patch-writer.js";
 
 const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value) => value }] };
 const SECTION_NAME = "@knopki/dsh-prompt-profiles/section";

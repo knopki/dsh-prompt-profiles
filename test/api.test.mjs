@@ -19,8 +19,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { isSeq, parseDocument } from "yaml";
-import { BUILTIN_ORDERS, builtinOrdersByName as nameBuiltinOrders } from "../lib/builtin-orders.js";
 import { errorMessage } from "../lib/domain/index.js";
+import { BUILTIN_ORDERS, builtinOrdersByName as nameBuiltinOrders } from "../lib/infra/builtin-orders.js";
+import { createHostPorts } from "../lib/infra/index.js";
 import { createOperations, tokenSource } from "../lib/operations.js";
 import { resolveProfileId } from "../lib/resolve.js";
 
@@ -168,12 +169,7 @@ async function harness({
       return undefined;
     }
   };
-  const { ops } = createOperations({
-    service,
-    getService,
-    warn,
-    log: { warn },
-  });
+  const { ops } = createOperations(createHostPorts({ service, getService, warn, log: { warn } }));
   return {
     patchPath,
     mutations,
@@ -1908,7 +1904,7 @@ test("concurrent writes through the operations execute serially", async () => {
     // Real cordis REFLECT: the operations read optional services through ctx.get.
     get: (name) => (name === "settings" ? settings : name === "configEditor" ? ctx.configEditor : undefined),
   };
-  const { ops } = createOperations({ service, getService: (name) => ctx.get(name) });
+  const { ops } = createOperations(createHostPorts({ service, getService: (name) => ctx.get(name) }));
   try {
     await Promise.all([
       ops.defaultSet({ default: "light" }),

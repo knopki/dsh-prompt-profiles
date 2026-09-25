@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { PromptProfilesPlugin } from "../lib/index.js";
+import { createHostPorts } from "../lib/infra/index.js";
 import { createOperations, tokenSource } from "../lib/operations.js";
 import * as profileRow from "../lib/profile.js";
 import * as sectionRow from "../lib/section.js";
@@ -111,16 +112,18 @@ async function mountPlugin(ctx) {
 
 /** @purpose The operation set of a mounted plugin, read the way a surface reads it (guarded REFLECT per call). */
 function operationsOf(ctx) {
-  const { ops } = createOperations({
-    service: ctx.get("promptProfiles"),
-    getService: (name) => {
-      try {
-        return ctx.get(name) ?? undefined;
-      } catch {
-        return undefined;
-      }
-    },
-  });
+  const { ops } = createOperations(
+    createHostPorts({
+      service: ctx.get("promptProfiles"),
+      getService: (name) => {
+        try {
+          return ctx.get(name) ?? undefined;
+        } catch {
+          return undefined;
+        }
+      },
+    }),
+  );
   return ops;
 }
 // #endregion FUNC_stubHost

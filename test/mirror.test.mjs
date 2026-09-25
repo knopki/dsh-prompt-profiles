@@ -18,8 +18,13 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { test } from "node:test";
-import { BUILTIN_ORDERS, builtinOrdersByName, unmappedBuiltinKeys } from "../lib/builtin-orders.js";
-import { loadBuiltinOrders, parseBuiltinOrders } from "../lib/mirror.js";
+import {
+  BUILTIN_ORDERS,
+  builtinOrdersByName,
+  loadBuiltinOrders,
+  parseBuiltinOrders,
+  unmappedBuiltinKeys,
+} from "../lib/infra/builtin-orders.js";
 
 const SAMPLE = `
 import { Service } from "@deepseek-ai/cordis";

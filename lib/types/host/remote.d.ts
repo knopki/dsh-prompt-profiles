@@ -95,8 +95,8 @@ export declare class PromptProfilesRemote extends TypertRemoteService {
      * fail with «Receiver must be an instance of class». Arrow closures ignore
      * the receiver entirely, so proxied dispatch behaves exactly like a direct
      * call.
-     * @param {object} options - { service, getService?, warn?, log? } forwarded
-     *   to createOperations.
+     * @param {object} options - { service, getService?, warn?, log? }; composed
+     *   into the host ports passed to createOperations.
      */
     constructor(ctx: any, options?: {});
 }

@@ -11,14 +11,14 @@
  *    Remote surface (namespace `promptProfiles`) when the `typert` service
  *    exists.
  *  - NOT: section/profile row registration (lib/section.js, lib/profile.js)
- *    or patch-file mutation mechanics (lib/writer.js).
+ *    or patch-file mutation mechanics (infra/patch-writer.ts).
  * @invariants
  *  - The row mounts even when optional services (settings, profileContext)
  *    are absent; injection waits for storageDomain and workspaceRegistry.
  *  - A snapshot write finishes before any profile section reaches rendering.
  *  - `builtinOrders()` never throws; the mirror degrades to the frozen copy.
  *  - The profile choice is keyed by the SAME workspace key POST /last writes
- *    (resolveWorkspaceKeys: registry session membership → awaited
+ *    (infra/workspace-adapter.ts: registry session membership → awaited
  *    resolveByPath(cwd) id → raw cwd → workspaceId), so the chip reaches the
  *    prompt for both workspace-id and blank-session clients.
  *  - Seal diagnostics (session, workspace key, profile id, selected/skipped
@@ -43,7 +43,7 @@
  * #endregion moduleContract
  */
 import { Service } from "@deepseek-ai/cordis";
-import { PromptProfilesRegistry } from "./registry.ts";
+import { PromptProfilesRegistry } from "./infra/index.ts";
 /**
  * Durable session snapshots; bad records are backed up and treated as absent.
  * Record schemas are ZOD, not Schemastery: dsh-storage-domain reopens tables
@@ -127,7 +127,7 @@ export declare class PromptProfilesPlugin extends Service {
      *   the call site.
      * @returns {Record<string, number>}
      */
-    builtinOrdersByName(): Readonly<{}>;
+    builtinOrdersByName(): Record<string, number>;
     /**
      * Load the mirror once, on first use. `profileContext` is optional: read
      * through a guarded property access, fall back to resolving from this
@@ -157,6 +157,6 @@ export declare class PromptProfilesPlugin extends Service {
      * @returns {"user"|"bundle"|"unknown"} 'unknown' when configEditor is
      *   absent, the rowId is missing, or the patch cannot be parsed.
      */
-    _resolveSource(rowId: any): string;
+    _resolveSource(rowId: any): any;
 }
 export { PromptProfilesPlugin as default };

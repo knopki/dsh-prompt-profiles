@@ -13,14 +13,14 @@
  *    Remote surface (namespace `promptProfiles`) when the `typert` service
  *    exists.
  *  - NOT: section/profile row registration (lib/section.js, lib/profile.js)
- *    or patch-file mutation mechanics (lib/writer.js).
+ *    or patch-file mutation mechanics (infra/patch-writer.ts).
  * @invariants
  *  - The row mounts even when optional services (settings, profileContext)
  *    are absent; injection waits for storageDomain and workspaceRegistry.
  *  - A snapshot write finishes before any profile section reaches rendering.
  *  - `builtinOrders()` never throws; the mirror degrades to the frozen copy.
  *  - The profile choice is keyed by the SAME workspace key POST /last writes
- *    (resolveWorkspaceKeys: registry session membership → awaited
+ *    (infra/workspace-adapter.ts: registry session membership → awaited
  *    resolveByPath(cwd) id → raw cwd → workspaceId), so the chip reaches the
  *    prompt for both workspace-id and blank-session clients.
  *  - Seal diagnostics (session, workspace key, profile id, selected/skipped
@@ -49,21 +49,17 @@ import { Service } from "@deepseek-ai/cordis";
 import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
 import z from "@deepseek-ai/schemastery";
 import { z as zod } from "zod";
-import { builtinOrdersByName } from "./builtin-orders.ts";
-import { loadBuiltinOrders } from "./mirror.ts";
-import { PromptProfilesRegistry } from "./registry.ts";
-import { registerRemote } from "./remote.ts";
 import {
-  buildSnapshot,
-  isFork,
-  isSubagent,
-  planInsertion,
-  resolveProfileId,
-  resolveWorkspaceKeys,
-  retryingCache,
-  sealSnapshot,
-} from "./resolve.ts";
-import { provenance, setWriteGate } from "./writer.ts";
+  builtinOrdersByName,
+  createHostPorts,
+  createSessionSnapshots,
+  createWorkspaceKeys,
+  loadBuiltinOrders,
+  PromptProfilesRegistry,
+  setWriteGate,
+} from "./infra/index.ts";
+import { registerRemote } from "./remote.ts";
+import { buildSnapshot, isFork, isSubagent, planInsertion, resolveProfileId } from "./resolve.ts";
 
 // #region CONST_promptProfilesDomain
 /**
@@ -138,13 +134,26 @@ export class PromptProfilesPlugin extends Service {
     this.registry = new PromptProfilesRegistry({
       warn: (message, details) => ctx.logger?.warn?.(message, details ?? ""),
     });
+    // Driven ports for this service: the registry/orders views are itself, the
+    // optional services are read per call through the platform REFLECT reader.
+    this._ports = createHostPorts({
+      service: this,
+      getService: (name) => {
+        try {
+          return ctx.get?.(name) ?? undefined;
+        } catch {
+          return undefined; // absent/throwing service: degrade, never block
+        }
+      },
+      warn: (message, details) => ctx.logger?.warn?.(message, details ?? ""),
+    });
     ctx.inject(["settings"], (child) => child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)));
     this._installAssembler(ctx);
     // Join the writer's raw file writes to dsh-hmr exclusivity when present,
     // so they serialize with config-editor/settings edits in this process
-    // (verify-step4-sol defect 1; see writer.js FUNC_setWriteGate). The gate is
-    // a MODULE singleton, so it MUST be cleared on dispose: an HMR reload used
-    // to leave the old scope's `runExclusive` installed forever.
+    // (verify-step4-sol defect 1; see infra/patch-writer.ts setWriteGate). The
+    // gate is a MODULE singleton, so it MUST be cleared on dispose: an HMR
+    // reload used to leave the old scope's `runExclusive` installed forever.
     ctx.effect(() => {
       try {
         const hmr = ctx.get?.("hmr");
@@ -190,15 +199,6 @@ export class PromptProfilesPlugin extends Service {
   _installAssembler(ctx) {
     ctx.inject(["storageDomain", "workspaceRegistry"], (child) =>
       child.effect(() => {
-        // A rejected open must NOT stay cached: retryingCache drops the pending
-        // promise on failure so the next assembly retries (verify-step2b-glm defect 1).
-        const open = retryingCache(() => child.storageDomain.open(promptProfilesDomain));
-        const pending = new Map();
-        // Pinned per-session decisions (astra finding G): once a session's
-        // snapshot is decided in memory it stays stable for this process even
-        // while storage is down, so no later retry can activate a profile
-        // mid-session after an unprofiled turn.
-        const decided = new Map();
         /**
          * Diagnostics sink: every log call is guarded so a broken logger can
          * never take an assembly (and therefore the prompt) down.
@@ -211,80 +211,75 @@ export class PromptProfilesPlugin extends Service {
             // diagnostics only
           }
         };
+        // A rejected open must NOT stay cached: the adapter drops the pending
+        // promise on failure so the next assembly retries (verify-step2b-glm
+        // defect 1). Pinned per-session decisions (astra finding G) live in the
+        // adapter's memo: once a session's snapshot is decided in memory it
+        // stays stable for this process even while storage is down, so no later
+        // retry can activate a profile mid-session after an unprofiled turn.
+        const snapshots = createSessionSnapshots({
+          openDomain: () => child.storageDomain.open(promptProfilesDomain),
+          warn: (message, details) => log("warn", message, details),
+        });
+        const workspaces = createWorkspaceKeys(child.workspaceRegistry);
         const dispose = child.on("system-prompt/assemble", async (assembly, context, next) => {
           const agent = context?.agent;
           const session = agent?.session;
           if (session?.id && Array.isArray(assembly?.sections)) {
             try {
               // The workspace key candidates MUST include the one POST /last
-              // wrote (see resolveWorkspaceKeys): the registry's session
+              // wrote (see infra/workspace-adapter.ts): the registry's session
               // membership first, then the ASYNC resolveByPath(cwd) id, then the
               // raw cwd. Reading walks them in order, so a legacy path-keyed
               // choice is still found when the UUID key has none.
               const cwd = session.header?.cwd ?? null;
-              const workspaceKeys = await resolveWorkspaceKeys({
-                workspaceRegistry: child.workspaceRegistry,
-                session,
-                cwd,
-              });
+              const workspaceKeys = await workspaces.keys({ session, cwd });
               const workspaceKey = workspaceKeys[0] ?? "";
-              let sealed = pending.get(session.id);
-              if (!sealed) {
+              const snapshot = await snapshots.seal(session.id, () => {
                 const skips = [];
-                sealed = sealSnapshot({
-                  sessionId: session.id,
-                  memo: decided,
-                  openTable: async () => (await open()).table("sessions"),
-                  createSnapshot: () => {
-                    const profiles = this.profiles();
-                    const { profileId, reset } = resolveProfileId({
-                      lastByWorkspace: this.config.lastByWorkspace.get(),
-                      workspaceKeys,
-                      defaultId: this.config.default.get(),
-                      profileIds: profiles.map((profile) => profile.id),
-                    });
-                    if (reset)
-                      log("debug", "prompt-profiles stale workspace choice reset", {
-                        sessionId: session.id,
-                        workspaceKey,
-                      });
-                    const profile = profiles.find((row) => row.id === profileId);
-                    const sections = new Map(this.sections().map((row) => [row.id, row]));
-                    for (const ref of profile?.sections ?? []) {
-                      if (!sections.has(ref.id))
-                        log("warn", "prompt-profiles missing section", { profileId, sectionId: ref.id });
-                    }
-                    const snapshot = buildSnapshot({
-                      profile,
-                      sectionsById: sections,
-                      isSubagent: isSubagent(agent),
-                      isFork: isFork(agent),
-                      // Seal-time interpolation (astra finding D): variables of
-                      // THIS assembly, final text stored, never re-interpolated.
-                      variables: assembly.variables ?? {},
-                      warn: (message, details) => log("warn", message, details),
-                      // Per-reference skip reasons for the seal diagnostics below.
-                      onSkip: (skip) => skips.push(skip),
-                    });
-                    // Seal diagnostics (kept deliberately): the user can send
-                    // these lines when a chip choice does not reach the prompt.
-                    log("info", "prompt-profiles seal", {
-                      sessionId: session.id,
-                      workspaceKey,
-                      profileId: snapshot.profileId,
-                      selected: snapshot.sections.length,
-                      skipped: skips.length,
-                      skipReasons: skips,
-                      sectionIds: snapshot.sections.map((section) => section.id),
-                    });
-                    return snapshot;
-                  },
-                  warn: (message, details) => log("warn", message, details),
+                const profiles = this.profiles();
+                const { profileId, reset } = resolveProfileId({
+                  lastByWorkspace: this.config.lastByWorkspace.get(),
+                  workspaceKeys,
+                  defaultId: this.config.default.get(),
+                  profileIds: profiles.map((profile) => profile.id),
                 });
-                pending.set(session.id, sealed);
-                void sealed.finally(() => pending.delete(session.id)).catch(() => {});
-              }
-              const snapshot = await sealed;
+                if (reset)
+                  log("debug", "prompt-profiles stale workspace choice reset", {
+                    sessionId: session.id,
+                    workspaceKey,
+                  });
+                const profile = profiles.find((row) => row.id === profileId);
+                const sections = new Map(this.sections().map((row) => [row.id, row]));
+                for (const ref of profile?.sections ?? []) {
+                  if (!sections.has(ref.id))
+                    log("warn", "prompt-profiles missing section", { profileId, sectionId: ref.id });
+                }
+                const sealed = buildSnapshot({
+                  profile,
+                  sectionsById: sections,
+                  isSubagent: isSubagent(agent),
+                  isFork: isFork(agent),
+                  // Seal-time interpolation (astra finding D): variables of
+                  // THIS assembly, final text stored, never re-interpolated.
+                  variables: assembly.variables ?? {},
+                  warn: (message, details) => log("warn", message, details),
+                  // Per-reference skip reasons for the seal diagnostics below.
+                  onSkip: (skip) => skips.push(skip),
+                });
+                // Seal diagnostics (kept deliberately): the user can send
+                // these lines when a chip choice does not reach the prompt.
+                log("info", "prompt-profiles seal", {
+                  sessionId: session.id,
+                  workspaceKey,
+                  profileId: sealed.profileId,
+                  selected: sealed.sections.length,
+                  skipped: skips.length,
+                  skipReasons: skips,
+                  sectionIds: sealed.sections.map((section) => section.id),
+                });
+                return sealed;
+              });
               if (snapshot.sections.length) {
                 // planInsertion returns BASE indices into the original array;
                 // splicing from LAST to FIRST keeps earlier indices valid and
@@ -325,13 +320,7 @@ export class PromptProfilesPlugin extends Service {
         });
         return async () => {
           dispose();
-          pending.clear();
-          const cached = open.cached();
-          if (cached)
-            await cached.then(
-              (domain) => domain.close(),
-              () => {},
-            );
+          await snapshots.close();
         };
       }),
     );
@@ -454,22 +443,22 @@ export class PromptProfilesPlugin extends Service {
   _resolveSource(rowId) {
     if (typeof rowId !== "string" || rowId === "") return "unknown";
     // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use
-    let configEditor;
+    let patch;
     try {
-      configEditor = this.ctx.get?.("configEditor") ?? this.ctx.configEditor;
+      patch = this._ports.patch();
     } catch {
-      configEditor = undefined;
+      patch = undefined;
     }
     // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use
     let patchPath;
     try {
-      patchPath = configEditor?.documentPath;
+      patchPath = patch?.path();
     } catch {
       return "unknown"; // documentPath getter failed: service unusable
     }
     if (typeof patchPath !== "string" || patchPath === "") return "unknown";
     try {
-      return provenance({ patchPath, rowId }).source;
+      return patch.ownership(rowId).source;
     } catch (error) {
       this.ctx.logger?.warn?.("prompt-profiles: provenance unavailable; source stays unknown", {
         rowId,
