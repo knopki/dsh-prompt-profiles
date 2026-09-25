@@ -287,8 +287,10 @@ assert.equal(chipButton.props.variant, 'ghost', 'ghost carries the primitive hov
 assert.equal(chipButton.props.size, 'sm', 'compact composer size');
 assert.equal(chipButton.props.icon, undefined, 'the chevron no longer rides the LEADING icon slot');
 assert.equal(chipButton.children.length, 2, 'the button content is label + trailing chevron');
-assert.equal(chipButton.children[1].type, primitives.IconChevronDownOutlineRegular,
+assert.equal(chipButton.children[1].type, 'span',
   'the chevron is a TRAILING child, after the label (Button has no trailing-icon slot)');
+assert.equal(chipButton.children[1].children[0].type, primitives.IconChevronDownOutlineRegular,
+  'the trailing span wraps the chevron icon, like the neighbouring triggers');
 assert.equal(chipButton.children[0].type, 'span', 'the label stays first');
 assert.equal(chipMenu.props.side, 'top', 'the dropdown opens UPWARD like conversation.input.permission');
 assert.equal(chipMenu.props.portal, true, 'and is portaled out of the composer clipping, like the neighbours');
@@ -301,6 +303,18 @@ assert.equal(chipButton.props.style.maxWidth, '220px');
 const chipLabel = chipButton.children[0];
 assert.equal(chipLabel.type, 'span', 'long names still get an ellipsis span (no truncation slot on the primitive)');
 assert.equal(chipLabel.props.style.textOverflow, 'ellipsis');
+// Trigger colors reproduce the neighbouring composer triggers token-for-token:
+// the Button base is label-primary, the triggers override it (permission
+// `.trigger`/`.chevron`, model selector `._trigger`/`._chevron`).
+assert.equal(chipLabel.props.style.color, 'var(--dsw-alias-label-secondary)',
+  'the chip label uses the neighbours` secondary token, not the Button base label-primary');
+assert.equal(chipButton.children[1].props.style.color, 'var(--dsw-alias-label-caption)',
+  'the chip chevron uses the caption token the neighbouring triggers use');
+assert.ok(chipButton.children[1].props['aria-hidden'], 'the decorative chevron stays hidden from AT');
+// The MENU is untouched: our items carry no color override, so the primitive
+// renders them with its own label-primary.
+assert.ok(chipMenu.props.items.every((entry) => entry.style === undefined && entry.color === undefined),
+  'menu items keep the primitive label-primary (no trigger color leaks into the dropdown)');
 const chipText = elementText(chipButton);
 assert.ok(chipText.includes('Light'), 'the button shows the profile NAME');
 assert.ok(!chipText.includes('profile:'), 'the "profile:" prefix is gone');
@@ -643,8 +657,14 @@ assert.ok(defaultMenuEl, 'the «Default for new sessions» selector renders');
 const defaultMenuRendered = defaultMenuEl.type(defaultMenuEl.props);
 assert.equal(defaultMenuRendered.type, Menu, 'the default selector is a Menu primitive');
 assert.equal(defaultMenuRendered.props.anchor.type, primitives.Button, 'the default selector anchor is also the installed Button primitive');
-assert.equal(defaultMenuRendered.props.anchor.children[1].type, primitives.IconChevronDownOutlineRegular,
+assert.equal(defaultMenuRendered.props.anchor.children[1].type, 'span',
   'the default selector also puts the chevron in the TAIL (label first)');
+assert.equal(defaultMenuRendered.props.anchor.children[1].children[0].type, primitives.IconChevronDownOutlineRegular,
+  'and wraps the chevron icon like the chip');
+assert.equal(defaultMenuRendered.props.anchor.children[0].props.style.color, 'var(--dsw-alias-label-secondary)',
+  'the default selector shares the trigger label token');
+assert.equal(defaultMenuRendered.props.anchor.children[1].props.style.color, 'var(--dsw-alias-label-caption)',
+  'and the trigger chevron token');
 console.log('PASS tabs: modal-free create buttons wired to the flow with default titles');
 // #endregion SECTION_tabsNoCreateModal
 
