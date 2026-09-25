@@ -1,0 +1,1487 @@
+// @ts-nocheck
+// TODO(phase 1): remove after typing
+/**
+ * Same-origin HTTP API for the prompt-profiles editor and picker (SPEC §5.5).
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Expose prompt-profile CRUD (plus mode/complete warnings and a
+ *   host-rendered preview for the editor) as exact Fetch routes on the
+ *   platform Connection service (`connection.fetch.register`, the same /api
+ *   carrier as the DSH API gateway) so the web client can manage rows without
+ *   a typed remote.
+ * @scope
+ *  - Route registration (state, preview, section create/update/delete/rename,
+ *    profile create/update/delete, default, last) with whole-object
+ *    validation.
+ *  - Writes to EXISTING rows replace the WHOLE config via
+ *    ctx.settings.replace(ns, value, revision); creation/removal/disable go
+ *    through the writer (lib/writer.js); rename is the documented batch with
+ *    rollback and touches the SECTION ONLY — it never rewrites profile
+ *    references, returning `affectedProfiles` for the user to fix by hand.
+ *    Every row-addressing route accepts EITHER the fully qualified
+ *    loader entry rowId (`include:prompt-section-1`) OR the unqualified
+ *    patch row id (`prompt-section-1`) — toPatchId normalizes internally.
+ *  - EVERY mutating path runs inside the bundle's one in-process serializer
+ *    (`withWriteLock`), preventing same-process lost updates.
+ *  - NOT: the sealing core — the plugin works on non-web surfaces without
+ *    these routes (no Connection -> zero routes, logged at error level).
+ * @invariants
+ *  - Every request body is validated BEFORE any write happens: section value
+ *    {title non-empty, body string}; profile value {title non-empty,
+ *    sections array of {id ∈ registered sections, order finite, scope enum}};
+ *    violations return a clean `{ error: { message } }` 400 and never touch
+ *    the file (byte-identical).
+ *  - A section body may be empty/whitespace (SPEC §7); responses mark it
+ *    `emits: false`.
+ *  - FROZEN ID SCHEME: on create and rename, `config.id` === the full row id
+ *    (`prompt-<kind>-<token>`) === the response `configId`; callers may still
+ *    send a bare token, the full form, or a qualified `include:` form.
+ *    Existing rows with old bare config ids are never rewritten; every lookup
+ *    keeps accepting both forms.
+ *  - `/last` takes `{workspaceId?, cwd?, profileId}` and stores the choice
+ *    under the SAME key the assembler reads (resolveWorkspaceKeys: registry
+ *    membership → async resolveByPath(cwd) id → raw cwd → workspaceId), so a
+ *    chip choice always reaches the prompt; `profileId: ""` still means an
+ *    explicit "none" and an unknown profile id is a 404.
+ *  - Route handlers never let an exception escape to the socket: errors map
+ *    to a JSON error response (400 validation/duplicate id/non-volatile
+ *    write, 404 unknown row, 405 method, 409 revision conflict or unsafe
+ *    rename, 413 too large, 500 unexpected) and EVERY failure is logged with
+ *    the route, the rowId as received, the normalized patchId, and the
+ *    underlying error message. The catch path itself is guarded: a broken
+ *    logger or an already-dead socket can never turn a clean error envelope
+ *    into the host dispatcher's empty 400.
+ *  - RESIDUAL CONCURRENCY WINDOW (documented, see writer.js): other plugins'
+ *    direct configEditor writes when dsh-hmr is absent, and any second DSH
+ *    process, are not serialized with these routes.
+ * @dependencies
+ *  - USES API: ctx.connection.fetch.register (exact Fetch routes), ctx.settings.replace /
+ *    mutate / describe, ctx.configEditor.documentPath / entries (optional),
+ *    ctx.agentPresets.list / readDocument (optional), ctx.promptProfiles
+ *    views, lib/writer.js.
+ * @rationale
+ *  - Q: Why Fetch handlers on the Connection carrier instead of raw
+ *    webServer routes?
+ *    A: The platform owns the /api carrier (fence + signed cookie + body
+ *    modes + auto-disposal); registering there is how the shipped plugins
+ *    expose HTTP and it removes our own low-level route management.
+ *  - Q: Why whole-object replace instead of per-field ops?
+ *    A: The client holds the full editor form; forwarding path ops only
+ *    widened the race surface between reads and writes. replace keeps the
+ *    contract "validated object in, whole config out" and 400s cleanly.
+ * @keywords api, routes, connection.fetch.register, settings.replace, toPatchId, rowId,
+ *   patchId, validation, CRUD, modes, complete, preview
+ * #endregion moduleContract
+ */
+
+import { randomUUID } from "node:crypto";
+import { parse } from "yaml";
+import { insertRow, removeRow, disableRow, provenance, withWriteLock, renameSectionRow, listRowIds, readPatchRows, toPatchId } from "./writer.ts";
+import { resolveWorkspaceKeys, sectionSkipReason, planInsertion } from "./resolve.ts";
+
+// #region CONST_identity
+/** Plugin names of the row kinds this API manages (SPEC §3). */
+const SECTION_NAME = "@knopki/dsh-prompt-profiles/section";
+const PROFILE_NAME = "@knopki/dsh-prompt-profiles/profile";
+/**
+ * Id scheme: a created row's `config.id` IS its full row id
+ * (`prompt-<kind>-<token>`, prefix included, built by normalizeNewRowId);
+ * old rows keep their bare slug/token `config.id`s and are never migrated.
+ * ID_PATTERN is the rule for the TOKEN part only.
+ */
+const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+const SCOPES = ["inherit", "main-only", "subagents-only"];
+/** Hard request-body ceiling (bodies are small JSON documents). */
+const MAX_BODY_BYTES = 1 << 20;
+/** The persona plugin whose `config.complete === true` collapses the prompt. */
+const PERSONA_PLUGIN = "@deepseek-ai/dsh-persona";
+/** Platform-auth refusal texts (same fence/cookie as the DSH API gateway). */
+const AUTH_REQUIRED_MESSAGE = "web authentication required; reopen the URL printed by dsh web";
+const ORIGIN_UNTRUSTED_MESSAGE = "request origin is not trusted";
+/** `!!js` customTag shared with the loader dialect (SPEC §3). */
+const yamlParseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value) => value }] };
+// #endregion CONST_identity
+
+// #region CLASS_ApiError
+/**
+ * @purpose Carry an HTTP status plus a safe message out of handlers so the
+ *   dispatcher can answer with a clean error object instead of a stack.
+ */
+class ApiError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+// #endregion CLASS_ApiError
+
+// #region FUNC_errorText
+/**
+ * Extract a NON-EMPTY human-readable message from any thrown value —
+ * Error (even with an empty .message), string, plain object, null/undefined.
+ *
+ * @purpose Live bug: the empty-400 round showed failure diagnostics
+ *   collapsing when a thrown value had no `.message`; every response body
+ *   and every log line now carries a readable message by construction.
+ * @param {unknown} error - whatever was thrown.
+ * @returns {string} non-empty message.
+ */
+function errorText(error) {
+  if (error instanceof Error) {
+    if (typeof error.message === "string" && error.message !== "") return error.message;
+    return error.name || "Error"; // e.g. `new Error("")` still names itself
+  }
+  if (typeof error === "string") return error === "" ? "unknown error" : error;
+  if (typeof error === "object" && error !== null && typeof error.message === "string" && error.message !== "") {
+    return error.message; // Error-like plain object
+  }
+  try {
+    const text = String(error);
+    if (text !== "") return text;
+  } catch {
+    // exotic toString: fall through
+  }
+  return "unknown error";
+}
+// #endregion FUNC_errorText
+
+// #region FUNC_sameOriginHost
+/**
+ * CSRF helper: does an `Origin` header name the same host:port as `Host`?
+ * A malformed or opaque Origin (`"null"` from a sandboxed/file context)
+ * returns false. The caller only invokes this when Origin is PRESENT, so
+ * curl/tests/non-browser clients without the header are unaffected.
+ */
+function sameOriginHost(origin, host) {
+  if (typeof host !== "string" || host === "") return false;
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+// #endregion FUNC_sameOriginHost
+
+// #region FUNC_findRow
+/**
+ * Shared registry-row lookup for every route that addresses an existing row.
+ *
+ * @purpose ONE place implementing the id-matching rule, so rename, update,
+ *   delete (and any future route) can never diverge — the live bug was
+ *   exactly such a divergence: the registry stored the QUALIFIED loader
+ *   entry rowId (`include:prompt-section-f01aa4a5`, from
+ *   `ctx.fiber.entry.id` in lib/section.js) while a route looked the row up
+ *   by the unqualified patch id and missed with «is not registered».
+ *
+ * MATCHING ORDER (first hit wins):
+ *  1. exact match on the registry `rowId`;
+ *  2. normalized match: `toPatchId(value)` against `rowId` (qualified value
+ *     → unqualified row) or `toPatchId(rowId)` against `value` (unqualified
+ *     value → qualified row) — the direction that actually occurs live;
+ *  3. the row's CONFIG id (`candidate.id`), exact or `toPatchId`-normalized,
+ *     so callers may address a row by its domain id as well.
+ *
+ * CANONICAL ID: this helper only FINDS the row. The patch row id used for
+ * settings/writer addresses is derived separately by `patchIdOf`, which
+ * prefers the canonical id from `configEditor.entries()` and only falls back
+ * to `toPatchId` when entries are unavailable.
+ *
+ * @param {Array<{ id: string, rowId: string }>} registryView - rows from
+ *   service.sections() / service.profiles().
+ * @param {string} value - row identifier as received (any of the three
+ *   forms above).
+ * @returns {object | null} the matching registry row view, or null.
+ */
+export function findRow(registryView, value) {
+  if (typeof value !== "string" || value === "") return null;
+  const normalized = toPatchId(value);
+  return (registryView ?? []).find((candidate) =>
+    candidate.rowId === value
+    || candidate.rowId === normalized
+    || toPatchId(candidate.rowId) === normalized
+    || candidate.id === value
+    || candidate.id === normalized,
+  ) ?? null;
+}
+// #endregion FUNC_findRow
+
+// #region FUNC_normalizeNewRowId
+/**
+ * Normalize the NEW id of a create/rename payload to the two canonical
+ * forms under the frozen decision «config.id === full row id»: the stored
+ * config id is the FULL `prompt-<kind>-<token>` string.
+ *
+ * Accepted inputs (all equivalent):
+ *  - bare token:            `123123`
+ *  - full row id:           `prompt-section-123123`
+ *  - qualified loader form: `include:prompt-section-123123` (any `:` chain)
+ *
+ * @param {"section"|"profile"} kind - supplies the `prompt-<kind>-` prefix.
+ * @param {string} value - id as received.
+ * @returns {string} the FULL `prompt-<kind>-<token>` form, or null when the
+ *   input is not a string or reduces to the bare prefix (pattern checks stay
+ *   with the caller, which reports a clear 400).
+ */
+export function normalizeNewRowId(kind, value) {
+  if (typeof value !== "string") return null;
+  const bare = toPatchId(value);
+  if (bare === "") return null;
+  const prefix = `prompt-${kind}-`;
+  return bare.startsWith(prefix) ? bare : `${prefix}${bare}`;
+}
+// #endregion FUNC_normalizeNewRowId
+
+// #region CONST_tokenSource
+/**
+ * Injectable source of short random create tokens (8 lowercase hex chars).
+ * @purpose Let tests force collisions deterministically (`tokenSource.next`)
+ *   without monkey-patching crypto; production always uses a crypto UUID.
+ */
+export const tokenSource = { next: () => randomUUID().replace(/-/g, "").slice(0, 8) };
+// #endregion CONST_tokenSource
+
+// #region FUNC_generateTokenId
+/**
+ * Generate a unique short random id for create routes: 8 lowercase hex chars
+ * from a crypto UUID, returned in the FULL `prompt-<kind>-<token>` form that
+ * is BOTH the row id and `config.id` (frozen id scheme). The token is
+ * regenerated on collision with any full id in `taken` — an existing row id
+ * or an existing `config.id` (SPEC §3/§5.5).
+ *
+ * @purpose The create id no longer derives from the title: slug ids read as
+ *   two different ids (`prompt-section-new-section` vs `config.id:
+ *   new-section`) and could collide with rows another bundle ships. A random
+ *   token removes both problems; existing rows keep their slug-based ids.
+ * @param {"section"|"profile"} kind
+ * @param {Set<string>} taken - every FULL id string (row-id AND config-id
+ *   forms) that must not be reused (see takenIds in createRoutes).
+ * @returns {string} the full `prompt-<kind>-<token>` id, unique against
+ *   `taken`.
+ */
+function generateTokenId(kind, taken) {
+  let id = normalizeNewRowId(kind, tokenSource.next());
+  while (id === null || taken.has(id)) id = normalizeNewRowId(kind, tokenSource.next());
+  return id;
+}
+// #endregion FUNC_generateTokenId
+
+// #region FUNC_validate
+/**
+ * @purpose Reject malformed request payloads before anything is written
+ *   (PLAN step 4: «попытка испортить входные данные — отказ без записи»).
+ *   Updates carry a WHOLE object `value`; there are no path ops anymore.
+ * @param {string} kind - expected payload kind, for error messages.
+ * @param {object} body - parsed JSON body.
+ * @param {object} deps - registry views for cross-field checks
+ *   (`sectionTargets: Map<string, string>` mapping every id a profile ref may
+ *   use for a section — config.id, full row id, qualified form, bare token —
+ *   to the registered config.id that must be stored).
+ * @returns {object} validated payload.
+ */
+function validate(kind, body, deps = {}) {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw new ApiError(400, `${kind}: request body must be a JSON object`);
+  }
+  const str = (field, { allowEmpty = false } = {}) => {
+    const value = body[field];
+    if (typeof value !== "string" || (!allowEmpty && value.trim() === "")) {
+      throw new ApiError(400, `${kind}: field "${field}" must be a ${allowEmpty ? "string" : "non-empty string"}`);
+    }
+    return value;
+  };
+  /**
+   * Normalize a create/rename `id` to the FULL `prompt-<kind>-<token>` form
+   * (frozen id scheme: the stored `config.id` IS the row id). Accepts a bare
+   * token, the full row-id form, or a qualified `include:...` chain; the
+   * TOKEN after the prefix must match ID_PATTERN.
+   */
+  const newId = (name) => {
+    if (body.id === undefined) return null;
+    if (typeof body.id !== "string" || body.id.trim() === "") {
+      throw new ApiError(400, `${kind}: field "id" must be a non-empty string`);
+    }
+    const full = normalizeNewRowId(name, body.id);
+    const token = full === null ? "" : full.slice(`prompt-${name}-`.length);
+    if (token === "" || !ID_PATTERN.test(token)) {
+      throw new ApiError(400, `${kind}: field "id" must be a bare token, prompt-${name}-<token>, or include:prompt-${name}-<token> matching ${ID_PATTERN}`);
+    }
+    return full;
+  };
+  const revision = () => {
+    if (body.revision !== undefined && !Number.isFinite(body.revision)) {
+      throw new ApiError(400, `${kind}: "revision" must be a number when present`);
+    }
+    return body.revision;
+  };
+  /** Title with a DEFAULT allowed (frozen contract): missing/blank is fine. */
+  const titleWithDefault = (fallback) => {
+    const value = body.title;
+    if (value === undefined || (typeof value === "string" && value.trim() === "")) return fallback;
+    if (typeof value !== "string") throw new ApiError(400, `${kind}: field "title" must be a string`);
+    return value;
+  };
+  /**
+   * Resolve one `sections[].id` to the id STORED in the profile. A registered
+   * section is addressed by its config.id (verbatim — old rows keep bare slug
+   * ids), its full/qualified row id, or the bare token of a full
+   * `prompt-section-<token>` config id; the stored ref is ALWAYS the
+   * registered config.id, so runtime lookups (which key on config.id) hit.
+   * A section that HMR has not registered YET is accepted only when its row
+   * is already present in the profile patch (`pendingSectionIds`) — the
+   * create-then-add flow. A typo/foreign id is rejected on CREATE and UPDATE
+   * alike (no asymmetric allowance).
+   */
+  const sectionRefId = (raw) => {
+    if (typeof raw !== "string" || raw === "") return null;
+    const targets = deps.sectionTargets ?? new Map();
+    const direct = targets.get(raw) ?? targets.get(toPatchId(raw));
+    if (direct !== undefined) return direct;
+    const full = normalizeNewRowId("section", raw);
+    if (full === null) return null;
+    const registered = targets.get(full);
+    if (registered !== undefined) return registered;
+    const token = full.slice("prompt-section-".length);
+    if (token === "" || !ID_PATTERN.test(token)) return null;
+    // Pending HMR registration: this bundle already wrote the row to the
+    // patch (the client creates the section first and only then references
+    // it). The check is a snapshot read of the patch; it can only REJECT a
+    // row that is absent, never accept a typo.
+    return deps.pendingSectionIds?.has(full) ? full : null;
+  };
+  const sectionRefs = (value) => {
+    if (!Array.isArray(value)) throw new ApiError(400, `${kind}: sections must be an array`);
+    return value.map((ref, index) => {
+      if (ref === null || typeof ref !== "object" || Array.isArray(ref)) {
+        throw new ApiError(400, `${kind}: sections[${index}] must be an object`);
+      }
+      const id = sectionRefId(ref.id);
+      if (id === null) {
+        throw new ApiError(400, `${kind}: sections[${index}].id "${ref.id}" is not a registered section`);
+      }
+      if (!Number.isFinite(ref.order)) throw new ApiError(400, `${kind}: sections[${index}].order must be a number`);
+      if (ref.scope != null && !SCOPES.includes(ref.scope)) {
+        throw new ApiError(400, `${kind}: sections[${index}].scope must be one of ${SCOPES.join(", ")}`);
+      }
+      return { id, order: ref.order, ...(ref.scope != null ? { scope: ref.scope } : {}) };
+    });
+  };
+  switch (kind) {
+    case "section/create": {
+      // Frozen contract: {title, body}; the server generates a short random
+      // token id (an explicit id — bare, full, or qualified — is still
+      // accepted for back-compat and stored in the FULL prefixed form).
+      // SPEC §7: empty/whitespace body is allowed — the section simply does
+      // not emit.
+      const id = newId("section");
+      const title = titleWithDefault("Section");
+      if (body.body !== undefined && typeof body.body !== "string") {
+        throw new ApiError(400, `${kind}: field "body" must be a string`);
+      }
+      return { id, title, body: body.body ?? "" };
+    }
+    case "profile/create": {
+      const id = newId("profile");
+      const title = titleWithDefault("Profile");
+      const sections = body.sections === undefined ? [] : sectionRefs(body.sections);
+      return { id, title, sections };
+    }
+    case "section/update": {
+      const rowIdValue = str("rowId");
+      if (body.value === null || typeof body.value !== "object" || Array.isArray(body.value)) {
+        throw new ApiError(400, `${kind}: field "value" must be an object {title, body}`);
+      }
+      if (typeof body.value.title !== "string" || body.value.title.trim() === "") {
+        throw new ApiError(400, `${kind}: value.title must be a non-empty string`);
+      }
+      if (typeof body.value.body !== "string") {
+        throw new ApiError(400, `${kind}: value.body must be a string (empty allowed)`);
+      }
+      return { rowId: rowIdValue, value: { title: body.value.title, body: body.value.body }, revision: revision() };
+    }
+    case "profile/update": {
+      const rowIdValue = str("rowId");
+      if (body.value === null || typeof body.value !== "object" || Array.isArray(body.value)) {
+        throw new ApiError(400, `${kind}: field "value" must be an object {title, sections}`);
+      }
+      if (typeof body.value.title !== "string" || body.value.title.trim() === "") {
+        throw new ApiError(400, `${kind}: value.title must be a non-empty string`);
+      }
+      const sections = body.value.sections === undefined ? [] : sectionRefs(body.value.sections);
+      return { rowId: rowIdValue, value: { title: body.value.title, sections }, revision: revision() };
+    }
+    case "section/rename":
+      return { rowId: str("rowId"), id: newId("section") };
+    case "section/delete":
+      return { rowId: str("rowId") };
+    case "profile/delete":
+      // revision is used for the orphan-reference cleanup settings write.
+      return { rowId: str("rowId"), revision: revision() };
+    case "default": {
+      // Only a profile-id string, '' (none), or null (clear) — never a
+      // silently coerced missing field (verify-step4-sol defect 3).
+      if (!("default" in body) || (body.default !== null && typeof body.default !== "string")) {
+        throw new ApiError(400, 'default: field "default" must be a profile id string, "" for none, or null');
+      }
+      return { default: body.default ?? "" };
+    }
+    case "last": {
+      // Contract with the client chip: {workspaceId?, cwd?, profileId}.
+      // `cwd` is the fallback key so a blank session with no workspace id yet
+      // still reaches the prompt (the assembler falls back to cwd too).
+      if (body.workspaceId !== undefined && typeof body.workspaceId !== "string") {
+        throw new ApiError(400, 'last: "workspaceId" must be a string when present');
+      }
+      if (body.cwd !== undefined && typeof body.cwd !== "string") {
+        throw new ApiError(400, 'last: "cwd" must be a string when present');
+      }
+      const workspaceId = body.workspaceId ?? "";
+      const cwd = body.cwd ?? "";
+      if (workspaceId === "" && cwd === "") {
+        throw new ApiError(400, 'last: "workspaceId" or "cwd" is required');
+      }
+      if (typeof body.profileId !== "string") throw new ApiError(400, "last: profileId must be a string (empty = none)");
+      return { workspaceId, cwd, profileId: body.profileId, revision: revision() };
+    }
+    default:
+      throw new ApiError(500, `validate: unknown kind ${kind}`);
+  }
+}
+// #endregion FUNC_validate
+
+// #region FUNC_modeViews
+/** Defensive traversal cap; a parsed YAML document is acyclic. */
+const MAX_PRESET_DEPTH = 32;
+/**
+ * Depth-first search for a `@deepseek-ai/dsh-persona` row carrying
+ * `config.complete === true`, at ANY depth — through arrays, objects and the
+ * `config` ARRAYS of `cordis:group` rows. The preset document shape varies:
+ * the raw `presets/*.patch.yml` nests the persona row under
+ * `insert[].config.plugins[]` (live bug: the old flat `[entry, ...entry.insert]`
+ * scan never reached it), while `agentPresets.readDocument` may dump the
+ * plugin LIST at the top level. One recursive search covers both; no preset
+ * name is hardcoded.
+ */
+function hasCompletePersona(node, depth = 0) {
+  if (depth > MAX_PRESET_DEPTH) return false;
+  if (Array.isArray(node)) return node.some((child) => hasCompletePersona(child, depth + 1));
+  if (node === null || typeof node !== "object") return false;
+  if (node.name === PERSONA_PLUGIN && node.config?.complete === true) return true;
+  return Object.values(node).some((child) => hasCompletePersona(child, depth + 1));
+}
+
+/**
+ * Build `modes: [{id, title, complete}]` for the editor's complete-mode
+ * warning (SPEC §2 decision 21): for each agent preset, read its declared
+ * composition and mark `complete: true` when any plugin row named
+ * `@deepseek-ai/dsh-persona` carries `config.complete === true` ANYWHERE in
+ * the parsed document (recursive, see hasCompletePersona).
+ *
+ * @purpose Let the UI warn that a profile is discarded in complete modes,
+ *   using the only detection method SPEC proved (readDocument + parse; the
+ *   roster alone carries no config).
+ * @param {object} [agentPresets] - ctx.agentPresets (optional service).
+ * @param {(message: string, details?: unknown) => void} warn
+ * @returns {Promise<Array<{ id: string, title: string, complete: boolean }>>}
+ *   `[]` when the service is absent or listing fails (degrade, SPEC §7).
+ */
+async function modeViews(agentPresets, warn) {
+  if (agentPresets == null) return [];
+  let presets;
+  try {
+    presets = await agentPresets.list();
+  } catch (error) {
+    warn?.("prompt-profiles api: agentPresets.list failed; modes empty", { error: error?.message ?? String(error) });
+    return [];
+  }
+  const modes = [];
+  for (const preset of presets) {
+    let complete = false;
+    try {
+      const document = await agentPresets.readDocument(preset.id);
+      // `yamlParseOptions` carries the `!!js` custom tag: preset files use
+      // `disabled: !!js process.platform === 'win32'`, which must NOT abort the
+      // parse. A genuinely unparseable document warns below and stays false.
+      const entries = parse(document.content ?? "", yamlParseOptions);
+      complete = hasCompletePersona(entries);
+    } catch (error) {
+      warn?.("prompt-profiles api: preset document unreadable; complete stays false", {
+        preset: preset.id, error: error?.message ?? String(error),
+      });
+    }
+    modes.push({ id: preset.id, title: preset.name ?? preset.id, complete });
+  }
+  return modes;
+}
+// #endregion FUNC_modeViews
+
+// #region FUNC_stateResponse
+/**
+ * @purpose Assemble the GET /state document (SPEC §5.5 + frozen live-bugfix
+ *   contract): profiles, sections with source, usedIn, an `emits` flag, and
+ *   BOTH identifiers on every row — `rowId` (fully qualified loader entry id,
+ *   display/debug) and `patchId` (unqualified patch row id used for writes).
+ */
+async function stateResponse(deps) {
+  const { service, warn, patchIdOf } = deps;
+  // PER-ROUTE DEGRADATION: reading state must work without the optional
+  // settings/agentPresets services; revision is null when unreadable.
+  const settings = deps.getService?.("settings") ?? deps.settings;
+  const revision = settings?.describe?.().find((descriptor) => descriptor.ns === "prompt-profiles")?.revision ?? null;
+  return {
+    profiles: service.profiles().map((profile) => ({ ...profile, patchId: patchIdOf(profile.rowId) })),
+    sections: service.sections().map((section) => ({
+      ...section,
+      patchId: patchIdOf(section.rowId),
+      usedIn: service.usedIn(section.id),
+      emits: typeof section.body === "string" && section.body.trim() !== "",
+    })),
+    builtinOrders: service.builtinOrders(),
+    modes: await modeViews(deps.getService?.("agentPresets") ?? deps.agentPresets, warn),
+    default: service.config.default.get(),
+    lastByWorkspace: service.config.lastByWorkspace.get(),
+    revision,
+  };
+}
+// #endregion FUNC_stateResponse
+
+// #region FUNC_previewResponse
+/**
+ * Build GET /preview?profileId=…[&cwd=…] : an ILLUSTRATIVE preview, not the
+ * runtime text. Built-in sections appear as `{kind:"builtin", name, order}`
+ * placeholders interleaved with our sections in final order; selection reuses
+ * `sectionSkipReason` (the same predicate `buildSnapshot` applies for the main
+ * agent) and the merge reuses `planInsertion`, BUT interpolation is lenient:
+ * `{{cwd}}` is filled with the session cwd when the request supplies one
+ * (otherwise `process.cwd()`), every other variable stays literal, and unknown
+ * or malformed references are NOT rejected. Real values are substituted when
+ * the session starts, so the response reports exactly which variables were
+ * used and what (if anything) was substituted — `null` means unknown — for the
+ * client to flag as illustrative.
+ *
+ * @purpose Give the editor an honest, readable preview without a live session;
+ *   the sealed snapshot remains the ONLY runtime truth.
+ * @returns {{ profileId: string, title: string, sections: Array<object>,
+ *   skipped: Array<{ id: string, reason: string }>,
+ *   variables: Record<string, string|null> }}
+ */
+function previewResponse(deps, profileId, { cwd } = {}) {
+  const { service } = deps;
+  const profile = findRow(service.profiles(), profileId);
+  if (!profile) throw new ApiError(404, `profile "${profileId}" is not registered`);
+  const sectionsById = new Map(service.sections().map((row) => [row.id, row]));
+  const builtinOrdersByName = service.builtinOrdersByName?.() ?? {};
+  const sessionCwd = typeof cwd === "string" && cwd !== "" ? cwd : process.cwd();
+  // Variables actually referenced by the rendered text, with the value the
+  // preview substituted (null = unknown host-side / substituted at session start).
+  const usedVariables = new Set();
+  const interpolate = (text) => String(text).replace(/\{\{([^{}]*)\}\}/g, (match, name) => {
+    if (!/^[a-z][a-z0-9_]*$/.test(name)) return match; // malformed: left literal
+    usedVariables.add(name);
+    return name === "cwd" ? sessionCwd : match; // only cwd is known host-side
+  });
+  // Profile order = insertion order (stable on equal orders), the same sort
+  // planInsertion performs.
+  const planned = [...profile.sections].sort((a, b) => a.order - b.order);
+  const ours = [];
+  const skipped = [];
+  for (const ref of planned) {
+    const section = sectionsById.get(ref.id);
+    // Runtime selection rule (main agent): inherit + main-only emit,
+    // subagents-only is skipped with a reason.
+    const reason = sectionSkipReason(ref, section, { subagent: false, fork: false });
+    if (reason !== null) { skipped.push({ id: ref.id, title: section?.title ?? ref.id, reason }); continue; }
+    let text;
+    try {
+      text = interpolate(section.body);
+    } catch (error) {
+      skipped.push({ id: ref.id, title: section.title, reason: `interpolation failed: ${error?.message ?? String(error)}` });
+      continue;
+    }
+    ours.push({
+      id: section.id, title: section.title, order: ref.order, scope: ref.scope ?? "inherit",
+      text, emits: true,
+    });
+  }
+  // Built-in placeholders in ENGINE order (order, then name) — the order the
+  // assembled array already has before our sections are spliced in.
+  const builtins = Object.entries(builtinOrdersByName)
+    .map(([name, order]) => ({ kind: "builtin", name, title: name, order }))
+    .sort((a, b) => a.order - b.order || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  // Splice our sections with the SAME base-index plan the assembler uses
+  // (descending, so earlier indices stay valid and equal indices keep the
+  // profile order). `ours` is already in planInsertion's sort order, so
+  // plan[i] corresponds to ours[i].
+  const plan = planInsertion({
+    snapshot: { sections: ours.map((row) => ({ id: row.id, order: row.order, text: row.text })) },
+    assemblySections: builtins.map((row) => ({ name: row.name })),
+    builtinOrdersByName,
+  });
+  const merged = builtins.slice();
+  for (let i = plan.length - 1; i >= 0; i--) merged.splice(plan[i].index, 0, ours[i]);
+  const variables = Object.fromEntries([...usedVariables].sort().map((name) => [name, name === "cwd" ? sessionCwd : null]));
+  return { profileId, title: profile.title, sections: merged, skipped, variables };
+}
+// #endregion FUNC_previewResponse
+
+/**
+ * Map the writer's duplicate guard («already exists» from insertRow /
+ * renameSectionRow) to a clean 400 in every route that can hit it — create
+ * routes included (verify-fixes-glm defect 1: bare rethrow answered 500).
+ *
+ * @purpose Give /section/create, /profile/create and /section/rename the same
+ *   `{ error: { message } }` envelope as the rest of the API.
+ */
+function mapDuplicate(error) {
+  if (/already exists/.test(error?.message ?? "")) throw new ApiError(400, error.message);
+  throw error;
+}
+
+// #region FUNC_deleteRow
+/**
+ * @purpose Implement delete for both kinds: user-owned rows are physically
+ *   removed, bundle-provided rows get a bare `{id, name, disabled: true}`
+ *   override (SPEC §2 #17); provenance comes from the writer, not from
+ *   configuration() which cannot prove layer ownership. `patchId` must
+ *   already be NORMALIZED (the patch file addresses unqualified row ids).
+ */
+async function deleteRow(deps, patchId, name) {
+  const configEditor = deps.getService?.("configEditor") ?? deps.configEditor;
+  if (!configEditor) throw new ApiError(503, "profile storage service is unavailable");
+  const patchPath = configEditor.documentPath;
+  const ownership = provenance({ patchPath, rowId: patchId });
+  if (ownership.source === "user") {
+    const removed = await removeRow({ patchPath, rowId: patchId });
+    if (!removed) throw new ApiError(404, `row "${patchId}" not found in the profile patch`);
+    return { disabled: false };
+  }
+  await disableRow({ patchPath, rowId: patchId, name });
+  return { disabled: true };
+}
+// #endregion FUNC_deleteRow
+
+// #region FUNC_renameSection
+/**
+ * @purpose Execute the rename batch (SPEC §2 #16) as ONE writer commit
+ *   (astra finding C): guard the new full row id, then insert the new row and
+ *   remove or disable the old one — a single read-modify-write held inside one
+ *   exclusivity gate. The incoming rowId may be qualified or not; every file
+ *   address below uses the NORMALIZED patch row id. The new id arrives already
+ *   normalized to the FULL `prompt-section-<token>` form, so it is BOTH the
+ *   new row id and the new `config.id`.
+ *
+ * PROFILES ARE NEVER TOUCHED (frozen decision): a profile that came from a
+ * bundle cannot have its refs rewritten anyway and the action is rare, so
+ * rename reports `affectedProfiles` — every registered profile still naming
+ * the OLD id — and the user fixes those references by hand.
+ */
+async function renameSection(deps, { rowId: received, id: newId }) {
+  const { service, resolve } = deps;
+  const configEditor = deps.getService?.("configEditor") ?? deps.configEditor;
+  if (!configEditor) throw new ApiError(503, "profile storage service is unavailable");
+  const { row: section, patchId } = resolve("section", received);
+  const oldRowId = patchId;
+  // Every id that names THIS section: its config.id (a new-scheme row's is
+  // already the full id; old rows keep bare slugs), its patch row id, and the
+  // bare token of a full config.id. Used for the no-op check AND for the
+  // affectedProfiles report.
+  const aliases = new Set([section.id, toPatchId(section.rowId)]);
+  if (typeof section.id === "string" && section.id.startsWith("prompt-section-")) {
+    aliases.add(section.id.slice("prompt-section-".length));
+  }
+  const namesSection = (value) => aliases.has(value) || aliases.has(toPatchId(value));
+  const affectedProfiles = service.profiles()
+    .filter((profile) => profile.sections.some((ref) => namesSection(ref.id)))
+    .map((profile) => ({ profileId: profile.id, title: profile.title }));
+  // The normalized new id already naming THIS row means nothing would change;
+  // it is reported as a collision (400) rather than a silent no-op, so a
+  // repeated rename into the same id fails cleanly.
+  if (namesSection(newId)) throw new ApiError(400, `section id "${newId}" is already taken`);
+  // Uniqueness on FULL id strings: the new id must not duplicate another
+  // registered section's config.id or row id. A duplicate row id already in
+  // the patch surfaces from the writer's duplicate guard inside the batch
+  // below (mapped to a clean 400 with the rollback already applied).
+  const clash = service.sections().some((row) => row.rowId !== section.rowId
+    && (row.id === newId || row.rowId === newId || toPatchId(row.rowId) === newId));
+  if (clash) throw new ApiError(400, `section id "${newId}" is already taken`);
+  const patchPath = configEditor.documentPath;
+  // Only a row THIS patch inserted may be physically removed; a bare override
+  // or a lower-layer row we can only override is disabled instead. Using
+  // `.inserted` (not `.source === 'bundle'`) keeps this correct now that an
+  // absent row reports 'unknown' rather than 'bundle'.
+  const bundleOwned = !provenance({ patchPath, rowId: oldRowId }).inserted;
+  try {
+    await renameSectionRow({
+      patchPath,
+      row: { id: newId, name: SECTION_NAME, config: { id: newId, title: section.title, body: section.body } },
+      oldRowId, oldName: SECTION_NAME, bundleOwned,
+    });
+  } catch (error) {
+    // A row id already present in the patch (but not registered) surfaces
+    // from the writer's duplicate guard mid-batch; the rollback already
+    // restored the file — report it as a clean 400.
+    mapDuplicate(error);
+  }
+  return { rowId: newId, patchId: newId, id: newId, affectedProfiles };
+}
+// #endregion FUNC_renameSection
+
+// #region FUNC_createRoutes
+/**
+ * Build the route table (SPEC §5.5 + preview + frozen live-bugfix contract).
+ * Each handler validates, performs at most one logical write path, and
+ * answers `{ ok: true, ... }`.
+ *
+ * @purpose Keep route wiring declarative so registration and tests share one
+ *   table.
+ * @param {object} deps - { service, settings, configEditor, workspaceRegistry?,
+ *   agentPresets?, connection?, warn?, log? }.
+ * @returns {Array<{ path: string, method: string,
+ *   run: (body: object, query: URLSearchParams) => any }>}
+ */
+function createRoutes(deps) {
+  const { service } = deps;
+  const SECTION_PREFIX = "prompt-section-";
+  // OPTIONAL services are resolved LAZILY (per call / per request) through the
+  // REFLECT reader registerApi passes in, so a service that appears after the
+  // routes mount is picked up and one that is missing degrades per route
+  // instead of blocking the mount (the live "Running plugin, zero routes" bug).
+  const svc = (name) => {
+    try {
+      return deps.getService?.(name) ?? deps[name];
+    } catch {
+      return deps[name];
+    }
+  };
+  const settingsStore = () => svc("settings");
+  const editorStore = () => svc("configEditor");
+  /** Mutations that store volatile config require settings. */
+  const requireSettings = () => {
+    const store = settingsStore();
+    if (!store) throw new ApiError(503, "profile storage service is unavailable");
+    return store;
+  };
+  /** Row mutations additionally need the profile patch (configEditor). */
+  const requireStorage = () => {
+    const store = settingsStore();
+    const editor = editorStore();
+    if (!store || !editor) throw new ApiError(503, "profile storage service is unavailable");
+    return { settings: store, configEditor: editor };
+  };
+  const patchPath = () => editorStore()?.documentPath;
+
+  /**
+   * Map every id a profile may use to name a registered section to the
+   * config.id that must be STORED for the ref to resolve at runtime (lookups
+   * key on config.id): the config.id itself (old rows keep bare slug ids),
+   * its normalized and qualified row-id forms, and the bare token of a full
+   * `prompt-section-<token>` config id — plus the reverse mapping so an old
+   * bare config id stays addressable by its full row-id form. Exact config
+   * ids always win over convenience aliases.
+   */
+  const sectionTargets = () => {
+    const targets = new Map();
+    const alias = (key, value) => {
+      if (typeof key === "string" && key !== "" && !targets.has(key)) targets.set(key, value);
+    };
+    for (const row of service.sections()) {
+      const id = row.id;
+      if (typeof id !== "string" || id === "") continue;
+      targets.set(id, id); // exact config.id wins over any earlier alias
+      const patch = toPatchId(row.rowId);
+      alias(patch, id);
+      alias(`include:${patch}`, id);
+      if (id.startsWith(SECTION_PREFIX)) alias(id.slice(SECTION_PREFIX.length), id);
+      else alias(`${SECTION_PREFIX}${id}`, id);
+    }
+    return targets;
+  };
+
+  /**
+   * Section row ids already written to the profile patch but not yet
+   * registered (HMR lag). H5: a pending id counts ONLY when the row really is
+   * one of OUR sections — plugin `name` matches, `config` is present, and the
+   * row is not disabled. A bare override, a foreign plugin row, a disabled row
+   * or a row without `config` is NOT a valid reference target, so a typo that
+   * collides with such an id is still a 400. Read-only snapshot; an unreadable
+   * patch degrades to registered-only.
+   */
+  const pendingSectionIds = () => {
+    try {
+      const path = patchPath();
+      if (path === undefined) return new Set();
+      return new Set(readPatchRows({ patchPath: path })
+        .filter((row) => typeof row.id === "string" && row.id.startsWith(SECTION_PREFIX)
+          && row.name === SECTION_NAME && row.hasConfig && !row.disabled)
+        .map((row) => row.id));
+    } catch {
+      return new Set();
+    }
+  };
+
+  /**
+   * B2: can this profile still be chosen, per the AUTHORITATIVE patch rather
+   * than the HMR-lagged registry? A row for the profile's rowId that is present
+   * but foreign/disabled, or a source-"user" row that has VANISHED from the
+   * patch, means the deletion already committed. A row absent from this patch
+   * but registered from an inherited/bundle layer stays valid (it legitimately
+   * lives outside this file). An unreadable patch falls back to the registry.
+   */
+  const profileSelectable = (profileId) => {
+    const entry = service.profiles().find((row) => row.id === profileId);
+    if (!entry) return false;
+    let rows;
+    try {
+      const path = patchPath();
+      if (path === undefined) return true; // no patch view: trust the registry
+      rows = readPatchRows({ patchPath: path });
+    } catch {
+      return true; // the registry already said yes and we cannot prove absence
+    }
+    const row = rows.find((candidate) => candidate.id === entry.rowId || candidate.configId === profileId);
+    if (row) return row.name === PROFILE_NAME && !row.disabled;
+    return entry.source !== "user"; // absent: only a removed user row is definitively gone
+  };
+
+  /**
+   * Registered config ids of `kind`. A NEW id must never duplicate one of
+   * these; duplicate row ids already present in the patch are caught by the
+   * writer's own duplicate guard on the FULL row id (an id matching only a
+   * bundle row's id is an override, which the loader supports by design).
+   */
+  const takenConfigIds = (kind) =>
+    new Set((kind === "section" ? service.sections() : service.profiles()).map((row) => row.id));
+
+  /**
+   * The canonical patch row id for a registry rowId. PREFERRED: the true id
+   * from `configEditor.entries()` (matched in EITHER form, since the fiber
+   * entry id and the entry list may use different qualification), returned
+   * normalized. DOCUMENTED FALLBACK: `toPatchId` — strip the leading
+   * `<parent>:` prefix chain and keep the last segment.
+   */
+  const patchIdOf = (rowIdValue) => {
+    try {
+      const entry = (editorStore()?.entries?.() ?? []).find((candidate) => {
+        const id = candidate?.options?.id;
+        return typeof id === "string" && (id === rowIdValue || toPatchId(id) === toPatchId(rowIdValue));
+      });
+      if (entry) return toPatchId(entry.options.id);
+    } catch {
+      // entries() unavailable or threw: fall through to the string fallback.
+    }
+    return toPatchId(rowIdValue);
+  };
+  deps.patchIdOf = patchIdOf;
+
+  /**
+   * Resolve a row received in ANY of the accepted forms (qualified loader
+   * entry rowId, unqualified patch row id, or the row's own config.id —
+   * old-scheme rows keep bare config ids) via the one shared findRow matcher,
+   * then derive the normalized patchId used for every settings/writer address.
+   */
+  const resolveRow = (kind, received) => {
+    const rows = kind === "section" ? service.sections() : service.profiles();
+    const row = findRow(rows, received);
+    if (!row) throw new ApiError(404, `${kind} row "${received}" is not registered`);
+    return { row, patchId: patchIdOf(row.rowId) };
+  };
+  deps.resolve = resolveRow;
+
+  /**
+   * settings.replace / settings.mutate wrapped in the bundle's shared write
+   * serializer so API updates never interleave with writer operations in this
+   * process (verify-step4-sol defect 1). settings takes its own hmr/file
+   * locks. Revision conflicts map to a clean 409.
+   *
+   * LIVE BUG (empty 400 on update): dsh-settings `replace(ns, section)`
+   * validates EVERY key of `section` against the row Config's volatile
+   * fields (`validatePaths` → `isVolatilePath`); the section/profile row
+   * Configs mark only `title`/`body`/`sections` volatile, so passing `id`
+   * threw `Config field "id" is not volatile`. Updates therefore replace
+   * ONLY the volatile fields — the row's `id` belongs to the inherited
+   * insert layer and is never reset. Known settings-layer failures are
+   * mapped to clean statuses with their REAL message (never a bare 500).
+   */
+  /** Map known settings-layer failures to clean statuses with their REAL message. */
+  const mapSettingsError = (error, revision) => {
+    if (error?.code === "SETTINGS_CONFLICT") throw new ApiError(409, `configuration changed since read (expected revision ${revision})`);
+    const message = errorText(error);
+    if (/is not volatile/.test(message)) throw new ApiError(400, message);
+    if (/No configurable plugin entry/.test(message)) throw new ApiError(404, message);
+    throw error;
+  };
+  const settingsWrite = async (method, ns, value, revision) => {
+    try {
+      const store = requireSettings();
+      await withWriteLock(() =>
+        method === "replace"
+          ? store.replace(ns, value, typeof revision === "number" ? revision : undefined)
+          : store.mutate(ns, value, typeof revision === "number" ? revision : undefined));
+    } catch (error) {
+      mapSettingsError(error, revision);
+    }
+  };
+
+  // #region FUNC_mutateWithRetry
+  /** Bounded attempts before a /last or cleanup gives up. */
+  const MAX_MUTATE_ATTEMPTS = 5;
+  /** The current `prompt-profiles` settings revision (undefined when unknown). */
+  const currentRevision = () => {
+    try {
+      return settingsStore()?.describe?.().find((entry) => entry.ns === "prompt-profiles")?.revision;
+    } catch {
+      return undefined;
+    }
+  };
+  /**
+   * Atomic read-modify-write of the `prompt-profiles` config, correct WITH or
+   * WITHOUT a settings revision:
+   *  - `buildOps` runs inside the bundle write lock and emits PER-KEY ops
+   *    (`set`/`unset` on `lastByWorkspace.<key>`, or `default`), which
+   *    `settings.mutate` applies to the value it reads at write time
+   *    (dsh-settings `write`→`configEditor.edit`). A whole-dict write is never
+   *    sent, so a concurrent writer's keys cannot be clobbered by a stale
+   *    read — the lost-update class is gone by construction, revision or not.
+   *  - When a revision IS available it is also passed as `expectedRevision`
+   *    (extra protection against writers that bypass this lock);
+   *    SETTINGS_CONFLICT re-reads and retries, and the cap yields a clean 409
+   *    — never a silent unchecked write.
+   * Never nests the non-reentrant lock: `withWriteLock` is taken ONCE around
+   * the whole attempt loop and `settings.mutate` is called directly.
+   * @param {() => Array<{op: string, path: string[], value?: unknown}>} buildOps
+   *   - receives `{ revisionAvailable }`; ops that are safe only under CAS must
+   *     consult it.
+   * @param {{ clientRevision?: number }} [options] - revision the caller read.
+   * @returns {Promise<boolean>} whether anything was written.
+   */
+  const mutateWithRetry = async (buildOps, { clientRevision } = {}) => withWriteLock(async () => {
+    for (let attempt = 1; ; attempt += 1) {
+      const expected = currentRevision();
+      if (attempt === 1 && typeof clientRevision === "number" && typeof expected === "number" && clientRevision !== expected) {
+        throw new ApiError(409, `configuration changed since read (expected revision ${clientRevision})`);
+      }
+      const ops = buildOps({ revisionAvailable: typeof expected === "number" }); // read + decide INSIDE the lock
+      if (ops.length === 0) return false;
+      try {
+        await settingsStore().mutate("prompt-profiles", ops, typeof expected === "number" ? expected : undefined);
+        return true;
+      } catch (error) {
+        if (error?.code !== "SETTINGS_CONFLICT") mapSettingsError(error, expected);
+        if (attempt >= MAX_MUTATE_ATTEMPTS) {
+          throw new ApiError(409, `configuration kept changing; gave up after ${MAX_MUTATE_ATTEMPTS} attempts`);
+        }
+        // conflict: re-read the config/revision and retry
+      }
+    }
+  });
+  // #endregion FUNC_mutateWithRetry
+
+  // #region FUNC_clearProfileReferences
+  /**
+   * Best-effort orphan cleanup after a profile row was deleted: remove the
+   * profile's id from `lastByWorkspace` (per-key `unset` ops) and reset
+   * `default` to "" when it named it. A concurrent /last cannot lose its
+   * choice (per-key ops + the write lock). A failure here is NOT fatal: the
+   * resolver silently resets a dangling profile id, so the user just re-picks.
+   * @param {{ id: string, rowId: string }} profile - the deleted row.
+   * @returns {Promise<boolean>} whether references were cleared.
+   */
+  const clearProfileReferences = async (profile) => {
+    const aliases = new Set([profile.id, profile.rowId, toPatchId(profile.rowId)].filter((value) => typeof value === "string" && value !== ""));
+    return mutateWithRetry(() => {
+      const ops = [];
+      for (const [key, value] of Object.entries(service.config.lastByWorkspace.get() ?? {})) {
+        if (aliases.has(value)) ops.push({ op: "unset", path: ["lastByWorkspace", key] });
+      }
+      if (aliases.has(service.config.default.get())) ops.push({ op: "set", path: ["default"], value: "" });
+      return ops;
+    });
+  };
+  // #endregion FUNC_clearProfileReferences
+
+  // #region FUNC_staleWorkspaceKeys
+  /**
+   * Dead `lastByWorkspace` KEYS to unset on the next /last write:
+   *  - values that match no registered profile (except "" = explicit none);
+   *  - keys shaped like a workspace UUID the registry does not know.
+   * cwd-shaped keys are ALWAYS kept — they may belong to a session whose
+   * workspace is not registered yet. Without a workspaceRegistry no UUID can
+   * be proven stale, so such keys are kept. Only the listed keys are touched
+   * (per-key `unset`), never the whole dictionary.
+   */
+  const WORKSPACE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const staleWorkspaceKeys = (value) => {
+    const profileIds = new Set(service.profiles().map((row) => row.id));
+    const registry = svc("workspaceRegistry");
+    const stale = [];
+    for (const [key, entry] of Object.entries(value ?? {})) {
+      if (entry !== "" && !profileIds.has(entry)) { stale.push(key); continue; } // dangling profile choice
+      if (WORKSPACE_ID.test(key) && typeof registry?.get === "function") {
+        let known = true;
+        try {
+          known = Boolean(registry.get(key));
+        } catch {
+          known = true; // unreadable registry: do not drop a possibly-live key
+        }
+        if (!known) stale.push(key); // stale workspace id
+      }
+    }
+    return stale;
+  };
+  // #endregion FUNC_staleWorkspaceKeys
+
+  /**
+   * Every FULL id string a NEW row of `kind` must not reuse: the row ids and
+   * config ids of the registered rows (raw and `toPatchId`-normalized, so
+   * both the qualified `include:` form and the unqualified patch id are
+   * covered) plus every id present in the patch file. Generated ids are
+   * always `prompt-<kind>-<token>`, so string equality on the full form is
+   * what keeps a fresh id from duplicating an existing row id OR an existing
+   * config.id.
+   */
+  const takenIds = (kind) => {
+    const rows = kind === "section" ? service.sections() : service.profiles();
+    const taken = new Set();
+    const add = (value) => {
+      if (typeof value !== "string" || value === "") return;
+      taken.add(value);
+      taken.add(toPatchId(value));
+    };
+    for (const row of rows) {
+      add(row.rowId);
+      add(row.id);
+    }
+    try {
+      const path = patchPath();
+      if (path !== undefined) for (const id of listRowIds({ patchPath: path })) add(id);
+    } catch {
+      // patch unreadable: insertRow's own duplicate guard still protects us
+    }
+    return taken;
+  };
+
+  const table = [
+    {
+      path: "/state", method: "GET",
+      run: () => stateResponse(deps),
+    },
+    {
+      path: "/preview", method: "GET",
+      run: (body, query) => {
+        const profileId = query.get("profileId");
+        if (typeof profileId !== "string" || profileId === "") {
+          throw new ApiError(400, 'preview: query parameter "profileId" is required');
+        }
+        return previewResponse(deps, profileId, { cwd: query.get("cwd") });
+      },
+    },
+    {
+      path: "/section/create", method: "POST",
+      run: (body) => {
+        requireStorage();
+        const payload = validate("section/create", body, { sectionTargets: sectionTargets() });
+        // An explicit id may never duplicate a registered section's config.id;
+        // patch row-id duplicates fall to the writer's own duplicate guard.
+        if (payload.id !== null && takenConfigIds("section").has(payload.id)) {
+          throw new ApiError(400, `section id "${payload.id}" already exists`);
+        }
+        const id = payload.id ?? generateTokenId("section", takenIds("section"));
+        // FROZEN ID SCHEME: the row id and the stored config.id are the SAME
+        // full `prompt-section-<token>` string, so a profile ref (which is a
+        // config.id) addresses the row exactly.
+        const row = { id, name: SECTION_NAME, config: { id, title: payload.title, body: payload.body } };
+        return insertRow({ patchPath: requireStorage().configEditor.documentPath, row })
+          .catch(mapDuplicate)
+          .then(() => ({
+            rowId: row.id,
+            patchId: row.id,
+            configId: row.id,
+            title: payload.title,
+            body: payload.body,
+            emits: payload.body.trim() !== "",
+          }));
+      },
+    },
+    {
+      path: "/section/update", method: "POST",
+      run: async (body) => {
+        requireStorage();
+        const payload = validate("section/update", body);
+        const { row, patchId } = resolveRow("section", payload.rowId);
+        // VOLATILE-ONLY whole-object write: `id` stays in the inherited insert
+        // layer (settings would reject it — see settingsWrite docblock).
+        await settingsWrite("replace", patchId, { title: payload.value.title, body: payload.value.body }, payload.revision);
+        return { rowId: row.rowId, patchId, emits: payload.value.body.trim() !== "" };
+      },
+    },
+    {
+      path: "/section/delete", method: "POST",
+      run: async (body) => {
+        requireStorage();
+        const payload = validate("section/delete", body);
+        const { patchId } = resolveRow("section", payload.rowId);
+        return deleteRow(deps, patchId, SECTION_NAME);
+      },
+    },
+    {
+      path: "/section/rename", method: "POST",
+      run: (body) => {
+        requireStorage();
+        const payload = validate("section/rename", body);
+        return renameSection(deps, payload);
+      },
+    },
+    {
+      path: "/profile/create", method: "POST",
+      run: (body) => {
+        requireStorage();
+        const payload = validate("profile/create", body, { sectionTargets: sectionTargets(), pendingSectionIds: pendingSectionIds() });
+        // An explicit id may never duplicate a registered profile's config.id;
+        // patch row-id duplicates fall to the writer's own duplicate guard.
+        if (payload.id !== null && takenConfigIds("profile").has(payload.id)) {
+          throw new ApiError(400, `profile id "${payload.id}" already exists`);
+        }
+        const id = payload.id ?? generateTokenId("profile", takenIds("profile"));
+        // FROZEN ID SCHEME: row id === stored config.id (full form).
+        const row = { id, name: PROFILE_NAME, config: { id, title: payload.title, sections: payload.sections } };
+        return insertRow({ patchPath: requireStorage().configEditor.documentPath, row })
+          .catch(mapDuplicate)
+          .then(() => ({
+            rowId: row.id,
+            patchId: row.id,
+            configId: row.id,
+            title: payload.title,
+            sections: payload.sections,
+          }));
+      },
+    },
+    {
+      path: "/profile/update", method: "POST",
+      run: async (body) => {
+        requireStorage();
+        const payload = validate("profile/update", body, { sectionTargets: sectionTargets(), pendingSectionIds: pendingSectionIds() });
+        const { row, patchId } = resolveRow("profile", payload.rowId);
+        // VOLATILE-ONLY whole-object write (see settingsWrite docblock): the
+        // `sections` array replaces wholesale, `id` is inherited.
+        await settingsWrite("replace", patchId, { title: payload.value.title, sections: payload.value.sections }, payload.revision);
+        return { rowId: row.rowId, patchId };
+      },
+    },
+    {
+      path: "/profile/delete", method: "POST",
+      run: async (body) => {
+        requireStorage();
+        const payload = validate("profile/delete", body);
+        const { row, patchId } = resolveRow("profile", payload.rowId);
+        // ORDER MATTERS: delete the ROW first — its writer rollback is the
+        // authoritative operation. Reference cleanup then runs best-effort; if
+        // it fails, dangling ids remain, which the resolver resets silently
+        // (safe degradation). Clearing first could irreversibly lose the
+        // user's choice when the deletion itself failed.
+        const result = await deleteRow(deps, patchId, PROFILE_NAME);
+        try {
+          await clearProfileReferences(row);
+        } catch (error) {
+          try {
+            deps.log?.warn?.("prompt-profiles: profile deleted but its default/lastByWorkspace references were not cleared", {
+              profileId: row.id, error: errorText(error),
+            });
+          } catch {
+            // logging must never turn a successful delete into a failure
+          }
+        }
+        return result;
+      },
+    },
+    {
+      path: "/default", method: "POST",
+      run: async (body) => {
+        requireSettings();
+        const payload = validate("default", body);
+        // B2: validate against the authoritative patch INSIDE the lock, so a
+        // profile whose row is already gone cannot become the default while
+        // HMR still exposes it.
+        await mutateWithRetry(() => {
+          if (payload.default !== "" && !profileSelectable(payload.default)) {
+            throw new ApiError(404, `profile "${payload.default}" is not registered`);
+          }
+          return [{ op: "set", path: ["default"], value: payload.default }];
+        }, { clientRevision: body.revision });
+      },
+    },
+    {
+      path: "/last", method: "POST",
+      run: async (body) => {
+        requireSettings();
+        const payload = validate("last", body);
+        // New choices go under the FIRST candidate the assembler resolves
+        // (the workspace UUID when known, else the cwd) so we stop creating
+        // new path keys; reading still walks ALL candidates, so legacy
+        // path-keyed choices keep working (no migration, no cleanup).
+        const workspaceKeys = await resolveWorkspaceKeys({
+          workspaceRegistry: svc("workspaceRegistry"),
+          workspaceId: payload.workspaceId,
+          cwd: payload.cwd,
+        });
+        const workspaceKey = workspaceKeys[0] ?? "";
+        // Per-key ops applied by settings.mutate against the value it reads at
+        // write time: a parallel /last can never lose another workspace's
+        // choice, and the (non-reentrant) write lock is taken once around the
+        // whole attempt loop.
+        await mutateWithRetry(({ revisionAvailable }) => {
+          // Validity is decided INSIDE the locked mutation, after the awaited
+          // key resolution, against the AUTHORITATIVE patch (not the
+          // HMR-lagged registry): a profile deleted while we were resolving —
+          // or already gone from the file but still listed — must yield 404,
+          // never a resurrected dangling choice (B2 race).
+          if (payload.profileId !== "" && !profileSelectable(payload.profileId)) {
+            throw new ApiError(404, `profile "${payload.profileId}" is not registered`);
+          }
+          // Housekeeping unset is computed from the live config inside the
+          // lock. It is applied ONLY when a settings revision is available:
+          // without CAS a concurrent out-of-lock writer could make a scanned
+          // key valid between this scan and settings.mutate, and the unset
+          // would delete that choice. No revision → skip pruning (safe), the
+          // caller's own key is still set (per-key ops are race-free).
+          const ops = revisionAvailable
+            ? staleWorkspaceKeys(service.config.lastByWorkspace.get())
+              .map((key) => ({ op: "unset", path: ["lastByWorkspace", key] }))
+            : [];
+          // Explicit "none" is STORED as an own-property empty string (astra
+          // finding E): the resolver treats it as a decision that beats the
+          // default; deleting the key would silently fall back to `default`.
+          ops.push({ op: "set", path: ["lastByWorkspace", workspaceKey], value: payload.profileId });
+          return ops;
+        }, { clientRevision: payload.revision });
+      },
+    },
+  ];
+  const log = deps.log ?? {};
+  const JSON_HEADERS = { "content-type": "application/json" };
+  const encode = (status, payload, extraHeaders) =>
+    new Response(JSON.stringify(payload), { status, headers: { ...JSON_HEADERS, ...(extraHeaders ?? {}) } });
+  // PLATFORM ROUTES: every route becomes one exact Fetch route on the
+  // Connection service (owner.effect-scoped, so disposal is automatic) and is
+  // reached through the shared `/api` channel — the same carrier as the DSH
+  // API gateway, which applies the trusted Host/Origin fence + signed browser
+  // cookie BEFORE dispatching (see the report's trust-check section). Our own
+  // admit call below stays as a second, redundant layer.
+  return table.map(({ path, method, run }) => ({
+    path,
+    method,
+    fetch: async (request) => {
+      // Live bug A diagnostics: capture the row id AS RECEIVED so the catch
+      // block can log it next to its normalized form.
+      let receivedRowId = null;
+      try {
+        // 0. Method guard: the route declares a broad method list so a
+        //    mismatched method still answers 405 + Allow (the platform answers
+        //    404 only for methods we did not declare at all).
+        if (request.method !== method) {
+          return encode(405, { error: { message: `${method} ${path}: method not allowed` } }, { allow: method });
+        }
+        // 1. PLATFORM AUTHENTICATION (second layer): `connection.admit` is the
+        //    same fence + cookie the /api carrier already applied. FAIL CLOSED:
+        //    an admit that throws refuses the request.
+        const connection = svc("connection");
+        if (typeof connection?.admit === "function") {
+          let decision;
+          try {
+            decision = await connection.admit(request);
+          } catch (error) {
+            deps.warn?.("prompt-profiles api: connection.admit threw; refusing the request", {
+              route: `${method} ${path}`, error: errorText(error),
+            });
+            return encode(401, { error: { message: AUTH_REQUIRED_MESSAGE } });
+          }
+          if (decision?.rejection) {
+            const rejection = decision.rejection === 403 ? 403 : 401;
+            return encode(rejection, {
+              error: { message: rejection === 403 ? ORIGIN_UNTRUSTED_MESSAGE : AUTH_REQUIRED_MESSAGE },
+            });
+          }
+        }
+        // 2. CSRF hardening for OUR routes (second layer): a non-GET request
+        //    must declare a JSON body (an HTML form cannot), and a PRESENT
+        //    Origin must match the request Host. Absent Origin (curl/tests) is
+        //    allowed.
+        if (method !== "GET") {
+          const contentType = String(request.headers.get("content-type") ?? "").trim();
+          if (!/^application\/json\s*(;|$)/i.test(contentType)) {
+            return encode(415, { error: { message: `${method} ${path}: content-type must be application/json` } });
+          }
+          const origin = request.headers.get("origin");
+          if (typeof origin === "string" && origin !== "" && !sameOriginHost(origin, request.headers.get("host"))) {
+            return encode(403, { error: { message: `${method} ${path}: cross-origin request refused` } });
+          }
+        }
+        const query = new URL(request.url).searchParams;
+        // The body is read ONLY after the checks above; nothing from it is ever
+        // echoed into the error/log path. Our own byte limit is preserved on
+        // top of the carrier's buffered body.
+        let body = {};
+        if (method !== "GET") {
+          let text = "";
+          try {
+            text = await request.text();
+          } catch {
+            return encode(400, { error: { message: "request body could not be read" } });
+          }
+          if (Buffer.byteLength(text, "utf8") > MAX_BODY_BYTES) {
+            return encode(413, { error: { message: "request body is too large" } });
+          }
+          try {
+            body = text === "" ? {} : JSON.parse(text);
+          } catch {
+            return encode(400, { error: { message: "request body is not valid JSON" } });
+          }
+          if (body === null || typeof body !== "object" || Array.isArray(body)) {
+            return encode(400, { error: { message: "request body must be a JSON object" } });
+          }
+        }
+        if (typeof body.rowId === "string") receivedRowId = body.rowId;
+        const result = await run(body, query);
+        return encode(200, result === undefined ? { ok: true } : { ok: true, ...result });
+      } catch (error) {
+        // Bulletproof failure path: nothing may escape as a rejected promise
+        // (the carrier would answer a bare 500). Logging and the response are
+        // each independently guarded; every failure carries
+        // `{error:{message}}` with a non-empty message.
+        const status = error instanceof ApiError ? error.status : 500;
+        const message = errorText(error);
+        const details = {
+          route: `${request.method} ${path}`,
+          rowId: receivedRowId,
+          patchId: receivedRowId == null ? null : toPatchId(receivedRowId),
+          error: message,
+        };
+        try {
+          const sink = status >= 500
+            ? (log.error ?? log.warn ?? deps.warn)
+            : (log.warn ?? deps.warn);
+          sink?.("prompt-profiles api: request failed", details);
+        } catch {
+          // logging must never take the response down with it
+        }
+        return encode(status, { error: { message: status === 500 ? `internal error: ${message}` : message } });
+      }
+    },
+  }));
+}
+// #endregion FUNC_createRoutes
+
+// #region FUNC_registerApi
+/** Shared `/api` channel base of every bundle route (the Connection carrier requires Fetch routes under `/api`). */
+export const API_ROUTE_BASE = "/api/__dsh-prompt-profiles";
+/** Methods declared on every Fetch route so a mismatch reaches our 405 + Allow handler. */
+const ROUTE_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+
+/**
+ * Register the SPEC §5.5 routes (plus preview) as exact Fetch routes on the
+ * platform Connection service — the same carrier the DSH API gateway uses.
+ *
+ * @purpose Give the web client its CRUD surface through the PLATFORM mechanism
+ *   (`connection.fetch.register`, owner.effect-scoped auto-disposal) instead of
+ *   raw `webServer` registration. Called from `ctx.inject(['connection'], …)`,
+ *   so the plugin still mounts (headless, zero routes, reported) without a
+ *   Connection. settings/configEditor/agentPresets/workspaceRegistry are read
+ *   OPTIONALLY through `ctx.get` and degrade PER ROUTE: reads work without
+ *   them, mutations answer 503.
+ * @param {object} ctx - the `connection` inject child (ctx.connection + ctx.get).
+ * @param {object} options
+ * @param {object} options.service - the ctx.promptProfiles service instance.
+ * @param {(message: string, details?: unknown) => void} [options.warn]
+ *   warning sink for unexpected handler failures.
+ * @param {{ warn?: Function, error?: Function, info?: Function }} [options.log]
+ *   structured logger override (tests); defaults to ctx.logger → console.
+ * @returns {() => void} disposer removing every route.
+ */
+export function registerApi(ctx, { service, warn, log }) {
+  // OPTIONAL services are read through cordis REFLECT (`ctx.get`) — the routes
+  // only INJECT connection. The reader is handed to createRoutes so the values
+  // are resolved lazily (a service that appears later is picked up).
+  const getService = (name) => {
+    try {
+      return ctx.get?.(name) ?? undefined;
+    } catch {
+      return undefined; // absent/throwing service: degrade, never block the mount
+    }
+  };
+  let logger;
+  try {
+    logger = ctx.logger;
+  } catch {
+    logger = undefined;
+  }
+  const sinks = log ?? {
+    warn: (message, details) => (logger?.warn ?? console.warn)(message, details ?? ""),
+    error: (message, details) => (logger?.error ?? logger?.warn ?? console.error)(message, details ?? ""),
+  };
+  // Lifecycle diagnostics at info: the user greps `prompt-profiles` after a
+  // reload to see whether routes mounted/unmounted (the live silent-404 bug).
+  const info = (message, details) => {
+    try {
+      if (typeof log?.info === "function") log.info(message, details ?? "");
+      else if (typeof logger?.info === "function") logger.info(message, details ?? "");
+    } catch {
+      // diagnostics only
+    }
+  };
+  // Services the routes would LIKE to have; a missing one degrades per route
+  // and is reported in the lifecycle log (never silently).
+  const OPTIONAL_SERVICES = ["settings", "configEditor", "agentPresets", "workspaceRegistry"];
+  const missingServices = () => OPTIONAL_SERVICES.filter((name) => !getService(name));
+  const connection = ctx.connection ?? getService("connection");
+  // Platform authentication is applied by the Connection carrier around the
+  // WHOLE /api channel; the explicit admit inside the handler is a second
+  // layer. Warn when it is not there at all.
+  if (typeof connection?.admit !== "function") {
+    sinks.warn("prompt-profiles api: connection.admit unavailable; routes run WITHOUT platform authentication (CSRF checks only)", {});
+  }
+  const routes = createRoutes({
+    service,
+    getService,
+    warn: warn ?? ((message, details) => sinks.warn(message, details)),
+    log: sinks,
+  });
+  // Registration hardening: ONE failed route must not abort the whole mount.
+  // `connection.fetch.register` is owner.effect-scoped, so its disposer (and
+  // our effect wrapper) removes the route with our fiber.
+  const disposers = [];
+  for (const route of routes) {
+    const path = `${API_ROUTE_BASE}${route.path}`;
+    try {
+      const dispose = connection.fetch.register({
+        path,
+        methods: [...ROUTE_METHODS],
+        requestBody: "buffered",
+        fetch: route.fetch,
+      });
+      disposers.push(typeof dispose === "function" ? dispose : () => {});
+    } catch (error) {
+      sinks.error("prompt-profiles api: route registration failed", { path, error: errorText(error) });
+    }
+  }
+  const failed = routes.length - disposers.length;
+  const missing = missingServices();
+  // LOUD lifecycle: a web profile that ends up with ZERO routes must never be
+  // silent again (that is exactly how the live 404 stayed unexplained).
+  if (disposers.length === 0) {
+    sinks.error("prompt-profiles api: mounted ZERO routes", { missing, failed });
+  } else if (failed > 0 || missing.length > 0) {
+    sinks.warn("prompt-profiles api: mounted with missing services", { routes: disposers.length, failed, missing });
+  }
+  info("prompt-profiles api: mounted", { routes: disposers.length, failed, missing });
+  return () => {
+    let removed = 0;
+    for (const dispose of disposers) {
+      try {
+        dispose();
+        removed += 1;
+      } catch (error) {
+        sinks.warn("prompt-profiles api: route removal failed", { error: errorText(error) });
+      }
+    }
+    info("prompt-profiles api: unmounted", { routes: removed });
+  };
+}
+// #endregion FUNC_registerApi
