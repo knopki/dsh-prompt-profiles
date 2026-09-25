@@ -151,6 +151,9 @@ assert.throws(() => Toast({ text: 'x' }), /not a function/, 'fake Toast is not c
 let loaded;
 let stateQueue = [];
 let lastSetState;
+// Every committed state value, in order — needed where a handler sets several
+// pieces of state (the chip sets the optimistic choice, then closes the menu).
+let setStateLog = [];
 // Record the same-origin fetches the client issues (e.g. POST /last) so the
 // exact request body can be asserted; every call resolves an empty JSON doc.
 const fetchCalls = [];
@@ -169,7 +172,10 @@ const React = {
   // their real output instead of only on their wiring.
   useState: (value) => {
     const initial = stateQueue.length ? stateQueue.shift() : (typeof value === 'function' ? value() : value);
-    return [initial, (next) => { lastSetState = typeof next === 'function' ? next(initial) : next; }];
+    return [initial, (next) => {
+      lastSetState = typeof next === 'function' ? next(initial) : next;
+      setStateLog.push(lastSetState);
+    }];
   },
   useEffect: () => {},
   useRef: (value) => ({ current: value }),
@@ -750,12 +756,14 @@ const outline = H.outlineRows(
   { sections: [{ id: 'x', order: 500, scope: 'inherit' }, { id: 'gone', order: 10, scope: 'inherit' }] },
   { x: { id: 'x', title: 'X', body: 'hi' } },
   { 'persona-prefix': 0, 'plan:policy': 500 });
-assert.deepStrictEqual(plain(outline).map((r) => r.kind), ['builtin', 'builtin', 'ours', 'broken']);
-assert.equal(outline[2].order, 500, 'ours row keeps its persisted order — equal to the built-in plan:policy 500');
-assert.equal(outline[2].displayOrder, undefined, 'no +0.5 display order on the row');
-assert.equal(outline[2].collides, undefined, 'no collision flag on the row');
+assert.deepStrictEqual(plain(outline).map((r) => r.kind), ['builtin', 'ours', 'builtin', 'broken'],
+  'at an EQUAL order our section stands BEFORE the built-in, as the runtime assembles it');
+assert.equal(outline[1].order, 500, 'ours row keeps its persisted order — equal to the built-in plan:policy 500');
+assert.equal(outline[2].order, 500, 'the built-in shares that order and follows us');
+assert.equal(outline[1].displayOrder, undefined, 'no +0.5 display order on the row');
+assert.equal(outline[1].collides, undefined, 'no collision flag on the row');
 assert.equal(outline[3].ref.id, 'gone', 'missing section becomes a broken row');
-assert.deepStrictEqual(plain(outline[2].ref), { id: 'x', order: 500, scope: 'inherit' }, 'ours ref round-trips through the vm realm');
+assert.deepStrictEqual(plain(outline[1].ref), { id: 'x', order: 500, scope: 'inherit' }, 'ours ref round-trips through the vm realm');
 
 // canSaveSection — the section autosave gate (an empty/unconfirmed row never writes)
 assert.equal(H.canSaveSection('Greeting', true), true, 'confirmed row with a title may save');
@@ -1318,15 +1326,15 @@ const rowB = ourRows.find((r) => hasElement(r, (n) => n.type === 'input' && n.pr
 assert.ok(rowA && rowB, 'each row keeps its numeric order INPUT');
 assert.ok(!hasElement(rowA, (n) => n.type === 'span' && Array.isArray(n.children) && n.children.includes('100')),
   'the order is NOT also rendered as duplicate text — the input replaces it');
-const gripOf = (refId) => {
+const gripOf = (refSeq) => {
   let found = null;
   walk(outlineEl, (n) => {
-    if (!found && isButton(n) && n.props?.['aria-label'] === 'dragHandle' && n.props?.['data-drag-handle'] === refId) found = n;
+    if (!found && isButton(n) && n.props?.['aria-label'] === 'dragHandle' && n.props?.['data-drag-handle'] === refSeq) found = n;
   });
   return found;
 };
-const handle = gripOf('sec-a');
-const handleB = gripOf('sec-b');
+const handle = gripOf(0);
+const handleB = gripOf(1);
 assert.ok(handle && handleB, 'each OUR row has a draggable grip');
 assert.equal(handle.type, primitives.Button, 'the grip is the installed Button primitive — focusable and semantic, not a bare span');
 assert.equal(typeof handle.props.onDragStart, 'function', 'the grip starts the drag');
@@ -1372,14 +1380,16 @@ assert.equal(plain(lastSetState).find((r) => r.id === 'sec-a').order, 201,
   'drop below the last row takes the last order + 1 (integer, no +0.5)');
 assert.deepStrictEqual(visualOurs(plain(lastSetState)), ['sec-b', 'sec-a'],
   'and lands visually BELOW the row it was dropped under');
-// Functional drop: above the FIRST row, which is a BUILT-IN (order 100).
+// Functional drop: above the FIRST row. With our sec-a now sorting BEFORE the
+// equal-order built-in, the first row is sec-a (order 100); the drop still lands
+// above the built-in too.
 handleB.props.onDragStart({ dataTransfer });
 lastSetState = undefined;
 dropZones[0].props.onDrop({ preventDefault() {}, dataTransfer });
 assert.equal(plain(lastSetState).find((r) => r.id === 'sec-b').order, 99,
   'drop at the very top takes the first order − 1');
 assert.deepStrictEqual(visualOurs(plain(lastSetState)), ['sec-b', 'sec-a'],
-  'and lands visually ABOVE the built-in row');
+  'and lands visually ABOVE both the first row and the built-in');
 // Functional drop between 499 and 500: the answer is the integer 500 (never
 // 499.5) and the row still lands visually between the two.
 const gapProfile = {
@@ -1408,7 +1418,7 @@ stateQueue = [];
 const gapZones = [];
 walk(gapEl, (n) => { if (n.props && typeof n.props['data-drop-index'] === 'number') gapZones.push(n); });
 let gapHandleC = null;
-walk(gapEl, (n) => { if (!gapHandleC && isButton(n) && n.props?.['data-drag-handle'] === 'sec-c') gapHandleC = n; });
+walk(gapEl, (n) => { if (!gapHandleC && isButton(n) && n.props?.['data-drag-handle'] === 2) gapHandleC = n; });
 gapHandleC.props.onDragStart({ dataTransfer });
 lastSetState = undefined;
 gapZones[1].props.onDrop({ preventDefault() {}, dataTransfer });
@@ -1445,30 +1455,30 @@ const kbEl = loaded.components.ProfileOutline({
   onBack: noop, onOpenSection: noop, autoFocusTitle: false,
 });
 stateQueue = [];
-const kbGrip = (refId) => {
+const kbGrip = (refSeq) => {
   let found = null;
-  walk(kbEl, (n) => { if (!found && isButton(n) && n.props?.['aria-label'] === 'dragHandle' && n.props?.['data-drag-handle'] === refId) found = n; });
+  walk(kbEl, (n) => { if (!found && isButton(n) && n.props?.['aria-label'] === 'dragHandle' && n.props?.['data-drag-handle'] === refSeq) found = n; });
   return found;
 };
-assert.ok(kbGrip('sec-a') && kbGrip('sec-b'), 'both grips are focusable Buttons with the dragHandle label');
+assert.ok(kbGrip(0) && kbGrip(1), 'both grips are focusable Buttons with the dragHandle label');
 const kbSectionsById = new Map(kbState.sections.map((s) => [s.configId, s]));
 const kbVisual = (nextRefs) => plain(H.outlineRows({ ...kbProfile, sections: nextRefs }, kbSectionsById, {}))
   .map((r) => r.ref.id);
 lastSetState = 'sentinel';
-kbGrip('sec-a').props.onKeyDown({ key: 'ArrowDown', preventDefault() {} });
+kbGrip(0).props.onKeyDown({ key: 'ArrowDown', preventDefault() {} });
 assert.deepStrictEqual(kbVisual(plain(lastSetState)), ['sec-b', 'sec-a'],
   'ArrowDown on the grip moves the row one rendered position down');
 assert.ok(plain(lastSetState).every((r) => Number.isInteger(r.order)), 'the keyboard path also yields integers only');
 lastSetState = 'sentinel';
-kbGrip('sec-b').props.onKeyDown({ key: 'ArrowUp', preventDefault() {} });
+kbGrip(1).props.onKeyDown({ key: 'ArrowUp', preventDefault() {} });
 assert.deepStrictEqual(kbVisual(plain(lastSetState)), ['sec-b', 'sec-a'],
   'ArrowUp on the grip moves it one position up');
 assert.equal(plain(lastSetState).find((r) => r.id === 'sec-b').order, 99, 'the top boundary is the first order − 1');
 lastSetState = 'sentinel';
-kbGrip('sec-a').props.onKeyDown({ key: 'ArrowUp', preventDefault() {} });
+kbGrip(0).props.onKeyDown({ key: 'ArrowUp', preventDefault() {} });
 assert.equal(lastSetState, 'sentinel', 'the first row cannot move up (no state churn)');
 lastSetState = 'sentinel';
-kbGrip('sec-a').props.onKeyDown({ key: 'Enter', preventDefault() {} });
+kbGrip(0).props.onKeyDown({ key: 'Enter', preventDefault() {} });
 assert.equal(lastSetState, 'sentinel', 'non-arrow keys are ignored');
 // "+ Add section": the icon is kept, the plus is removed from the TEXT.
 let addBtn = null;
@@ -1500,7 +1510,11 @@ assert.deepStrictEqual(plain(tieRows2).map((r) => r.ref.id), ['a', 'b'], 'and it
 assert.deepStrictEqual(
   plain(H.outlineRows({ sections: [{ id: 'a', order: 100, scope: 'inherit' }] }, { a: { id: 'a', title: 'A' } }, { 'plan:policy': 100 }))
     .map((r) => r.kind),
-  ['builtin', 'ours'], 'a built-in still sorts first at an equal order');
+  ['ours', 'builtin'], 'OUR section sorts BEFORE the built-in at an equal order (the runtime insertion rule)');
+assert.deepStrictEqual(
+  plain(H.outlineRows({ sections: [{ id: 'a', order: 101, scope: 'inherit' }] }, { a: { id: 'a', title: 'A' } }, { 'plan:policy': 100 }))
+    .map((r) => r.kind),
+  ['builtin', 'ours'], 'and below it once the order is strictly greater');
 
 // Header counter: resolvable sections only, broken refs called out.
 const brokenProfile = {
@@ -1551,8 +1565,8 @@ walk(removeEl, (n) => { if (!trashBtn && isButton(n) && n.props?.['aria-label'] 
 assert.ok(trashBtn, 'the per-row remove icon renders');
 lastSetState = 'sentinel';
 trashBtn.props.onClick();
-assert.equal(lastSetState, 'sec-a', 'remove opens a confirmation (the ref id is staged) instead of deleting at once');
-stateQueue = ['P9', outlineProfile.sections.slice(), false, null, '', null, null, 'sec-a'];
+assert.equal(lastSetState, 0, 'remove opens a confirmation (the ref OCCURRENCE is staged) instead of deleting at once');
+stateQueue = ['P9', outlineProfile.sections.slice(), false, null, '', null, null, 0];
 const confirmEl = loaded.components.ProfileOutline({
   profile: outlineProfile, state: outlineState, api: {}, reload: noop, t: (k) => k, notify: noop,
   onBack: noop, onOpenSection: noop, autoFocusTitle: false,
@@ -1598,6 +1612,167 @@ orderInput.props.onChange({ target: { value: 'Infinity' } });
 assert.equal(lastSetState, 'sentinel', 'a non-finite entry is ignored too');
 console.log('PASS audit D/E: deterministic ties, sections·broken counter, preview empty state, confirmed ref removal, untitled chip, grip keyboard, integer orders');
 // #endregion SECTION_auditDE
+
+// #region SECTION_clientReview4 Four review findings: explicit-none chip,
+// equal-order vs built-in, duplicate refs, honest preview variables.
+// (1) Chip: absent key → default; present '' → explicit None; present id → that.
+const lightProfile = { rowId: 'prompt-profile-light', patchId: 'profile-light', configId: 'light', title: 'Light', sections: [] };
+const chipLabelFor = (lastByWorkspace) => {
+  stateQueue = [{ profiles: [lightProfile], sections: [], builtinOrders: {}, default: 'light', lastByWorkspace }];
+  const el = chip.component({ ...chipStyle });
+  stateQueue = [];
+  const menu = el.children.find((child) => child.type === Menu);
+  return menu.props.anchor.children[0].children[0];
+};
+assert.equal(chipLabelFor({}), 'Light', 'no stored key at all → the default profile applies');
+assert.equal(chipLabelFor({ '/work/repo': '' }), 'none',
+  'a stored EMPTY string is an explicit None — the default must NOT be shown');
+assert.equal(chipLabelFor({ '/work/repo': 'light' }), 'Light', 'a stored profile id shows that profile');
+assert.equal(chipLabelFor({ '/work/repo': 'ghost' }), 'Light',
+  'a stored but stale id falls back to the default (mirrors host resolveProfileId)');
+// The optimistic update keeps the explicit-none marker as '', not undefined.
+stateQueue = [{ profiles: [lightProfile], sections: [], builtinOrders: {}, default: 'light', lastByWorkspace: {} }];
+const noneChip = chip.component({ ...chipStyle, pick: () => Promise.resolve({}) });
+stateQueue = [];
+setStateLog = [];
+noneChip.children.find((child) => child.type === Menu).props.onSelect('none');
+const noneCommit = setStateLog.find((entry) => entry && typeof entry === 'object' && entry.lastByWorkspace);
+assert.ok(noneCommit, 'choosing None commits an optimistic state');
+assert.equal(plain(noneCommit).lastByWorkspace['/work/repo'], '',
+  'choosing None stores the host\'s explicit-empty marker, so the next paint stays None');
+// A real choice stores the id.
+stateQueue = [{ profiles: [lightProfile], sections: [], builtinOrders: {}, default: 'light', lastByWorkspace: {} }];
+const pickChip = chip.component({ ...chipStyle, pick: () => Promise.resolve({}) });
+stateQueue = [];
+setStateLog = [];
+pickChip.children.find((child) => child.type === Menu).props.onSelect('light');
+const pickCommit = setStateLog.find((entry) => entry && typeof entry === 'object' && entry.lastByWorkspace);
+assert.equal(plain(pickCommit).lastByWorkspace['/work/repo'], 'light', 'a real choice stores the profile id');
+
+// (2) Rendered outline: our order-100 section is painted ABOVE the built-in with
+// the same order (the host splices OUR sections before built-ins).
+stateQueue = ['P9', outlineProfile.sections.slice(), false, null, '', null, null, null];
+const equalEl = loaded.components.ProfileOutline({
+  profile: outlineProfile, state: outlineState, api: {}, reload: noop, t: (k) => k, notify: noop,
+  onBack: noop, onOpenSection: noop, autoFocusTitle: false,
+});
+stateQueue = [];
+const painted = [];
+walk(equalEl, (n) => {
+  if (!Array.isArray(n.children)) return;
+  if (n.props && typeof n.props['data-drop-index'] === 'number') return;
+  if (n.children.some((c) => c?.type === 'input' && c.props?.type === 'number')) painted.push('ours');
+  else if (n.children.some((c) => c?.type === 'span' && c.props?.flex === 1 && Array.isArray(c.children) && c.children.includes('plan:policy'))) painted.push('builtin');
+});
+assert.deepStrictEqual(painted, ['ours', 'builtin', 'ours'],
+  'at an equal order the rendered outline puts our section BEFORE the built-in, matching the runtime');
+
+// (3) Two refs to ONE section are independent occurrences.
+const dupProfile = {
+  rowId: 'prompt-profile-dup', patchId: 'prompt-profile-dup', configId: 'prompt-profile-dup', title: 'Dup',
+  sections: [{ id: 'sec-a', order: 100, scope: 'inherit' }, { id: 'sec-a', order: 200, scope: 'main-only' }],
+};
+const dupState = {
+  profiles: [dupProfile],
+  sections: [{ configId: 'sec-a', patchId: 'prompt-section-sec-a', title: 'A', body: 'aaa' }],
+  builtinOrders: {}, modes: [],
+};
+const renderDup = (confirmSeq) => {
+  stateQueue = ['D', dupProfile.sections.slice(), false, null, '', null, null, confirmSeq ?? null];
+  const el = loaded.components.ProfileOutline({
+    profile: dupProfile, state: dupState, api: {}, reload: noop, t: (k) => k, notify: noop,
+    onBack: noop, onOpenSection: noop, autoFocusTitle: false,
+  });
+  stateQueue = [];
+  return el;
+};
+const dupEl = renderDup();
+const dupRowKeys = [];
+walk(dupEl, (n) => {
+  if (n.props && typeof n.props.key === 'string' && n.props.key.startsWith('ours:')) dupRowKeys.push(n.props.key);
+});
+assert.equal(dupRowKeys.length, 2, 'both duplicate refs render as separate rows');
+assert.equal(new Set(dupRowKeys).size, 2, 'and their React keys are unique');
+const dupInputs = [];
+walk(dupEl, (n) => { if (n.type === 'input' && n.props?.type === 'number') dupInputs.push(n); });
+assert.deepStrictEqual(dupInputs.map((i) => i.props.value), [100, 200], 'each ref keeps its own order');
+lastSetState = 'sentinel';
+dupInputs[0].props.onChange({ target: { value: '7' } });
+assert.deepStrictEqual(plain(lastSetState), [
+  { id: 'sec-a', order: 7, scope: 'inherit' },
+  { id: 'sec-a', order: 200, scope: 'main-only' },
+], 'changing the first ref order leaves the second ref untouched');
+const dupMenus = [];
+walk(dupEl, (n) => { if (n.type === Menu && n.props?.anchor) dupMenus.push(n); });
+assert.equal(dupMenus.length, 2, 'each duplicate ref has its own scope menu');
+assert.notEqual(dupMenus[0].props.selectedId, dupMenus[1].props.selectedId, 'with independent scopes');
+lastSetState = 'sentinel';
+setStateLog = [];
+dupMenus[1].props.onSelect('subagents-only');
+const scopeCommit = setStateLog.find((entry) => Array.isArray(entry));
+assert.deepStrictEqual(plain(scopeCommit), [
+  { id: 'sec-a', order: 100, scope: 'inherit' },
+  { id: 'sec-a', order: 200, scope: 'subagents-only' },
+], 'changing the second ref scope leaves the first ref untouched');
+// Removing one occurrence keeps the other.
+const dupTrash = [];
+walk(dupEl, (n) => { if (isButton(n) && n.props?.['aria-label'] === 'remove') dupTrash.push(n); });
+assert.equal(dupTrash.length, 2, 'each duplicate ref has its own remove action');
+lastSetState = 'sentinel';
+dupTrash[0].props.onClick();
+assert.equal(lastSetState, 0, 'remove stages THAT occurrence (index 0)');
+const dupConfirmEl = renderDup(0);
+let dupDialog = null;
+walk(dupConfirmEl, (n) => { if (n.type?.name === 'ConfirmDialog') dupDialog = n; });
+const dupModal = dupDialog.type(dupDialog.props);
+let dupConfirm = null;
+walk(dupModal, (n) => { if (!dupConfirm && (n.type?.name === 'Button' || n.type === primitives.Button) && Array.isArray(n.children) && n.children.includes('remove')) dupConfirm = n; });
+lastSetState = 'sentinel';
+dupConfirm.props.onClick();
+assert.deepStrictEqual(plain(lastSetState), [{ id: 'sec-a', order: 200, scope: 'main-only' }],
+  'removing one duplicate ref keeps the other (with its own scope)');
+// Reordering one duplicate occurrence moves only THAT ref.
+const dupGrips = [];
+walk(dupEl, (n) => { if (isButton(n) && n.props?.['aria-label'] === 'dragHandle') dupGrips.push(n); });
+assert.deepStrictEqual(dupGrips.map((g) => g.props['data-drag-handle']), [0, 1],
+  'each duplicate ref has its own occurrence-keyed grip');
+lastSetState = 'sentinel';
+dupGrips[0].props.onKeyDown({ key: 'ArrowDown', preventDefault() {} });
+assert.deepStrictEqual(plain(lastSetState), [
+  { id: 'sec-a', order: 200, scope: 'main-only' },
+  { id: 'sec-a', order: 201, scope: 'inherit' },
+], 'moving the first duplicate down carries only that ref (order + scope intact)');
+
+// (4) Preview flags interpolation variables instead of pretending to be exact.
+assert.deepStrictEqual(plain(H.previewVariableNotice('{{cwd}} here', '{{cwd}} here', { cwd: '/host', model: null })),
+  ['cwd'], 'a variable the host substituted with its own cwd cannot be proven equal → flagged');
+assert.deepStrictEqual(plain(H.previewVariableNotice('a {{model}} b', 'a {{model}} b', { cwd: '/host', model: null })),
+  ['model'], 'an unknown (null) variable is flagged');
+assert.equal(H.previewVariableNotice('no variables', 'no variables', { cwd: '/host' }), null,
+  'a section that uses no variables is not flagged');
+assert.equal(H.previewVariableNotice('{{cwd}}', '{{cwd}}', { cwd: '/same' }, { cwd: '/same' }), null,
+  'a value provably equal to the session context is NOT flagged');
+stateQueue = ['main', {
+  plan: [{ kind: 'ours', id: 'sec-a', title: 'A', order: 10, text: '/repo text' }],
+  skipped: [], variables: { cwd: '/repo', model: null },
+}];
+const varPreview = loaded.components.PreviewTab({
+  state: { profiles: [{ configId: 'main', title: 'Main' }], sections: [{ configId: 'sec-a', title: 'A', body: '{{cwd}} text' }], builtinOrders: {}, default: 'main', modes: [] },
+  api: {}, t: (k) => k, notify: () => {},
+});
+stateQueue = [];
+assert.ok(elementText(varPreview).includes('previewVariables'),
+  'a section using {{cwd}} is marked in the preview');
+assert.ok(elementText(varPreview).includes('{{cwd}}'), 'and the marker names the variable');
+stateQueue = ['main', { plan: [{ kind: 'ours', id: 'sec-a', title: 'A', order: 10, text: 'plain' }], skipped: [], variables: { cwd: '/repo' } }];
+const plainPreview = loaded.components.PreviewTab({
+  state: { profiles: [{ configId: 'main', title: 'Main' }], sections: [{ configId: 'sec-a', title: 'A', body: 'plain' }], builtinOrders: {}, default: 'main', modes: [] },
+  api: {}, t: (k) => k, notify: () => {},
+});
+stateQueue = [];
+assert.ok(!elementText(plainPreview).includes('previewVariables'), 'a variable-free section stays unmarked');
+console.log('PASS review H1/H2/H3/H6: explicit-none chip, equal-order=ours-first, duplicate refs independent, honest preview variables');
+// #endregion SECTION_clientReview4
 
 // #region SECTION_bundleRenameLock We own only our layer: a bundle-owned section's
 // id cannot be changed (the control is disabled with a plain-language reason);

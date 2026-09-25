@@ -60,7 +60,7 @@ function fakeResponse() {
  *   return a `call(method, path, body)` driver. The fake settings records
  *   BOTH mutate ops and whole-object replace calls.
  */
-async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, entries, workspaceRegistry, builtinOrdersByName, settings: settingsOverride } = {}) {
+async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, entries, workspaceRegistry, builtinOrdersByName, beforeMutate, settingsRevision = true, configEditor: configEditorOverride, settings: settingsOverride } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "dsh-pp-api-"));
   const patchPath = join(dir, "cordis.patch.yml");
   await writeFile(patchPath, "# comment\n[]\n", { mode: 0o600 });
@@ -69,16 +69,44 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
   const logs = [];
   let revision = 7;
   const settings = settingsOverride ?? {
-    describe: () => [{ ns: "prompt-profiles", revision }],
+    // settingsRevision:false emulates a settings service whose describe()
+    // carries no revision (CAS unavailable).
+    describe: () => [{ ns: "prompt-profiles", ...(settingsRevision ? { revision } : {}) }],
     mutate: async (ns, ops, expected) => {
+      // Test hook: a test may bump the revision here to emulate a concurrent
+      // writer, making the expected-revision check below fail as a conflict,
+      // or inject a foreign lastByWorkspace value between our read and write.
+      if (typeof beforeMutate === "function") {
+        await beforeMutate({
+          ops, expected,
+          bumpRevision: () => { revision += 1; },
+          setLastByWorkspace: (value) => { lastByWorkspace = value; },
+        });
+      }
+      if (typeof expected === "number" && expected !== revision) {
+        const conflict = new Error("configuration changed");
+        conflict.code = "SETTINGS_CONFLICT";
+        throw conflict;
+      }
       mutations.push({ ns, ops, expected });
       revision += 1;
-      // Apply volatile writes back so successive /last calls build on each
-      // other, like the real settings service does.
+      // Apply ops the way dsh-settings does: against the CURRENT value, one
+      // path at a time. lastByWorkspace.<key> set/unset touches ONE key only.
       for (const op of ops) {
-        if (op.op !== "set") continue;
-        if (op.path[0] === "default") defaultId = op.value;
-        if (op.path[0] === "lastByWorkspace") lastByWorkspace = op.value;
+        if (op.path[0] === "default") {
+          if (op.op === "set") defaultId = op.value;
+          continue;
+        }
+        if (op.path[0] !== "lastByWorkspace") continue;
+        const key = op.path[1];
+        if (key === undefined) {
+          if (op.op === "set") lastByWorkspace = op.value; // whole-dict (legacy)
+          continue;
+        }
+        const next = { ...lastByWorkspace };
+        if (op.op === "set") next[key] = op.value;
+        else delete next[key];
+        lastByWorkspace = next;
       }
     },
     replace: async (ns, value, expected) => {
@@ -99,7 +127,7 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
   const ctx = {
     webServer: { register: (route) => { routes.set(route.path, route.handler); return () => routes.delete(route.path); } },
     settings,
-    configEditor: entries ? { documentPath: patchPath, entries } : { documentPath: patchPath },
+    configEditor: configEditorOverride ?? (entries ? { documentPath: patchPath, entries } : { documentPath: patchPath }),
   };
   if (agentPresets !== undefined) ctx.agentPresets = agentPresets;
   // Reflect-style optional accessor the host context exposes for
@@ -114,6 +142,7 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
   });
   return {
     patchPath, mutations, replacements, logs, dispose,
+    configValues: () => ({ defaultId, lastByWorkspace }),
     async call(method, path, body) {
       const handler = routes.get(`/__dsh-prompt-profiles${path.split("?")[0]}`);
       assert.ok(handler, `route ${path} registered`);
@@ -734,8 +763,9 @@ test("default and last write through settings.mutate on the main row", async () 
     assert.deepEqual(api.mutations.map(({ ns, ops }) => ({ ns, ops })), [
       { ns: "prompt-profiles", ops: [{ op: "set", path: ["default"], value: "light" }] },
       { ns: "prompt-profiles", ops: [{ op: "set", path: ["default"], value: "" }] },
-      { ns: "prompt-profiles", ops: [{ op: "set", path: ["lastByWorkspace"], value: { ws1: "light", ws2: "light" } }] },
-      { ns: "prompt-profiles", ops: [{ op: "set", path: ["lastByWorkspace"], value: { ws1: "", ws2: "light" } }] },
+      // Per-key ops: only the caller's workspace key is written.
+      { ns: "prompt-profiles", ops: [{ op: "set", path: ["lastByWorkspace", "ws2"], value: "light" }] },
+      { ns: "prompt-profiles", ops: [{ op: "set", path: ["lastByWorkspace", "ws1"], value: "" }] },
     ]);
     const unknown = await api.call("POST", "/default", { default: "ghost" });
     assert.equal(unknown.status, 404);
@@ -747,7 +777,7 @@ test("explicit none stored by /last resolves to no profile even with a default s
   const api = await harness({ profiles: [userProfile], defaultId: "light" });
   try {
     await api.call("POST", "/last", { workspaceId: "ws1", profileId: "" });
-    const stored = api.mutations.at(-1).ops[0].value;
+    const stored = api.configValues().lastByWorkspace;
     const resolved = resolveProfileId({
       lastByWorkspace: stored, workspaceKey: "ws1",
       defaultId: "light", profileIds: ["light"],
@@ -769,13 +799,13 @@ test("/last accepts cwd, resolves the workspace key, and rejects an addressless 
   try {
     // cwd known to the registry → stored under the registry id.
     assert.equal((await api.call("POST", "/last", { cwd: "/work", profileId: "light" })).status, 200);
-    assert.deepEqual(api.mutations.at(-1).ops[0].value, { "ws-resolved": "light" });
+    assert.deepEqual(api.configValues().lastByWorkspace, { "ws-resolved": "light" });
     // cwd unknown → the raw cwd is the fallback key (what the assembler reads).
     assert.equal((await api.call("POST", "/last", { cwd: "/loose", profileId: "light" })).status, 200);
-    assert.deepEqual(api.mutations.at(-1).ops[0].value, { "ws-resolved": "light", "/loose": "light" });
+    assert.deepEqual(api.configValues().lastByWorkspace, { "ws-resolved": "light", "/loose": "light" });
     // explicit none is still an own-property empty string.
     assert.equal((await api.call("POST", "/last", { cwd: "/work", profileId: "" })).status, 200);
-    assert.deepEqual(api.mutations.at(-1).ops[0].value, { "ws-resolved": "", "/loose": "light" });
+    assert.deepEqual(api.configValues().lastByWorkspace, { "ws-resolved": "", "/loose": "light" });
     assert.deepEqual(resolved, ["/work", "/loose", "/work"]);
     // An unknown profile is a 404; an addressless request is a 400.
     assert.equal((await api.call("POST", "/last", { cwd: "/work", profileId: "ghost" })).status, 404);
@@ -783,8 +813,8 @@ test("/last accepts cwd, resolves the workspace key, and rejects an addressless 
     assert.equal((await api.call("POST", "/last", { workspaceId: 42, profileId: "light" })).status, 400);
   } finally { await api.cleanup(); }
 });
-/** @purpose Orphan cleanup on delete: the removed profile's id disappears from every lastByWorkspace value and default resets. */
-test("deleting a profile clears default and lastByWorkspace references in the same settings write", async () => {
+/** @purpose Orphan cleanup on delete: AFTER the row is gone, its id disappears from every lastByWorkspace value and default resets. */
+test("deleting a profile clears default and lastByWorkspace references after the row is gone", async () => {
   const api = await harness({
     profiles: [userProfile],
     defaultId: "light",
@@ -795,12 +825,106 @@ test("deleting a profile clears default and lastByWorkspace references in the sa
     assert.equal(status, 200);
     const cleanup = api.mutations.at(-1);
     assert.equal(cleanup.ns, "prompt-profiles");
-    const byPath = Object.fromEntries(cleanup.ops.map((op) => [op.path[0], op.value]));
-    assert.deepEqual(byPath.lastByWorkspace, { ws2: "" }, "matching values removed, explicit none kept");
-    assert.equal(byPath.default, "", "default reset");
+    assert.deepEqual(cleanup.ops, [
+      { op: "unset", path: ["lastByWorkspace", "ws1"] },
+      { op: "unset", path: ["lastByWorkspace", "2af243f0-f678-4ef8-9b9a-f79e4ea5bc75"] },
+      { op: "set", path: ["default"], value: "" },
+    ], "only the matching keys are unset (ws2 and its explicit none are kept)");
     assert.equal(cleanup.expected, 7, "cleanup uses the request revision");
+    assert.deepEqual(api.configValues(), { defaultId: "", lastByWorkspace: { ws2: "" } });
     const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
     assert.ok(isSeq(document.contents), "patch stays a valid YAML sequence");
+    const row = document.contents.items.find((item) => item?.get?.("id") === "prompt-profile-light");
+    assert.ok(row, "the profile row was deleted (disabled override written)");
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose The safe order: when the ROW deletion fails, the stored choice must NOT have been touched. */
+test("a failed profile deletion keeps the stored choice and writes no cleanup", async () => {
+  const api = await harness({
+    profiles: [userProfile],
+    defaultId: "light",
+    lastByWorkspace: { ws1: "light" },
+    // An unwritable patch path makes deleteRow throw; cleanup must not run.
+    configEditor: { documentPath: "/nonexistent-dsh-dir/cordis.patch.yml" },
+  });
+  try {
+    const { status } = await api.call("POST", "/profile/delete", { rowId: "light" });
+    assert.equal(status, 500, "deletion failure surfaces as a server error");
+    assert.equal(api.mutations.length, 0, "no settings write happened");
+    assert.deepEqual(api.configValues(), { defaultId: "light", lastByWorkspace: { ws1: "light" } }, "choice and default untouched");
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose Cleanup is best-effort: a failing settings write after a SUCCESSFUL delete is logged, not fatal. */
+test("a successful delete whose cleanup fails keeps the row deleted and logs the failure", async () => {
+  const api = await harness({
+    profiles: [userProfile],
+    defaultId: "light",
+    lastByWorkspace: { ws1: "light" },
+    beforeMutate: () => { throw new Error("settings down"); },
+  });
+  try {
+    const { status } = await api.call("POST", "/profile/delete", { rowId: "light" });
+    assert.equal(status, 200, "the row deletion still succeeds");
+    const entry = api.logs.find((log) => /references were not cleared/.test(log.message));
+    assert.ok(entry, "cleanup failure logged");
+    assert.equal(entry.level, "warn");
+    assert.match(entry.details.error, /settings down/);
+    const document = parseDocument(await readFile(api.patchPath, "utf8"), parseOptions);
+    const row = document.contents.items.find((item) => item?.get?.("id") === "prompt-profile-light");
+    assert.equal(row.get("disabled"), true, "profile row disabled before the cleanup attempt");
+    assert.deepEqual(api.configValues().lastByWorkspace, { ws1: "light" }, "dangling choice remains — safe degradation");
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose Parallel /last calls on different keys: per-key ops + the write lock lose no choice, with or without a revision. */
+test("parallel /last calls with different workspace keys lose no choice", async () => {
+  let forcedConflicts = 1;
+  let bumped = 0;
+  const api = await harness({
+    profiles: [userProfile],
+    // Emulate a concurrent writer: bump the revision before the first mutate,
+    // which trips its expectedRevision check exactly once.
+    beforeMutate: ({ bumpRevision }) => {
+      if (forcedConflicts > 0) { forcedConflicts -= 1; bumped += 1; bumpRevision(); }
+    },
+  });
+  try {
+    const [first, second] = await Promise.all([
+      api.call("POST", "/last", { workspaceId: "ws-a", profileId: "light" }),
+      api.call("POST", "/last", { workspaceId: "ws-b", profileId: "light" }),
+    ]);
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    assert.equal(bumped, 1, "the emulated conflict actually fired, forcing a retry");
+    assert.deepEqual(api.configValues().lastByWorkspace, { "ws-a": "light", "ws-b": "light" },
+      "both workspace choices survive the conflict and retry");
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose The same guarantee when settings.describe() carries NO revision (CAS unavailable): the lock + per-key ops still hold. */
+test("parallel /last calls lose no choice when the settings revision is unavailable", async () => {
+  let injected = false;
+  const api = await harness({
+    profiles: [userProfile],
+    settingsRevision: false,
+    // Emulate an out-of-lock writer landing a foreign choice between a read
+    // and a write: per-key ops must MERGE, never clobber it.
+    beforeMutate: ({ setLastByWorkspace }) => {
+      if (!injected) { injected = true; setLastByWorkspace({ "ws-foreign": "light" }); }
+    },
+  });
+  try {
+    const [first, second] = await Promise.all([
+      api.call("POST", "/last", { workspaceId: "ws-a", profileId: "light" }),
+      api.call("POST", "/last", { workspaceId: "ws-b", profileId: "light" }),
+    ]);
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    assert.deepEqual(api.configValues().lastByWorkspace,
+      { "ws-foreign": "light", "ws-a": "light", "ws-b": "light" },
+      "no revision is required: per-key ops preserve every concurrent choice");
   } finally { await api.cleanup(); }
 });
 
@@ -826,7 +950,13 @@ test("/last prunes dangling profile values and stale workspace-id keys", async (
   try {
     const { status } = await api.call("POST", "/last", { cwd: "/new", profileId: "light" });
     assert.equal(status, 200);
-    assert.deepEqual(api.mutations.at(-1).ops[0].value, {
+    // Per-key ops: unset ONLY the two stale keys, then set the new one.
+    assert.deepEqual(api.mutations.at(-1).ops, [
+      { op: "unset", path: ["lastByWorkspace", "ws-path"] },
+      { op: "unset", path: ["lastByWorkspace", staleId] },
+      { op: "set", path: ["lastByWorkspace", "/new"], value: "light" },
+    ]);
+    assert.deepEqual(api.configValues().lastByWorkspace, {
       "ws-none": "",
       "/work/dir": "light",
       [liveId]: "light",
@@ -840,7 +970,7 @@ test("/last prunes dangling profile values and stale workspace-id keys", async (
   });
   try {
     await api2.call("POST", "/last", { workspaceId: "ws-plain", profileId: "" });
-    assert.deepEqual(api2.mutations.at(-1).ops[0].value, { [staleId]: "light", "ws-plain": "" });
+    assert.deepEqual(api2.configValues().lastByWorkspace, { [staleId]: "light", "ws-plain": "" });
   } finally { await api2.cleanup(); }
 });
 // #endregion TEST_defaults

@@ -336,30 +336,34 @@ test("storage outage pins the decision in memory; retry persists the SAME snapsh
   assert.deepEqual(records.get("s"), first, "pinned snapshot persisted after recovery");
 });
 
-/** @purpose An EMPTY result is not a decision: it is re-evaluated so a chip choice made after an unprofiled turn still activates; an ACTIVE one stays pinned. */
-test("empty snapshots are not pinned; a profile chosen later activates once", async () => {
+/** @purpose STRICT sealing (SPEC §2 decision 9): an EMPTY snapshot is a decision too — a session that started without a profile never gains one mid-session; a NEW session does. */
+test("an empty snapshot is sealed: later config changes never activate a profile in that session", async () => {
   const records = new Map();
   const memo = new Map();
   const table = { get: (id) => records.get(id), put: async (id, snapshot) => { records.set(id, snapshot); } };
   const openTable = async () => table;
   let chosen = null;
   const build = () => ({ profileId: chosen, sections: chosen ? [{ id: "x", title: "X", order: 1, text: "t" }] : [] });
-  // Pre-seed an EMPTY record — exactly what the live key mismatch persisted.
-  records.set("s", { profileId: null, sections: [] });
-  const empty = await sealSnapshot({ sessionId: "s", memo, openTable, createSnapshot: build });
-  assert.deepEqual(empty.sections, []);
-  assert.equal(memo.has("s"), false, "empty decisions are never memoized");
-  assert.deepEqual(records.get("s"), { profileId: null, sections: [] }, "empty record left as-is, not re-persisted");
-  // The chip now resolves: the NEXT assembly adopts the profile and persists it.
+  // Session starts with no profile: an explicit EMPTY record is persisted.
+  const first = await sealSnapshot({ sessionId: "s-empty", memo, openTable, createSnapshot: build });
+  assert.deepEqual(first, { profileId: null, sections: [] });
+  assert.deepEqual(records.get("s-empty"), { profileId: null, sections: [] }, "empty decision persisted durable-first");
+  // The user later sets a default: the RUNNING session must NOT change …
   chosen = "light";
-  const active = await sealSnapshot({ sessionId: "s", memo, openTable, createSnapshot: build });
-  assert.equal(active.profileId, "light");
-  assert.equal(active.sections.length, 1);
-  assert.deepEqual(records.get("s"), active, "the active decision upgrades the empty record (durable-first)");
-  // An ACTIVE decision stays pinned even if the live choice changes.
-  chosen = "other";
-  const again = await sealSnapshot({ sessionId: "s", memo, openTable, createSnapshot: build });
-  assert.equal(again, active);
+  const again = await sealSnapshot({ sessionId: "s-empty", memo, openTable, createSnapshot: build });
+  assert.deepEqual(again, { profileId: null, sections: [] }, "the existing empty session stays empty");
+  assert.equal(again, first, "the memoized decision object is reused");
+  // … while a NEW session gets the profile.
+  const fresh = await sealSnapshot({ sessionId: "s-new", memo, openTable, createSnapshot: build });
+  assert.equal(fresh.profileId, "light");
+  assert.equal(fresh.sections.length, 1);
+  assert.deepEqual(records.get("s-new"), fresh);
+  // After a restart (fresh memo) the persisted empty record is authoritative.
+  const restarted = await sealSnapshot({
+    sessionId: "s-empty", memo: new Map(), openTable,
+    createSnapshot: () => { throw new Error("persisted empty record must not be rebuilt"); },
+  });
+  assert.deepEqual(restarted, { profileId: null, sections: [] });
 });
 // #endregion TEST_pinnedDecision
 
