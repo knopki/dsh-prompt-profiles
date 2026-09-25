@@ -77,16 +77,16 @@ test("plugin constructs against stubbed DSH services", () => {
 // #endregion TEST_construction
 
 // #region FUNC_reloadContext
-/** @purpose HMR-reload stand: effect disposers are COLLECTED (like cordis), the injected webServer throws on duplicate exact routes (like dsh-host-webserver), and info/warn logs are captured. */
+/** @purpose Reload stand: effect disposers are COLLECTED (like cordis), the injected Connection Fetch registry throws on duplicate exact routes (like HostConnectionService), and info/warn logs are captured. */
 function reloadContext() {
   const routes = new Map();
   const effects = [];
   const logs = [];
-  let webInject = null;
-  const webServer = {
-    register({ kind, path, handler }) {
-      if (routes.has(path)) throw new Error(`webserver: duplicate ${kind} route "${path}"`);
-      routes.set(path, handler);
+  let connectionInject = null;
+  const fetchRegistry = {
+    register({ path, methods, requestBody, fetch }) {
+      if (routes.has(path)) throw new Error(`connection: exact Fetch route ${JSON.stringify(path)} is already registered`);
+      routes.set(path, { methods: new Set(methods), requestBody, fetch });
       return () => routes.delete(path);
     },
   };
@@ -101,22 +101,23 @@ function reloadContext() {
     if (typeof dispose === "function") effects.push(dispose);
     return dispose;
   };
+  const connection = { admit: async () => ({ peer: {} }), fetch: fetchRegistry };
   const child = {
-    webServer, logger, get: () => undefined,
+    connection, logger, get: () => undefined,
     settings: { configure: () => () => {} },
     configEditor: { documentPath: "/nonexistent-dsh-reload/cordis.patch.yml" },
     effect: collect,
     on: () => () => {},
   };
   const ctx = {
-    inject: (deps, callback) => { if (deps.includes("webServer")) webInject = callback; return () => {}; },
+    inject: (deps, callback) => { if (deps.includes("connection")) connectionInject = callback; return () => {}; },
     effect: collect,
     on: () => () => {},
     get: () => undefined,
     reflect: { provide: () => {} },
     logger,
   };
-  return { ctx, child, routes, effects, logs, mountRoutes: () => webInject?.(child) };
+  return { ctx, child, routes, effects, logs, mountRoutes: () => connectionInject?.(child) };
 }
 // #endregion FUNC_reloadContext
 
@@ -126,7 +127,7 @@ test("plugin mounts, disposes and remounts without duplicate-route failures", as
   const lc = reloadContext();
   const config = { default: { get: () => "" }, lastByWorkspace: { get: () => ({}) } };
   new plugin(lc.ctx, config);
-  lc.mountRoutes(); // mount #1: fire the recorded webServer inject callback
+  lc.mountRoutes(); // mount #1: fire the recorded connection inject callback
   const firstCount = lc.routes.size;
   assert.ok(firstCount > 0, "routes registered on mount");
   // HMR unmount: run every collected effect disposer.

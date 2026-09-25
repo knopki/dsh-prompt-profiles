@@ -16,66 +16,48 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument, isSeq } from "yaml";
-import { registerApi, tokenSource } from "../lib/api.js";
+import { registerApi, tokenSource, API_ROUTE_BASE } from "../lib/api.js";
 import { resolveProfileId } from "../lib/resolve.js";
 import { BUILTIN_ORDERS, builtinOrdersByName as nameBuiltinOrders } from "../lib/builtin-orders.js";
 
 const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value) => value }] };
 
 // #region FUNC_fakes
-/** @purpose Drive handlers without node sockets: minimal req/res stand-ins. */
-function fakeRequest(method, path, body, headers = {}) {
-  const payload = Buffer.from(body === undefined ? "" : JSON.stringify(body));
-  // Buffer delivery like a real readable stream: an async handler may reach
-  // `request.on("data")` only AFTER `deliver()` (e.g. behind an awaited
-  // `connection.admit`), and Node buffers until a 'data' listener attaches.
-  const dataListeners = [];
-  const endListeners = [];
-  let delivered = false;
-  let ended = false;
-  const flushData = () => {
-    if (delivered && payload.length > 0) for (const callback of dataListeners.splice(0)) callback(payload);
+/** @purpose Fetch-route stand for the platform Connection service: duplicate paths throw exactly like HostConnectionService.registerFetchRoute. */
+function fakeConnection({ admit } = {}) {
+  const routes = new Map();
+  return {
+    routes,
+    service: {
+      admit: admit ?? (async () => ({ peer: { id: "peer" } })),
+      fetch: {
+        register: ({ path, methods, requestBody, fetch }) => {
+          if (routes.has(path)) throw new Error(`connection: exact Fetch route ${JSON.stringify(path)} is already registered`);
+          routes.set(path, { methods: new Set(methods), requestBody, fetch });
+          return () => routes.delete(path);
+        },
+      },
+    },
   };
-  const flushEnd = () => {
-    if (ended) for (const callback of endListeners.splice(0)) callback();
-  };
-  const request = {
+}
+
+/** @purpose Drive one registered Fetch route with a REAL Request and parse its Response. */
+async function driveFetch(routes, method, path, body, headers) {
+  const pathname = path.split("?")[0];
+  const route = routes.get(`${API_ROUTE_BASE}${pathname}`);
+  if (!route) return { status: 404, body: null, headers: new Headers() };
+  const request = new Request(`http://127.0.0.1:3080${API_ROUTE_BASE}${path}`, {
     method,
-    url: path,
-    // Same defaults a browser/curl sends: JSON content-type on writes and a
-    // Host header. Tests override `content-type`/`origin` to probe CSRF checks.
     headers: {
-      "content-length": String(payload.length),
       host: "127.0.0.1:3080",
       ...(method === "GET" ? {} : { "content-type": "application/json" }),
       ...headers,
     },
-    on(event, callback) {
-      if (event === "data") { dataListeners.push(callback); flushData(); }
-      else if (event === "end") { endListeners.push(callback); flushEnd(); }
-      return request;
-    },
-    resume() {}, destroy() {},
-  };
-  request.deliver = () => {
-    delivered = true;
-    ended = true;
-    flushData();
-    flushEnd();
-  };
-  return request;
-}
-
-function fakeResponse() {
-  const state = { statusCode: 200, headers: {}, body: null, done: null };
-  state.finished = new Promise((resolve) => { state.done = resolve; });
-  const response = {
-    set statusCode(value) { state.statusCode = value; },
-    get statusCode() { return state.statusCode; },
-    setHeader(key, value) { state.headers[key] = value; },
-    end(chunk) { state.body = chunk === undefined ? "" : String(chunk); state.done(); },
-  };
-  return { response, state };
+    ...(method === "GET" ? {} : { body: JSON.stringify(body ?? {}) }),
+  });
+  const response = await route.fetch(request);
+  const text = await response.text();
+  return { status: response.status, body: text === "" ? null : JSON.parse(text), headers: response.headers };
 }
 // #endregion FUNC_fakes
 
@@ -85,7 +67,7 @@ function fakeResponse() {
  *   return a `call(method, path, body)` driver. The fake settings records
  *   BOTH mutate ops and whole-object replace calls.
  */
-async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, agentPresetsGetThrows = false, connection, connectionGetThrows = false, entries, workspaceRegistry, builtinOrdersByName, beforeMutate, settingsRevision = true, configEditor: configEditorOverride, settings: settingsOverride } = {}) {
+async function harness({ sections = [], profiles = [], defaultId = "", lastByWorkspace = {}, agentPresets, agentPresetsGetThrows = false, connection, entries, workspaceRegistry, builtinOrdersByName, beforeMutate, settingsRevision = true, configEditor: configEditorOverride, settings: settingsOverride } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "dsh-pp-api-"));
   const patchPath = join(dir, "cordis.patch.yml");
   await writeFile(patchPath, "# comment\n[]\n", { mode: 0o600 });
@@ -148,9 +130,14 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
     builtinOrdersByName: () => builtinOrdersByName ?? { "tool:bash": 1000 },
     config: { default: { get: () => defaultId }, lastByWorkspace: { get: () => lastByWorkspace } },
   };
-  const routes = new Map();
+  // The live host HAS the connection service; tests default to a permissive
+  // stub, `connection: null` emulates a host without one (zero routes + error).
+  const resolvedConnection = connection === undefined
+    ? fakeConnection()
+    : connection === null ? null : fakeConnection({ admit: connection.admit });
+  const routes = resolvedConnection?.routes ?? new Map();
   const ctx = {
-    webServer: { register: (route) => { routes.set(route.path, route.handler); return () => routes.delete(route.path); } },
+    connection: resolvedConnection?.service,
     settings,
     configEditor: configEditorOverride ?? (entries ? { documentPath: patchPath, entries } : { documentPath: patchPath }),
   };
@@ -158,19 +145,17 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
   // exactly like the live host, where a service is a `ctx.<name>` property
   // only when the plugin declares it in `inject`. No `ctx.agentPresets`
   // property is set, so a regression to property access empties `modes`.
-  // The live host HAS the connection service, so tests default to a permissive
-  // stub; `connection: null` emulates a host without it (registration warn).
-  const resolvedConnection = connection === undefined ? { admit: async () => ({ peer: { id: "peer" } }) } : connection;
   ctx.get = (name) => {
     if (name === "workspaceRegistry") return workspaceRegistry;
     if (name === "agentPresets") {
       if (agentPresetsGetThrows) throw new Error("agentPresets reflect exploded");
       return agentPresets;
     }
-    if (name === "connection") {
-      if (connectionGetThrows) throw new Error("connection reflect exploded");
-      return resolvedConnection ?? undefined;
-    }
+    if (name === "connection") return resolvedConnection?.service;
+    // Real cordis REFLECT returns any provided service; the API now reads
+    // settings/configEditor lazily per route instead of requiring them.
+    if (name === "settings") return ctx.settings;
+    if (name === "configEditor") return ctx.configEditor;
     return undefined;
   };
   const dispose = registerApi(ctx, {
@@ -180,19 +165,17 @@ async function harness({ sections = [], profiles = [], defaultId = "", lastByWor
       error: (message, details) => logs.push({ level: "error", message, details }),
     },
   });
+  // Registration-time lifecycle lines (mounted / missing optional services) are
+  // asserted in the dedicated reload + smoke stands; here `logs` must contain
+  // only REQUEST-time entries so the per-test log-count assertions stay exact.
+  const registrationLogs = [...logs];
+  logs.length = 0;
   return {
-    patchPath, mutations, replacements, logs, dispose,
+    patchPath, mutations, replacements, logs, registrationLogs, dispose,
     configValues: () => ({ defaultId, lastByWorkspace }),
+    routes,
     async call(method, path, body, headers) {
-      const handler = routes.get(`/__dsh-prompt-profiles${path.split("?")[0]}`);
-      assert.ok(handler, `route ${path} registered`);
-      const request = fakeRequest(method, path, body, headers);
-      const { response, state } = fakeResponse();
-      const pending = handler(request, response);
-      request.deliver();
-      await pending;
-      await state.finished;
-      return { status: state.statusCode, body: state.body === "" ? null : JSON.parse(state.body) };
+      return driveFetch(routes, method, path, body, headers);
     },
     cleanup: () => rm(dir, { recursive: true, force: true }),
   };
@@ -419,39 +402,40 @@ test("connection.admit fences every route and fails closed", async () => {
     assert.equal(broke.mutations.length, 0);
   } finally { await broke.cleanup(); }
 
-  // (д) no connection service: previous behaviour + ONE registration warn.
+  // (д) no connection service: NO carrier means NO routes — loud, never a
+  // silent CSRF-only mode.
   const none = await harness({ connection: null, sections: [userSection], profiles: [userProfile] });
   try {
-    const warnCount = none.logs.filter((entry) => /WITHOUT platform authentication/.test(entry.message)).length;
-    assert.equal(warnCount, 1, "exactly one registration warning");
-    // The CSRF layer still applies, and a normal JSON call still works.
-    assert.equal((await none.call("POST", "/section/create", { title: "T", body: "B" }, { "content-type": "text/plain" })).status, 415);
-    assert.equal((await none.call("POST", "/section/create", { title: "T", body: "B" })).status, 200);
-    assert.equal((await none.call("GET", "/state")).status, 200);
+    assert.equal(none.routes.size, 0, "no platform carrier -> no routes");
+    assert.ok(none.registrationLogs.some((entry) => entry.level === "error" && /mounted ZERO routes/.test(entry.message)),
+      "zero routes logged at error level");
+    assert.ok(none.registrationLogs.some((entry) => /connection\.admit unavailable/.test(entry.message)),
+      "missing platform authentication warned");
   } finally { await none.cleanup(); }
 });
 // #endregion TEST_auth
 
 // #region TEST_reload
-/** @purpose Test stand for HMR reloads: a webServer that throws on duplicate exact routes (like dsh-host-webserver) plus a minimal API context. */
+/** @purpose Test stand for HMR reloads: a Connection Fetch registry that throws on duplicate exact routes (like HostConnectionService) plus a minimal API context. */
 function reloadStand({ failPaths = [] } = {}) {
-  const table = new Map();
+  const conn = fakeConnection();
+  const table = conn.routes;
   const logs = [];
-  const webServer = {
-    register({ kind, path, handler }) {
-      if (failPaths.includes(path)) throw new Error(`register refused ${path}`);
-      if (table.has(path)) throw new Error(`webserver: duplicate ${kind} route "${path}"`);
-      table.set(path, handler);
-      return () => table.delete(path);
-    },
-  };
   const service = {
     config: { default: { get: () => "" }, lastByWorkspace: { get: () => ({}) } },
     sections: () => [], profiles: () => [], usedIn: () => [],
     builtinOrders: () => ({}), builtinOrdersByName: () => ({}),
   };
   const ctx = {
-    webServer,
+    connection: {
+      admit: conn.service.admit,
+      fetch: {
+        register: (route) => {
+          if (failPaths.includes(route.path)) throw new Error(`register refused ${route.path}`);
+          return conn.service.fetch.register(route);
+        },
+      },
+    },
     settings: { describe: () => [{ ns: "prompt-profiles", revision: 1 }], mutate: async () => {}, replace: async () => {} },
     configEditor: { documentPath: "/nonexistent-dsh-reload/cordis.patch.yml" },
     get: () => undefined,
@@ -462,17 +446,7 @@ function reloadStand({ failPaths = [] } = {}) {
     warn: (message, details) => logs.push({ level: "warn", message, details }),
     error: (message, details) => logs.push({ level: "error", message, details }),
   };
-  const drive = async (path, method = "GET", body) => {
-    const handler = table.get(`/__dsh-prompt-profiles${path}`);
-    if (!handler) return 404;
-    const request = fakeRequest(method, path, body);
-    const { response, state } = fakeResponse();
-    const pending = handler(request, response);
-    request.deliver();
-    await pending;
-    await state.finished;
-    return state.statusCode;
-  };
+  const drive = async (path, method = "GET", body, headers) => (await driveFetch(table, method, path, body, headers)).status;
   return { table, logs, ctx, service, log, drive };
 }
 
@@ -515,13 +489,13 @@ test("RELOAD: routes 404 while unmounted and 200 again after remount", async () 
 
 /** @purpose (в) one failing registration must not kill the mount. */
 test("RELOAD: one failing route registration leaves the rest mounted and logs the path", async () => {
-  const stand = reloadStand({ failPaths: ["/__dsh-prompt-profiles/section/create"] });
+  const stand = reloadStand({ failPaths: [`${API_ROUTE_BASE}/section/create`] });
   const dispose = registerApi(stand.ctx, { service: stand.service, log: stand.log });
   const failure = stand.logs.find((entry) => /route registration failed/.test(entry.message));
   assert.ok(failure, "failure logged");
   assert.equal(failure.level, "error");
-  assert.equal(failure.details.path, "/__dsh-prompt-profiles/section/create");
-  assert.ok(stand.table.has("/__dsh-prompt-profiles/state"), "other routes still registered");
+  assert.equal(failure.details.path, `${API_ROUTE_BASE}/section/create`);
+  assert.ok(stand.table.has(`${API_ROUTE_BASE}/state`), "other routes still registered");
   assert.equal(await stand.drive("/state"), 200);
   assert.equal(await stand.drive("/section/create", "POST", { title: "T", body: "B" }), 404, "the failed route is absent");
   dispose();
@@ -532,7 +506,7 @@ test("RELOAD: one failing route registration leaves the rest mounted and logs th
 test("RELOAD: the disposer removes only the routes it registered", async () => {
   const stand = reloadStand();
   const dispose = registerApi(stand.ctx, { service: stand.service, log: stand.log });
-  stand.table.set("/someone-else", () => {});
+  stand.table.set("/someone-else", { methods: new Set(["GET"]), fetch: async () => new Response("x") });
   dispose();
   assert.deepEqual([...stand.table.keys()], ["/someone-else"], "foreign route survives");
 });
@@ -1755,22 +1729,15 @@ test("concurrent settings writes through the API execute serially", async () => 
     builtinOrders: () => ({}), builtinOrdersByName: () => ({}),
     config: { default: { get: () => "" }, lastByWorkspace: { get: () => ({}) } },
   };
-  const routes = new Map();
+  const conn = fakeConnection();
   const ctx = {
-    webServer: { register: (route) => { routes.set(route.path, route.handler); return () => {}; } },
+    connection: conn.service,
     settings, configEditor: { documentPath: patchPath },
+    // Real cordis REFLECT: the API reads optional services through ctx.get.
+    get: (name) => (name === "settings" ? settings : name === "configEditor" ? ctx.configEditor : undefined),
   };
   registerApi(ctx, { service });
-  const call = async (path, body) => {
-    const handler = routes.get(`/__dsh-prompt-profiles${path}`);
-    const request = fakeRequest("POST", path, body);
-    const { response, state } = fakeResponse();
-    const pending = handler(request, response);
-    request.deliver();
-    await pending;
-    await state.finished;
-    return state.statusCode;
-  };
+  const call = async (path, body) => (await driveFetch(conn.routes, "POST", path, body)).status;
   try {
     const statuses = await Promise.all([
       call("/default", { default: "light" }),
