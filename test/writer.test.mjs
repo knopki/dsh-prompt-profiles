@@ -227,6 +227,22 @@ test("withPatchBatch restores the backup when a step throws", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+/** @purpose M1: a batch that throws BEFORE any write must not rewrite/restore the file (no needless HMR, no foreign-commit clobber). */
+test("withPatchBatch leaves the file untouched when a step fails before writing", async () => {
+  const { dir, patchPath } = await workspace();
+  try {
+    const before = await readFile(patchPath, "utf8");
+    const inodeBefore = (await stat(patchPath)).ino;
+    await assert.rejects(withPatchBatch({ patchPath }, async (edit) => {
+      await edit(() => { throw new Error("validation failed before any write"); });
+      return "unreachable";
+    }), /validation failed before any write/);
+    assert.equal(await readFile(patchPath, "utf8"), before);
+    assert.equal((await stat(patchPath)).ino, inodeBefore, "no atomic rewrite happened (same inode)");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 // #endregion TEST_batch
 
 // #region TEST_mutex

@@ -104,6 +104,25 @@ test("disposing an overridden registration is a no-op (deterministic winner)", (
   disposeC();
   assert.equal(registry.sections().find((s) => s.id === "light-tone"), undefined);
 });
+
+test("H4: disposing the winner RESTORES the still-mounted earlier registration", () => {
+  const { registry, disposeA } = fixtureRegistry();
+  const disposeC = registry.registerSection({
+    rowId: "row-c",
+    config: { id: "light-tone", title: "Other tone", body: "Other." },
+    source: "user",
+  });
+  assert.equal(registry.sections().find((s) => s.id === "light-tone").rowId, "row-c");
+  // HMR unloads the later row: the original must come back, not disappear.
+  disposeC();
+  const survivor = registry.sections().find((s) => s.id === "light-tone");
+  assert.ok(survivor, "the id is still registered");
+  assert.equal(survivor.rowId, "row-a");
+  assert.equal(survivor.title, "Light tone");
+  // And disposing the survivor finally removes it.
+  disposeA();
+  assert.equal(registry.sections().find((s) => s.id === "light-tone"), undefined);
+});
 // #endregion SECTION_duplicates
 
 // #region SECTION_usedIn

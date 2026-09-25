@@ -17,7 +17,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument, isSeq } from "yaml";
 import { registerApi, tokenSource } from "../lib/api.js";
-import { resolveProfileId, planInsertion } from "../lib/resolve.js";
+import { resolveProfileId } from "../lib/resolve.js";
+import { BUILTIN_ORDERS, builtinOrdersByName as nameBuiltinOrders } from "../lib/builtin-orders.js";
 
 const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value) => value }] };
 
@@ -259,6 +260,33 @@ test("section and profile create append insert rows and return rowId + patchId +
     for (const row of rows) assert.equal(row.configId, row.id, "stored config.id equals the full row id");
   } finally { await api.cleanup(); }
 });
+
+// #region TEST_refConsistency
+/** @purpose H5: CREATE and UPDATE accept the same refs — registered, or pending in the patch — and both reject typos; no CREATE-only allowance. */
+test("profile create and update reject unknown section refs symmetrically", async () => {
+  const api = await harness({ sections: [userSection], profiles: [userProfile] });
+  try {
+    const typo = "prompt-section-typo1234";
+    const created = await api.call("POST", "/profile/create", { title: "P", sections: [{ id: typo, order: 1 }] });
+    assert.equal(created.status, 400, "a syntactically valid but unknown ref is rejected on CREATE");
+    assert.match(created.body.error.message, /not a registered section/);
+    const updated = await api.call("POST", "/profile/update", {
+      rowId: "prompt-profile-light", value: { title: "L", sections: [{ id: typo, order: 1 }] },
+    });
+    assert.equal(updated.status, 400, "and symmetrically on UPDATE");
+    // A section created moments earlier (row already in the patch, HMR pending)
+    // IS accepted on BOTH paths — the create-then-add flow keeps working.
+    const section = await api.call("POST", "/section/create", { title: "Fresh", body: "y" });
+    const okCreate = await api.call("POST", "/profile/create", { title: "P2", sections: [{ id: section.body.configId, order: 1 }] });
+    assert.equal(okCreate.status, 200, "pending patch row accepted on CREATE");
+    assert.deepEqual(okCreate.body.sections, [{ id: section.body.configId, order: 1 }]);
+    const okUpdate = await api.call("POST", "/profile/update", {
+      rowId: "prompt-profile-light", value: { title: "L", sections: [{ id: section.body.configId, order: 2 }] },
+    });
+    assert.equal(okUpdate.status, 200, "pending patch row accepted on UPDATE");
+  } finally { await api.cleanup(); }
+});
+// #endregion TEST_refConsistency
 
 /** @purpose Create ids are short random tokens (SPEC §3/§5.5) carried IDENTICALLY by rowId and configId (full prefixed form), with no dependence on the title. */
 test("create mints one full id used as rowId and configId, unique across creates", async (t) => {
@@ -973,6 +1001,61 @@ test("/last prunes dangling profile values and stale workspace-id keys", async (
     assert.deepEqual(api2.configValues().lastByWorkspace, { [staleId]: "light", "ws-plain": "" });
   } finally { await api2.cleanup(); }
 });
+/** @purpose B1-remaining: the prune decision is re-derived inside the mutation; a key that became valid between the scan and the write survives (CAS retry rescans). */
+test("a lastByWorkspace key that becomes valid before the write is NOT pruned", async () => {
+  let injected = false;
+  const api = await harness({
+    profiles: [userProfile],
+    lastByWorkspace: { "ws-stale": "ghost" }, // dangling → a prune candidate
+    // Emulate an out-of-lock writer: the first mutate makes the candidate valid
+    // AND bumps the revision, exactly like a real settings write.
+    beforeMutate: ({ setLastByWorkspace, bumpRevision }) => {
+      if (!injected) { injected = true; setLastByWorkspace({ "ws-stale": "light" }); bumpRevision(); }
+    },
+  });
+  try {
+    const { status } = await api.call("POST", "/last", { workspaceId: "ws-new", profileId: "light" });
+    assert.equal(status, 200);
+    assert.deepEqual(api.configValues().lastByWorkspace, { "ws-stale": "light", "ws-new": "light" },
+      "the now-valid key survives the rescan");
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose B1-remaining: without a revision the stale-key prune is skipped (safe), while the caller's own key is still written. */
+test("without a settings revision /last skips the prune but still writes its own key", async () => {
+  const api = await harness({
+    profiles: [userProfile],
+    settingsRevision: false,
+    lastByWorkspace: { "ws-stale": "ghost" }, // would be pruned only under CAS
+  });
+  try {
+    const { status } = await api.call("POST", "/last", { workspaceId: "ws-new", profileId: "light" });
+    assert.equal(status, 200);
+    assert.deepEqual(api.configValues().lastByWorkspace, { "ws-stale": "ghost", "ws-new": "light" },
+      "no CAS → no destructive guess; the choice is still stored");
+    assert.deepEqual(api.mutations.at(-1).ops, [{ op: "set", path: ["lastByWorkspace", "ws-new"], value: "light" }]);
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose B2 race: a profile deleted while the request awaits its workspace key must yield 404 and write nothing. */
+test("a profile deleted during /last key resolution is not resurrected", async () => {
+  const profiles = [{ ...userProfile }];
+  const api = await harness({
+    profiles,
+    // The awaited key resolution is exactly the window the deletion commits in.
+    workspaceRegistry: {
+      list: () => [],
+      resolveByPath: async () => { profiles.length = 0; return { id: "ws-resolved" }; },
+    },
+  });
+  try {
+    const { status, body } = await api.call("POST", "/last", { cwd: "/work", profileId: "light" });
+    assert.equal(status, 404, JSON.stringify(body));
+    assert.match(body.error.message, /not registered/);
+    assert.equal(api.mutations.length, 0, "no settings write for a deleted profile");
+    assert.deepEqual(api.configValues().lastByWorkspace, {});
+  } finally { await api.cleanup(); }
+});
 // #endregion TEST_defaults
 
 // #region TEST_emptyBody
@@ -1098,68 +1181,96 @@ test("preview renders ordered sections with interpolation and skip reasons", asy
   } finally { await api.cleanup(); }
 });
 
-/** @purpose Preview applies the RUNTIME selection rule (main agent) and the SAME insertion plan: scope filtering, built-in placeholders, equal-order-before-builtin, planInsertion parity. */
-test("preview filters scope like the runtime and merges built-in placeholders via planInsertion", async () => {
-  const builtinOrdersByName = {
-    "plan:policy": 500,
-    "tool:bash": 1000,
-    "deployment:persona-suffix": 10200,
-  };
+/**
+ * @purpose Preview applies the RUNTIME selection rule and the real built-in
+ *   order. M6: the expected sequence below is written BY HAND against the REAL
+ *   annotated built-in table (validated against the installed package in
+ *   mirror.test.mjs), NOT computed with planInsertion — so a wrong/degraded
+ *   built-in set fails here instead of agreeing with itself.
+ */
+test("preview merges the REAL built-in placeholders in an independently expected order", async () => {
+  const realBuiltinOrders = nameBuiltinOrders(BUILTIN_ORDERS);
+  assert.equal(Object.keys(realBuiltinOrders).length, 23, "sanity: real mapped built-in set");
   const makeSection = (id, title, body) => ({ id, title, body, rowId: `prompt-section-${id}`, source: "user" });
   const profile = {
     id: "light", title: "Light",
     sections: [
-      { id: "cwd-note", order: 1000, scope: "inherit" },   // equal to tool:bash
-      { id: "main-note", order: 1200, scope: "main-only" }, // emitted for the main agent
-      { id: "sub-note", order: 1300, scope: "subagents-only" }, // skipped
+      { id: "cwd-note", order: 1000, scope: "inherit" },        // EQUAL to tool:bash
+      { id: "main-note", order: 5000, scope: "main-only" },     // EQUAL to tools:sdk, main agent emits it
+      { id: "sub-note", order: 1300, scope: "subagents-only" }, // skipped for the main agent
+      { id: "tail-note", order: 20000, scope: "inherit" },      // after every built-in
     ],
     rowId: "prompt-profile-light", source: "user",
   };
   const api = await harness({
-    sections: [makeSection("cwd-note", "Cwd", "C"), makeSection("main-note", "Main", "M"), makeSection("sub-note", "Sub", "S")],
+    sections: [
+      makeSection("cwd-note", "Cwd", "C"), makeSection("main-note", "Main", "M"),
+      makeSection("sub-note", "Sub", "S"), makeSection("tail-note", "Tail", "T"),
+    ],
     profiles: [profile],
-    builtinOrdersByName,
+    builtinOrdersByName: realBuiltinOrders,
   });
   try {
     const { status, body } = await api.call("GET", "/preview?profileId=light");
     assert.equal(status, 200);
     const tags = body.sections.map((s) => (s.kind === "builtin" ? `builtin:${s.name}` : `ours:${s.id}`));
-    // (а) subagents-only is skipped with a reason; (б) main-only is emitted;
-    // (в) built-in placeholders sit in engine order; (г) our order==1000 section
-    //     stands BEFORE tool:bash.
     assert.deepEqual(tags, [
+      "builtin:harness:identity",
+      "builtin:deployment:persona-prefix",
       "builtin:plan:policy",
-      "ours:cwd-note",
+      "builtin:team:policy",
+      "builtin:tools:ptc-only",
+      "builtin:context:file-reference",
+      "ours:cwd-note",                    // order 1000 == tool:bash → BEFORE it
       "builtin:tool:bash",
-      "ours:main-note",
+      "builtin:tool:pwsh",
+      "builtin:tool:read",
+      "builtin:tool:write",
+      "builtin:tool:edit",
+      "builtin:tool:glob",
+      "builtin:tool:grep",
+      "builtin:tool:jobs",
+      "builtin:tool:web_search",
+      "builtin:tool:web_fetch",
+      "builtin:tool:goal",
+      "builtin:tool:ralph",
+      "builtin:mcp-resource-servers",
+      "ours:main-note",                   // order 5000 == tools:sdk → BEFORE it
+      "builtin:tools:sdk",
+      "builtin:ui:deliverable-file-references",
+      "builtin:app:web-surface",
       "builtin:deployment:persona-suffix",
-    ]);
+      "ours:tail-note",                   // after every built-in
+    ], "hand-written expected merge of the REAL built-in table");
     assert.deepEqual(body.skipped, [
       { id: "sub-note", title: "Sub", reason: "scope subagents-only outside a plain subagent" },
     ]);
     assert.ok(body.sections.filter((s) => s.kind !== "builtin").every((s) => s.emits === true && typeof s.text === "string"),
       "emitted sections carry their text");
-    // (д) our sections' order matches planInsertion on the same fixture.
-    const assemblySections = Object.keys(builtinOrdersByName)
-      .map((name) => ({ name, order: builtinOrdersByName[name] }))
-      .sort((a, b) => a.order - b.order)
-      .map(({ name }) => ({ name }));
-    const plan = planInsertion({
-      snapshot: { sections: [
-        { id: "cwd-note", order: 1000, text: "C" },
-        { id: "main-note", order: 1200, text: "M" },
-      ] },
-      assemblySections,
-      builtinOrdersByName,
-    });
-    const merged = assemblySections.map(({ name }) => ({ kind: "builtin", name }));
-    const expectedOurs = [{ id: "cwd-note" }, { id: "main-note" }];
-    for (let i = plan.length - 1; i >= 0; i--) merged.splice(plan[i].index, 0, expectedOurs[i]);
-    assert.deepEqual(
-      body.sections.map((s) => (s.kind === "builtin" ? `builtin:${s.name}` : `ours:${s.id}`)),
-      merged.map((s) => (s.kind === "builtin" ? `builtin:${s.name}` : `ours:${s.id}`)),
-      "preview order equals planInsertion's result on the same fixture",
-    );
+    // Built-in placeholders are ordered by the REAL order values.
+    const builtinOrdersInBody = body.sections.filter((s) => s.kind === "builtin").map((s) => s.order);
+    assert.deepEqual(builtinOrdersInBody, [...builtinOrdersInBody].sort((a, b) => a - b), "engine order");
+    assert.equal(body.sections.find((s) => s.kind === "builtin" && s.name === "tool:bash").order, 1000);
+  } finally { await api.cleanup(); }
+});
+
+/** @purpose H6: the preview reports which variables it used and the value it substituted; unknown ones are null, and a session cwd supplied in the query wins. */
+test("preview reports used variables honestly and prefers the session cwd", async () => {
+  const section = {
+    id: "vars", title: "Vars",
+    body: "cwd={{cwd}} model={{model}} user={{username}} broken={{not a var}} upper={{userName}}",
+    rowId: "prompt-section-vars", source: "user",
+  };
+  const profile = { id: "light", title: "Light", sections: [{ id: "vars", order: 100 }], rowId: "prompt-profile-light", source: "user" };
+  const api = await harness({ sections: [section], profiles: [profile], builtinOrdersByName: {} });
+  try {
+    const { body } = await api.call("GET", "/preview?profileId=light&cwd=%2Fsession%2Fdir");
+    assert.equal(body.sections[0].text, "cwd=/session/dir model={{model}} user={{username}} broken={{not a var}} upper={{userName}}",
+      "only cwd is substituted; unknown, malformed and non-lowercase groups stay literal");
+    assert.deepEqual(body.variables, { cwd: "/session/dir", model: null, username: null },
+      "used variables are reported; unknown ones are null (malformed names are not variables)");
+    const fallback = (await api.call("GET", "/preview?profileId=light")).body;
+    assert.equal(fallback.variables.cwd, process.cwd(), "without a cwd query the host cwd is used");
   } finally { await api.cleanup(); }
 });
 

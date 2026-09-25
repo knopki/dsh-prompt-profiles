@@ -33,7 +33,7 @@ mode (пресет агента) может работать в разных п�
 
 | # | Решение |
 |---|---|
-| 1 | Секция = отдельная loader-строка `prompt-section-<id>` с `name: '@knopki/dsh-prompt-profiles/section'`; профиль = строка `prompt-profile-<id>` с `name: '@knopki/dsh-prompt-profiles/profile'`. Домен `config.id` отделён от id строки |
+| 1 | Секция = отдельная loader-строка `prompt-section-<id>` с `name: '@knopki/dsh-prompt-profiles/section'`; профиль = строка `prompt-profile-<id>` с `name: '@knopki/dsh-prompt-profiles/profile'`. Для новых UI-строк `config.id` равен полному id строки (`prompt-section-<token>` / `prompt-profile-<token>`); прежние короткие slug-id — легаси |
 | 2 | Бандл не везёт данных: только главную строку `prompt-profiles`. Любой другой бандл может вставить свои строки-секции и строки-профили под своими id |
 | 3 | Секция: `{id, title, body}`. Заголовок хватает, `description`/`enabled`/`order`/`scope` в секции не хранятся |
 | 4 | Профиль: `{id, title, sections: [{id, order, scope}]}`. `order` и `scope` — свойство записи в профиле, не секции |
@@ -43,7 +43,7 @@ mode (пресет агента) может работать в разных п�
 | 8 | Несколько отдельных секций, не одна агрегированная. Built-in секции не переопределяются и не выключаются |
 | 9 | Запечатывание: config читается один раз при старте сессии, в состоянии сессии лежит снапшот собранного текста; правки конфига на идущую сессию не влияют |
 | 10 | Рантайм-состояние: `lastByWorkspace` и `default` — volatile-поля главной строки; снапшот сессии — своя таблица в `ctx.storageDomain` |
-| 11 | Цепочка разрешения: `lastByWorkspace[workspaceId]` → `default` → ничего. `lastByWorkspace` пишется **только** при явном выборе в пикере |
+| 11 | Цепочка разрешения: `lastByWorkspace[workspaceKey]` → `default` → ничего; `workspaceKey` определяется общим `resolveWorkspaceKey` по членству сессии в workspace, cwd и fallback workspaceId. `lastByWorkspace` пишется **только** при явном выборе в пикере |
 | 12 | Применяется на всех поверхностях, где есть воркспейс; пикер — лишь способ переопределить |
 | 13 | Чип выбора — `conversation.input.left` (list, внутри тул-строки поля промпта, после `permission` и `plan`); виден только на пустой сессии, после старта рендерит `null` |
 | 14 | Редактор — своя секция `settings.section` (id `prompt-profiles`, порядок 25): полный CRUD секций и профилей. Три таба — Profiles / Sections / Preview; внутри таба drill-down (список → форма), назад по `← back`, Esc или повторному клику по активному табу |
@@ -57,7 +57,7 @@ mode (пресет агента) может работать в разных п�
 | 22 | Локаль: en в v1, ru вторым этапом через `dsh-client-locale` |
 | 23 | UI-название фичи: **Prompt profile** |
 | 24 | Правки сохраняются автосейвом с дебаунсом; отдельной кнопки Save нет |
-| 25 | Таб Preview показывает только наши секции в итоговом порядке с подстановкой `{{model}}`/`{{cwd}}`; built-ins — плейсхолдерами, пропущенные секции — пометкой и причиной |
+| 25 | Таб Preview — ИЛЛЮСТРАТИВНЫЙ предпросмотр: наши секции в итоговом порядке, built-ins плейсхолдерами, пропущенные секции с причиной. `{{cwd}}` подставляется (cwd из запроса, иначе host cwd), `{{model}}` и неизвестные переменные остаются литералами и перечисляются в `variables` (`null` = неизвестно); реальные значения подставляются при старте сессии |
 | 26 | `scope` редактируется только в составе профиля; форма секции показывает read-only «используется в» со scope и профилями |
 | 27 | «Профиль по умолчанию для новых сессий» — в табе Profiles под списком профилей |
 
@@ -80,7 +80,7 @@ mode (пресет агента) может работать в разных п�
     - id: prompt-section-light-tone
       name: '@knopki/dsh-prompt-profiles/section'
       config:
-        id: light-tone
+        id: prompt-section-light-tone
         title: Light tone
         body: |-
           Отвечай кратко, без преамбул и извинений.
@@ -89,22 +89,21 @@ mode (пресет агента) может работать в разных п�
     - id: prompt-profile-light
       name: '@knopki/dsh-prompt-profiles/profile'
       config:
-        id: light
+        id: prompt-profile-light
         title: Light
         sections:
-          - { id: light-tone, order: 1050, scope: main-only }
+          - { id: prompt-section-light-tone, order: 1050, scope: main-only }
 ```
 
 Пользовательские строки, созданные из UI, наш writer добавляет тем же способом в
 `~/.dsh/profiles/web/cordis.patch.yml` (профильный слой применяется после всех слоёв бандлов,
 поэтому обновление бандла их не затирает).
 
-Id созданных из UI строк — короткий случайный токен (8 hex-символов из `crypto.randomUUID`),
-одинаковый в обеих частях: строка `prompt-section-<token>` и её `config.id: <token>`. Раньше id
-выводился из slug заголовка (например, `prompt-section-new-section` с `config.id: new-section`),
-что читалось как два разных id и могло collide-ить со строками чужих бандлов. Явный `id` от
-вызывающей стороны по-прежнему принимается (обратная совместимость, проверяется как slug). Существующие
-строки, созданные ранее, НЕ мигрируют и сохраняют свои slug-идентификаторы.
+Id новых строк, созданных из UI, — полный `prompt-section-<token>` (token — 8 hex-символов из
+`crypto.randomUUID`); значение одинаково у row id, `config.id` и `configId` в ответе. Явный id
+принимается в bare/full/qualified форме и нормализуется к полному id. Короткие slug-значения
+`config.id` в ранее созданных строках — легаси: автоматически не мигрируют; lookup продолжает
+поддерживать их наряду с новыми полными id.
 
 Строки, пришедшие из бандлов, не переписываются: правка такой строки из UI даёт bare-override
 (без `insert`) в профильном слое, «удаление» — `disabled: true` в том же слое.
@@ -154,8 +153,11 @@ const Config = z.object({
 Все три плагина объявляют `ctx.inject(['settings'], (child) => child.effect(() =>
 child.settings.configure({ auto: false }, ctx.fiber)))` — страницу рисуем сами.
 
-Запись в массив/словарь идёт целиком (как `allowedModels` в `dsh-client-ui-settings-subagent`):
-`{op:'set', path:['sections'], value:[...]}`. Скаляры — точечно: `{op:'set', path:['body'], value}`.
+UI-обновления существующих section/profile rows идут через `ctx.settings.replace(rowId, value, revision)`
+и передают целиком volatile-поля (`{title, body}` или `{title, sections}`). Пооперационные
+`ctx.settings.mutate` остаются для main-row полей: `/default` — точечная запись `default`, `/last` и
+чистка ссылок — операции по отдельным ключам `lastByWorkspace`. Примеры `mutate` ниже в R3 — результат
+раннего спайка способности API, а не текущий способ обновлять section/profile.
 
 ---
 
@@ -203,8 +205,8 @@ ctx.on('system-prompt/assemble', (assembly, context, next) => {
   const session = agent.session
   const snapshot = snapshots.get(session.id)   // storageDomain, таблица sessions
   if (!snapshot) {
-    const workspace = workspaceRegistry.resolveByPath(session.header.cwd)
-    const profileId = lastByWorkspace[workspace.id] ?? default ?? null
+    const workspaceKey = await resolveWorkspaceKey({ workspaceRegistry, session, cwd: session.header?.cwd })
+    const profileId = resolveProfileId({ lastByWorkspace, workspaceKey, defaultId: default, profileIds }).profileId
     snapshot = buildSnapshot(profileId, scopePredicate(agent))
     await snapshots.put(session.id, snapshot)  // дальше только чтение
   }
@@ -272,14 +274,16 @@ const promptProfilesDomain = defineDomain({
 | Метод | Назначение |
 |---|---|
 | `GET /__dsh-prompt-profiles/state` | `{profiles, sections, builtinOrders, default, lastByWorkspace, revision}`; включает `modes: [{id,title,complete}]` (агент-пресеты) |
-| `GET /__dsh-prompt-profiles/preview?profileId=` | собранный предпросмотр профиля: секции с order/интерполяцией, `skipped` с причинами; 404 на неизвестный профиль |
-| `POST /__dsh-prompt-profiles/section/create` | writer: `insert`-строка `.../section`; ответ `{rowId, patchId, configId, title, body, emits}`, где `patchId = rowId = prompt-section-<token>`, `configId = <token>` — один случайный 8-hex токен (см. §3); коллизии с существующими row-id/config.id регенерируются |
-| `POST /__dsh-prompt-profiles/section/update` | `ctx.settings.mutate(rowId, ops, revision)` |
-| `POST /__dsh-prompt-profiles/section/delete` | своя строка → удалить; чужая → `disabled: true` |
-| `POST /__dsh-prompt-profiles/section/rename` | один writer-commit меняет только секцию (новые `config.id` и id строки; старая строка снимается); профили не меняются. Ответ включает `affectedProfiles: [{profileId, title}]` для оставшихся старых ссылок; повторный rename в тот же id — 400 |
-| `POST /__dsh-prompt-profiles/profile/create|update|delete` | то же для профилей |
-| `POST /__dsh-prompt-profiles/default` | `ctx.settings.mutate('prompt-profiles', {default})` |
-| `POST /__dsh-prompt-profiles/last` | `ctx.settings.mutate('prompt-profiles', {lastByWorkspace})` |
+| `GET /__dsh-prompt-profiles/preview?profileId=&cwd=` | иллюстративный предпросмотр профиля: секции с order, подстановка только `{{cwd}}`, `skipped` с причинами, `variables` — использованные переменные (`null` = неизвестно); 404 на неизвестный профиль |
+| `POST /__dsh-prompt-profiles/section/create` | body `{title?, body?, id?}`; writer вставляет строку; ответ `{rowId, patchId, configId, title, body, emits}`, где `rowId = patchId = configId = prompt-section-<8hex>` (bare/full/qualified явный id нормализуется к полному) |
+| `POST /__dsh-prompt-profiles/section/update` | body `{rowId, value:{title, body}, revision?}`; `settings.replace(rowId, {title, body}, revision)` — volatile fields целиком |
+| `POST /__dsh-prompt-profiles/section/delete` | body `{rowId}`; своя строка → writer удаляет; строка бандла → bare override `disabled: true` |
+| `POST /__dsh-prompt-profiles/section/rename` | один writer-commit меняет только секцию; ответ включает `affectedProfiles`; профили не меняются; повторный rename в тот же id — 400 |
+| `POST /__dsh-prompt-profiles/profile/create` | body `{title?, sections?}`; writer insert; ответ содержит rowId/patchId/configId (один полный `prompt-profile-<8hex>`) и config |
+| `POST /__dsh-prompt-profiles/profile/update` | body `{rowId, value:{title, sections}, revision?}`; `settings.replace(rowId, {title, sections}, revision)` |
+| `POST /__dsh-prompt-profiles/profile/delete` | body `{rowId, revision?}`; очищает default/last ссылки, затем writer delete/disable |
+| `POST /__dsh-prompt-profiles/default` | body `{default:string|''|null, revision?}`; точечный `settings.mutate` main-row поля `default` |
+| `POST /__dsh-prompt-profiles/last` | body `{workspaceId?, cwd?, profileId, revision?}`; `profileId: ''` — явное «ничего»; cwd/workspace разрешаются в общий workspaceKey, per-key `settings.mutate`; без обоих ключей 400 |
 
 Все записи идут через один внутрипроцессный мьютекс: свои `insert`-записи (свой writer) и записи
 через `configEditor` (он берёт file-lock сам) не должны перемешиваться.
@@ -432,8 +436,10 @@ Sections, Preview. Внутри таба drill-down: список → форма
   `{agentPreset, content (YAML-строка), name?, description?}` → парс `content` с custom-тегом `!!js` →
   flatten списка плагинов → строка `@deepseek-ai/dsh-persona` с `config.complete === true`;
   `compositionInventory()` НЕдостаточна — её строки не несут config;
-- Preview показывает только наши секции в итоговом порядке с подстановкой `{{model}}`/`{{cwd}}`,
-  built-ins — плейсхолдерами, пропущенные секции — с причиной.
+- Preview ИЛЛЮСТРАТИВЕН: наши секции в итоговом порядке, built-ins — плейсхолдерами, пропущенные —
+  с причиной; подставляется только `{{cwd}}` (cwd из запроса, иначе host cwd), остальные переменные
+  остаются литералами и перечисляются в `variables` (`null` = неизвестно) — реальные значения
+  подставляются при старте сессии, поэтому текст предпросмотра может отличаться от промпта.
 
 ### 6.3 Сборка
 
@@ -464,6 +470,9 @@ Sections, Preview. Внутри таба drill-down: список → форма
 - Удаление профиля чистит `default` и значения `lastByWorkspace` для него (best-effort, ПОСЛЕ удаления строки; per-key ops). Если чистка не удалась — остаются «висячие» id: разрешение профиля молча сбрасывает несуществующий профиль, это безопасная деградация, пользователь выбирает заново. Ключи-воркспейсы, которых нет в реестре, и значения на удалённые профили подчищаются при следующем `/last` (кроме cwd-ключей).
 - Строгое запечатывание (SPEC §2 решение 9): пустой снапшот — это ТОЖЕ решение, он фиксируется durable-first и больше не пересчитывается. Сессии, стартовавшие без профиля (в т.ч. созданные в окне сломанного ключа воркспейса), остаются без профиля до конца сессии — нужна новая сессия.
 - Бандл предполагает ОДИН процесс DSH. Внутрипроцессный мьютекс сериализует записи этого процесса, атомарный rename держит YAML целым, но параллельная правка профильного патча другим процессом DSH не поддерживается и может перезаписать выбор/строки.
+- Одноразовое окно миграции при обновлении бандла: сессии, стартовавшие ДО апгрейда и НЕ имеющие сохранённой записи снапшота, при первой сборке после апгрейда запечатываются ТЕКУЩИМ конфигом — правка `default`/`lastByWorkspace`, сделанная уже после старта такой сессии, может попасть в неё. Массово «запечатать пустым» все такие сессии нельзя: список существовавших сессий не читается (нет дешёвого публичного доступа к чужим сервисам хоста). Все сессии, стартующие после апгрейда, запечатываются строго с первого хода.
+- Housekeeping `lastByWorkspace` (снятие устаревших ключей) выполняется только при доступной ревизии настроек (CAS): без неё `unset` не отправляется, чтобы не удалить ключ, ставший валидным между сканом и записью. Собственный ключ выбора пишется всегда (per-key ops).
+- `/last` проверяет существование профиля внутри залоченной мутации, уже после `await resolveWorkspaceKey`, поэтому удаление профиля во время резолва даёт 404, а не «висячий» выбор. Остаётся окно HMR-лага: пока выгруженная строка ещё видна реестру, `/last` может записать её как валидную; последующая очистка при удалении профиля такие значения снимает.
 - Несколько ссылок на одну секцию (в том числе в одном профиле) с разными scope дают по записи на ссылку в `usedIn`, но UI ключует строки `profileId`, что создаёт дубли React-ключей и слияние строк.
 - При равном order у двух собственных секций UI-компаратор `outlineRows` возвращает 1 для обеих сторон без транзитивности; порядок строк в UI недетерминирован. Профиль, состоящий только из битых ссылок, показывает в счётчике `refs.length`, включая битые; Preview содержит только `⟨skipped⟩`.
 - Клавиатура: Escape сбрасывает drill при нажатии в любом поле; перетаскивание доступно только мышью (draggable без `tabIndex`/`role`/`onKeyDown`), клавиатурного пути для переупорядочивания нет. Фокус после rename/duplicate/back не восстанавливается; в ConfirmDialog input получает autoFocus без метки (`newIdLabel` не используется).
@@ -523,7 +532,7 @@ Sections, Preview. Внутри таба drill-down: список → форма
 |---|---|---|
 | R1 | ✅ закрыт спайком | мутация `assembly.sections` из слушателя реально попадает в промпт; сортировка — до waterfall, пересортировки после нет (`.spike/R1-R2-injection-and-patch.md`) |
 | R2 | ✅ закрыт спайком | `insert:`-строка writer'а монтируется, HMR подхватывает, реестр видит секцию (`.spike/R1-R2-injection-and-patch.md`) |
-| R3 | ✅ закрыт спайком | `ctx.settings.mutate` принимает запись в volatile-словарь и в volatile-массив; caveat — массив пишется целиком (`.spike/R3-R4-settings-and-storage.md`) |
+| R3 | ✅ закрыт спайком | Спайк подтвердил capability `ctx.settings.mutate` для volatile map/array; текущие section/profile updates используют `settings.replace`, а mutate — для main-row default и per-key `/last`/cleanup (`.spike/R3-R4-settings-and-storage.md`) |
 | R4 | ✅ закрыт спайком | снапшот в `storageDomain` переживает resume и воспроизводит тот же промпт (`.spike/R3-R4-settings-and-storage.md`) |
 | R5 | ✅ закрыт спайком | `isSubagent = origin === 'subagent'`, `isFork = isSeeded === true`; `subagents-only` остаётся в v1 (`.spike/R5-R7-subagent-complete.md`) |
 | R6 | ✅ закрыт спайком | sortable-примитива нет; применены числовое поле и HTML5 drag&drop для переупорядочивания (`.spike/R6-R8-client-slots.md`) |

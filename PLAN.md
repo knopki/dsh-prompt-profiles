@@ -14,7 +14,7 @@
 |---|---|---|
 | R1 | Слушатель `system-prompt/assemble` добавляет в `assembly.sections` запись `{name:'spike:x', order:1050, text:'SPIKE-MARKER'}` | Маркер виден в системном промпте живой сессии (через `dsh-context`/инспекцию промпта) |
 | R2 | Writer дописывает в `cordis.patch.yml` строку `- insert: [{id: spike-section, name: '@knopki/dsh-prompt-profiles/section', config:{…}}]` | Строка монтируется без рестарта, комментарии в файле целы, реестр её видит |
-| R3 | `ctx.settings.mutate('prompt-profiles', {lastByWorkspace:{...}})` и `mutate(rowId, [{op:'set',path:['sections'],value:[…]}])` | Обе записи проходят, файл обновляется, плагин не перезапускается (volatile-only) |
+| R3 | Спайк проверил, что `ctx.settings.mutate` может писать volatile main-row map и volatile array | Возможность API подтверждена; текущая реализация rows использует `settings.replace`, а per-key mutate ops — `/last` и чистки ссылок |
 | R4 | Запись снапшота в `storageDomain`, затем `dsh` resume сессии | Промпт возобновлённой сессии идентичен исходному |
 | R5 | Найти в `context.agent` признак «это субагент» и отличить `subagent_fork` от обычного ребёнка | Признак есть → `subagents-only` в v1; нет → фиксируем отложение |
 | R6 | Проверить экспорты `@deepseek-ai/dsh-client-ui-primitives` на sortable/drag | Есть готовый → используем; нет → стрелки ↑↓ + числовое поле |
@@ -27,7 +27,7 @@
 
 - R1 — закрыто: мутация `assembly.sections` из слушателя waterfall попадает в промпт (`.spike/R1-R2-injection-and-patch.md`).
 - R2 — закрыто: `insert:`-строки writer'а монтируются через HMR, реестр их видит (`.spike/R1-R2-injection-and-patch.md`).
-- R3 — закрыто: `ctx.settings.mutate` пишет volatile-словарь и volatile-массив (массив — целиком) (`.spike/R3-R4-settings-and-storage.md`).
+- R3 — закрыто как capability-спайк: `ctx.settings.mutate` умеет писать volatile-словарь и volatile-массив; текущие section/profile updates идут через `settings.replace`, а mutate используется для main-row default и per-key `/last`/cleanup (`.spike/R3-R4-settings-and-storage.md`).
 - R4 — закрыто: снапшот в `storageDomain` воспроизводит промпт после resume (`.spike/R3-R4-settings-and-storage.md`).
 - R5 — закрыто: `origin === 'subagent'` и `isSeeded === true` читаются из `context.agent`; `subagents-only` остаётся в v1 (`.spike/R5-R7-subagent-complete.md`).
 - R6 — закрыто: sortable-примитива нет; выбран вариант ↑↓ + числовое поле (`.spike/R6-R8-client-slots.md`).
@@ -94,7 +94,7 @@
    создание `insert`-строк, удаление своих строк, `disabled: true` для чужих, бэкап и откат на время
    батч-операций, внутрипроцессный мьютекс.
 2. Роуты `webServer` (SPEC §5.5) + валидация входа по схемам из §4.
-3. Обновление существующих строк — через `ctx.settings.mutate` с `expectedRevision` (защита от stale-записи).
+3. Обновление существующих section/profile rows — через `ctx.settings.replace(rowId, volatileFields, expectedRevision)`; `/default` — точечный `settings.mutate`, `/last` и чистка ссылок — per-key mutate ops.
 4. `section/rename` — один writer-коммит меняет только `config.id` и id строки секции (новая строка → снятие старой); профили не меняются. Ответ включает `affectedProfiles: [{profileId, title}]` для оставшихся старых ссылок; повторный rename в тот же id — 400; при ошибке — восстановление файла.
 
 **Готово когда:** CRUD по API не ломает комментарии и `!!js` в патче, HMR пересобирает композицию,

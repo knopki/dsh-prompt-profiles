@@ -22,7 +22,7 @@ import {
   parseBuiltinOrders,
   loadBuiltinOrders,
 } from "../lib/mirror.js";
-import { BUILTIN_ORDERS, builtinOrdersByName } from "../lib/builtin-orders.js";
+import { BUILTIN_ORDERS, builtinOrdersByName, unmappedBuiltinKeys } from "../lib/builtin-orders.js";
 
 const SAMPLE = `
 import { Service } from "@deepseek-ai/cordis";
@@ -52,7 +52,19 @@ test("parseBuiltinOrders extracts the table without eval", () => {
 test("parseBuiltinOrders throws descriptively on garbage input", () => {
   assert.throws(() => parseBuiltinOrders(""), /SECTION_ORDERS/);
   assert.throws(() => parseBuiltinOrders("const SECTION_ORDERS = 42;"), /not found/);
-  assert.throws(() => parseBuiltinOrders("const SECTION_ORDERS = { /* empty */ };"), /no recognizable entries/);
+  assert.throws(() => parseBuiltinOrders("const SECTION_ORDERS = {};"), /no recognizable entries/);
+  assert.throws(() => parseBuiltinOrders("const SECTION_ORDERS = { /* empty */ };"), /not a plain key: number pair/);
+});
+
+test("parseBuiltinOrders refuses a PARTIALLY parseable table (M5)", () => {
+  // One changed upstream line must fail the whole parse, not silently drop it.
+  assert.throws(() => parseBuiltinOrders(
+    "const SECTION_ORDERS = {\n\tTOOL_BASH: 1e3,\n\tTOOL_READ: 1100,\n\tTOOL_NEW: compute(1),\n};"
+  ), /line 3 is not a plain key: number pair/);
+  // Two pairs on one line is a grammar change too.
+  assert.throws(() => parseBuiltinOrders(
+    "const SECTION_ORDERS = {\n\tA: 1, B: 2,\n};"
+  ), /line 1 is not a plain key: number pair/);
 });
 // #endregion SECTION_parse
 
@@ -122,6 +134,20 @@ test("loadBuiltinOrders warns when the runtime table diverges from the copy", ()
 // #endregion SECTION_fallback
 
 // #region SECTION_nameView
+test("loadBuiltinOrders reports built-in keys with no assembled-name mapping (M5)", () => {
+  const warnings = [];
+  const upgraded = SAMPLE.replace("TOOL_BASH: 1e3,", "TOOL_BASH: 1e3,\n\tTOOL_FRESH: 1111,");
+  const result = loadBuiltinOrders({
+    warn: (m, d) => warnings.push({ m, d }),
+    deps: { resolveFile: () => "/fake/lib/index.js", readFile: () => upgraded },
+  });
+  assert.equal(result.origin, "runtime");
+  assert.equal(result.orders.TOOL_FRESH, 1111, "the runtime table still wins");
+  const unmapped = warnings.find((w) => /no assembled-name mapping/.test(w.m));
+  assert.ok(unmapped, "unmapped keys are reported");
+  assert.deepEqual(unmapped.d.unmapped, ["TOOL_FRESH"]);
+});
+
 test("builtinOrdersByName maps verified keys to dotted section names", () => {
   const byName = builtinOrdersByName(BUILTIN_ORDERS);
   assert.equal(byName["harness:identity"], -1000);
@@ -132,3 +158,25 @@ test("builtinOrdersByName maps verified keys to dotted section names", () => {
   assert.ok(Object.isFrozen(byName));
 });
 // #endregion SECTION_nameView
+
+// #region SECTION_nameFreeze
+/** @purpose M5: pin the name mapping and the total built-in set so a DSH upgrade breaks a test instead of silently losing anchors. */
+test("builtin name mapping is frozen against the installed built-in set", () => {
+  const EXPECTED_NAMES = [
+    "app:web-surface", "context:file-reference", "deployment:persona-prefix",
+    "deployment:persona-suffix", "harness:identity", "mcp-resource-servers",
+    "plan:policy", "team:policy", "tool:bash", "tool:edit", "tool:glob",
+    "tool:goal", "tool:grep", "tool:jobs", "tool:pwsh", "tool:ralph",
+    "tool:read", "tool:web_fetch", "tool:web_search", "tool:write",
+    "tools:ptc-only", "tools:sdk", "ui:deliverable-file-references",
+  ];
+  assert.deepEqual(Object.keys(builtinOrdersByName(BUILTIN_ORDERS)).sort(), EXPECTED_NAMES,
+    "the assembled-name mapping changed — map the new built-in or pin it as known-unmapped");
+  assert.equal(Object.keys(BUILTIN_ORDERS).length, 32, "built-in count is pinned");
+  assert.deepEqual(unmappedBuiltinKeys(BUILTIN_ORDERS), [],
+    "every fallback key is either mapped or in the pinned known-unmapped set");
+  // A NEW built-in is reported and takes no anchor.
+  assert.deepEqual(unmappedBuiltinKeys({ ...BUILTIN_ORDERS, TOOL_FRESH: 1 }), ["TOOL_FRESH"]);
+  assert.equal(builtinOrdersByName({ ...BUILTIN_ORDERS, TOOL_FRESH: 1 })["tool:fresh"], undefined);
+});
+// #endregion SECTION_nameFreeze
