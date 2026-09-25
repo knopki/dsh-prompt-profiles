@@ -42,6 +42,7 @@ const hostBanner = {
 // so every entry sees one instance — exactly like the pre-Phase-0 module graph.
 const hostEntries = [
   "src/host/index.ts",
+  "src/host/domain/index.ts",
   "src/host/section.ts",
   "src/host/profile.ts",
   "src/host/operations.ts",

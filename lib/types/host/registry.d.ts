@@ -1,99 +1,61 @@
 /**
- * Pure registry of prompt sections and profiles (no Cordis at import time).
  * #region moduleContract
  * @modulecontract
- * @purpose Own the authoritative in-memory view of every registered section and
- *   profile row so the service, the editor and the prompt-injection step all
+ * @purpose Own the authoritative in-memory view of every registered section
+ *   and profile row, so the service, the editor and the prompt-injection step
  *   read one consistent, deterministically ordered dataset.
  * @scope
  *  - Registration/disposal with the duplicate-config.id policy (SPEC §5.1),
- *    sorted views, usedIn lookup, and insertionIndex.
+ *    sorted detached views, and the usedIn lookup. Insertion anchoring is a
+ *    domain rule and lives in domain/ordering.ts (re-exported here for the
+ *    modules and tests that reach it through the registry).
  *  - Pure data structure: no Cordis, no filesystem, no clock.
- *  - NOT: mounting rows (section.js/profile.js), serving the registry on ctx
- *    (index.js), prompt injection (PLAN step 3).
+ *  - NOT: mounting rows (section.ts/profile.ts), serving the registry on ctx
+ *    (index.ts), prompt injection.
  * @invariants
  *  - Views are fresh shallow copies in a stable order; mutating one never
  *    affects the registry. Volatile `.get()` fields are unwrapped at READ time
- *    so live settings edits keep flowing (astra finding B).
+ *    so live settings edits keep flowing into views, sorting and usedIn.
  *  - A duplicate config.id resolves to the registration mounted LAST;
- *    disposing an overridden registration is a no-op.
- *  - A section's order is used EXACTLY as the profile states it — equal orders
- *    (with a built-in or a peer) are legal and never normalized.
- * @dependencies USES API: none (pure). Consumers inject warn callbacks.
- * @rationale Q: Why anchor insertion on built-in NAMES, not section.order?
- *   A: Spike R1 proved assembled sections are sorted BEFORE the waterfall and
- *   carry NO `order` field — only names present in that assembly can anchor.
- * @keywords registry, sections, profiles, duplicate, usedIn,
- *   insertionIndex, prompt profiles
+ *    disposing an overridden registration is a no-op, and disposing the winner
+ *    reveals the still-mounted earlier one.
+ * @keywords registry, sections, profiles, duplicate, usedIn
  * #endregion moduleContract
  */
+import type { ConfigId, ProfileView, RowSource, SectionView, UsedInEntry } from "./domain/model.ts";
+import { insertionIndex } from "./domain/ordering.ts";
+export { insertionIndex };
+/** A row handed to the registry by its composition row plugin. */
+interface RegisterRow {
+    rowId?: string | null;
+    config: {
+        id: string;
+    } & Record<string, unknown>;
+    source?: RowSource;
+}
 /** Pure in-memory registry of section and profile rows. */
 export declare class PromptProfilesRegistry {
     #private;
-    /**
-     * @param {object} [options]
-     * @param {(message: string, details?: unknown) => void} [options.warn]
-     *   duplicate-id sink (defaults to console.warn).
-     */
+    /** @param options.warn duplicate-id sink (defaults to console.warn). */
     constructor({ warn }?: {
-        warn?: {
-            (...data: any[]): void;
-            (...data: any[]): void;
-            (message?: any, ...optionalParams: any[]): void;
-        } | undefined;
+        warn?: (message: string, details?: unknown) => void;
     });
     /**
-     * Register one `.../section` row (SPEC §5.1). `source` is
-     * `'bundle' | 'user' | 'unknown'`.
-     * @returns {() => void} disposer; a no-op when a later row with the same
-     *   config.id already overrode this registration.
+     * Register one `.../section` row (SPEC §5.1).
+     * @returns disposer; a no-op when a later row with the same config.id
+     *   already overrode this registration.
      */
-    registerSection(row: any): () => void;
-    /**
-     * Register one `.../profile` row (SPEC §5.1); same disposer semantics as
-     * {@link registerSection}.
-     */
-    registerProfile(row: any): () => void;
-    /** Detached view of every section, sorted by `id` (SPEC decision). */
-    sections(): any[];
+    registerSection(row: RegisterRow): () => void;
+    /** Register one `.../profile` row; same disposer semantics as registerSection. */
+    registerProfile(row: RegisterRow): () => void;
+    /** Detached view of every section, sorted by `id`. */
+    sections(): SectionView[];
     /** Detached view of every profile, sorted by `title` then `id` (SPEC decision 19). */
-    profiles(): any[];
+    profiles(): ProfileView[];
     /**
      * Which profiles reference a section, with per-profile scope — feeds the
-     * editor's read-only «используется в» field (SPEC §2 #26).
-     * @returns {Array<{ profileId: string, scope: string }>} sorted by
-     *   profileId; a section referenced twice contributes one entry per ref.
+     * editor's read-only «используется в» field (SPEC §2 #26). A section
+     * referenced twice contributes one entry per reference.
      */
-    usedIn(sectionId: any): {
-        profileId: any;
-        scope: any;
-    }[];
+    usedIn(sectionId: ConfigId): UsedInEntry[];
 }
-/**
- * Where our sections must be spliced into an already-sorted
- * `assembly.sections` array. Spike R1 (R1-R2-injection-and-patch.md): the
- * assembly is sorted BEFORE the waterfall and never re-sorted, and its entries
- * carry NO `order` — only a built-in NAME present in that assembly can anchor,
- * so a mirror entry absent from the assembly and foreign names never count.
- *
- * Rule: order `o` goes immediately AFTER the last element whose built-in order
- * is known and `< o` (0 when none). An order EQUAL to a present built-in is NOT
- * shifted — it lands just before that built-in, which keeps the position
- * deterministic (the engine sorts by order, then name).
- *
- * @param {number[]} sectionOrders - our orders EXACTLY as the profile states
- *   them, already ascending (the listener sorts the same way; equal orders keep
- *   profile order).
- * @param {string[]} presentBuiltinNames - names of `assembly.sections` IN ARRAY
- *   ORDER (unknown names are skipped by the scan but occupy slots).
- * @param {Record<string, number>} builtinOrders - name→order map (dotted names
- *   like `tool:bash`; see builtinOrdersByName).
- * @returns {Array<{ order: number, index: number }>} aligned with
- *   sectionOrders; `index` is a position in the ORIGINAL array. Splice from
- *   LAST to FIRST so earlier indices stay valid; equal indices preserve the
- *   input (ascending) order.
- */
-export declare function insertionIndex(sectionOrders: any, presentBuiltinNames: any, builtinOrders: any): {
-    order: any;
-    index: number;
-}[];

@@ -512,3 +512,105 @@ stays on TS 7.0.2 — no revert was needed.
 - Two consecutive `pnpm run build` runs produce a byte-identical `lib/`
   (sha256 over the file set), and `lib/` contains no
   `/api/__dsh-prompt-profiles` reference.
+
+## Refactor B1 — domain layer (pure rules, typed)
+
+Goal: extract `src/host/domain/` — pure rules with no I/O — and make it the
+single definition the rest of the host imports, without moving the
+application use cases or the adapters (B2/B3) and without changing behaviour.
+
+### What the domain owns now
+
+- `domain/model.ts` (140) — row kinds and plugin names, `SCOPES`/`Scope`,
+  `SectionRef`, `Section`/`Profile`, `SectionView`/`ProfileView`, the id forms
+  (`RowId`/`PatchId`/`ConfigId`), the sealed `Snapshot` and `PlannedInsertion`.
+- `domain/ids.ts` (180) — `toPatchId`, `idPrefix`, `ID_TOKEN_PATTERN`,
+  `normalizeNewRowId`, `normalizeExplicitRowId`, `findRow`, `newRowId`,
+  `tokenSource`, `takenIds`, `configIds`.
+- `domain/errors.ts` (116) — `DomainError` + `InvalidInputError`,
+  `NotFoundError`, `ConflictError`, `UnavailableError`, `InternalError`, with
+  `errorMessage` (the old `errorText`). `ApiError` and its HTTP statuses are
+  gone from the source; `code` is the domain discriminator and `status` stays
+  as the numeric mirror callers/harnesses already branched on.
+- `domain/ordering.ts` (149) — `sectionSkipReason` (+ the exact SKIP_REASONS
+  strings), `interpolationSkipReason`, `sortByOrder`, `insertionIndex`,
+  `planInsertion` (BASE indices).
+- `domain/refs.ts` (128) — `sectionRefTargets`, `resolveSectionRefId`,
+  `rowAliases`, `refNamesRow`, `usedIn`.
+- `domain/validation.ts` (237) — the zod payload schemas per method. Each
+  method has a strict wire `*Input` and a tolerant business `*Payload` built
+  from the same field map, so the descriptor codecs and the operation checks
+  cannot drift; `parsePayload` turns the first issue into an
+  `InvalidInputError`. `src/shared/remote-contract.ts` now imports the
+  `*Input` schemas instead of re-declaring them (one definition).
+- `domain/index.ts` (20) — barrel. Shared/client code must import the exact
+  module (validation.ts); the barrel pulls `node:crypto` through ids.ts.
+
+### Re-pointed modules
+
+- `operations.ts` 1267 → 1034: the hand-rolled `validate`, `ApiError`,
+  `errorText`, `findRow`, `normalizeNewRowId`, `tokenSource`,
+  `generateTokenId`, `takenConfigIds`/`takenIds` and the local id-pattern/
+  scope constants are deleted; it now applies domain helpers and throws typed
+  domain errors. `sectionTargets()`/`takenIds()`/rename aliases became
+  one-liners over `refs.ts`/`ids.ts`.
+- `resolve.ts` 390 → 351: `sectionSkipReason` and `planInsertion` moved to
+  `domain/ordering.ts` and are re-exported; `insertionIndex` is no longer a
+  registry-local.
+- `registry.ts` 224 → 194: `insertionIndex` moved to the domain and is
+  re-exported; `usedIn` delegates to `domain/refs.ts`.
+- `writer.ts` 560 → 547: `toPatchId` moved to `domain/ids.ts` and is
+  re-exported (the writer tests import it from `lib/writer.js`).
+- `remote.ts`: throws `InternalError` instead of `ApiError`.
+
+### `@ts-nocheck`
+
+- REMOVED (fully typed): `src/host/registry.ts`, `src/host/resolve.ts`,
+  `src/shared/remote-contract.ts`. The new `src/host/domain/*.ts` never had
+  the header.
+- LEFT, with the reason:
+  - `operations.ts` — application layer; it moves to `src/host/application/`
+    in B2, where the port types exist. Comment diet + domain extraction were
+    applied here, but the `deps` port bag stays untyped for now.
+  - `index.ts` — Cordis `Service` subclass with dynamic `ctx.inject`/`ctx.get`
+    and the storage domain; needs the platform types (B3).
+  - `remote.ts` — Cordis + `@deepseek-ai/dsh-typert-protocol` surface.
+  - `writer.ts` — `node:fs` plus mutable `yaml` document nodes; typing the
+    node accessors is infra work (B3).
+  - `mirror.ts` / `builtin-orders.ts` / `section.ts` / `profile.ts` — untouched
+    by B1 (fs/regex parsing, static table, schemastery subpath plugins).
+
+### Behaviour
+
+A differential bench (68 payload/operation cases) ran the pre-refactor build
+from `git archive HEAD lib` against the new build with the same fake
+services, patch files and settings stubs, comparing status, result JSON,
+patch bytes and settings/replace calls: identical everywhere except two
+intentional items.
+
+1. Thrown errors are now domain classes (`InvalidInputError` etc.) instead of
+   a single `ApiError` — same numeric `status` on every case.
+2. `sectionRename` without `id` answers 400 (InvalidInputError); before it
+   fell through to the writer's `TypeError` (no status). The committed wire
+   descriptor already required `id`, so no Remote caller can reach the old
+   path.
+
+Validation MESSAGES changed (zod issue text instead of the hand-written
+sentences); every status and result is unchanged, and the payload schemas
+deliberately keep the pre-refactor tolerances (`value.body` extra key on
+profile update is still ignored, blank `rowId` is still a 400, `last` with
+both keys empty is still a 400).
+
+### Sizes and verification
+
+- Host sources: 11 files / 4061 lines before, 18 files / 4585 after
+  (operations −233, resolve −39, registry −30, remote-contract −131,
+  writer −13; domain +970).
+- `lib/client.js` 911 218 → 914 628 B; `lib/index.js` 15 034 → 15 198 B.
+- `pnpm run typecheck` clean, `pnpm run lint` clean, `pnpm test` 124/124,
+  `node --test test/smoke-cordis.test.mjs` 8/8,
+  `node test/client-shim.test.cjs` ALL OK, `pnpm run test:remote` 4/4.
+- Two consecutive `pnpm run build` runs produce a byte-identical `lib/`
+  (sha256 over the file set). `lib/domain/index.js` is now a built entry so
+  the node suite can import the domain by path; `test/api.test.mjs` imports
+  `errorMessage` from it.

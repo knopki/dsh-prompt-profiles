@@ -1,254 +1,59 @@
-/** #region moduleContract
+/**
+ * #region moduleContract
  * @modulecontract
  * @purpose ONE source of truth for the promptProfiles Remote contract: the
- *   method table (name + strict zod args/result schemas) and the descriptor
- *   builder both faces share, so the host descriptors (registered through
- *   ctx.typert.register) and the client descriptors (mounted through
- *   ctx.remote.$mount) can never drift apart in shape.
+ *   method table (name + strict payload schemas + descriptor line) and the
+ *   descriptor builder both faces share, so the host contribution
+ *   (`ctx.typert.register`) and the client contribution
+ *   (`ctx.remote.$mount`) can never drift apart.
  * @scope
- *  - Identity constants (package, namespace, service key), the METHOD_SPECS
- *    table, memoized codec factories, and buildRemoteDescriptors(face).
- *  - NOT: the host-side `run` adapters (src/host/remote.ts — they delegate to
- *    the shared operations), the host service/registration, and the client
- *    mount/call helpers (src/client/remote.ts).
+ *  - Identity constants, the METHOD_SPECS table over the domain payload
+ *    schemas (src/host/domain/validation.ts), the memoized codec factories and
+ *    buildRemoteDescriptors(face).
+ *  - NOT: the host-side run adapters (src/host/remote.ts), argument business
+ *    rules (domain/validation.ts payload variants), and the client mount/call
+ *    helpers (src/client/remote.ts).
  * @invariants
- *  - buildRemoteDescriptors('host') reproduces the exact descriptor field
- *    shape the 2a spike PROVED on live rc.2 and the host committed in 8a27a2f
+ *  - Descriptors have the exact field shape the 2a spike proved on live rc.2
  *    (id/service/namespace/method/invocation/parameters/result/sourceLocation,
- *    real zod factories in codec.create) — including the historical
- *    sourceLocation line numbers, which are DATA here, not live positions.
- *  - Both faces see the same method set and the same codec typeSymbols; a
- *    method cannot exist on one side and not the other.
- *  - Every args schema is z.strictObject: missing/extra/wrong-typed fields are
- *    rejected before any business code runs, on BOTH sides of the wire.
- * @dependencies
- *  - USES API: zod 4 (bundled into both the host and the client artifact —
- *    the browser module table has no bare `zod` entry).
- * @rationale
- *  - Q: Why keep `line` as a stale literal instead of the new file position?
- *    A: The host descriptors (their sourceLocation included) are public
- *    committed behaviour (MIGRATION phase 2b host half, commit 8a27a2f); the
- *    instruction is to fix the builder, not the tests. The literals preserve
- *    byte-identical host descriptors while the table lives in a new file.
- * @keywords remote, contract, descriptors, method table, zod, strict codecs,
- *   shared, phase 2b
- * #endregion moduleContract */
-import { z } from "zod";
+ *    real zod factories in codec.create). The `line` values are DATA, not live
+ *    positions: they are the committed host descriptor locations and must stay
+ *    byte-identical.
+ *  - Both faces see the same method set and the same codec typeSymbols; every
+ *    args schema rejects unknown and wrong-typed fields.
+ * @dependencies USES API: zod 4 (bundled into both artifacts — the browser
+ *   module table has no bare `zod` entry).
+ * @keywords remote, contract, descriptors, method table, zod, strict codecs
+ * #endregion moduleContract
+ */
+import type { z } from "zod";
 /** Typert package identity (the plugin's npm name, like every contribution). */
 export declare const TYPERT_PACKAGE = "@knopki/dsh-prompt-profiles";
 /** Wire namespace of every endpoint (`promptProfiles/<method>`). */
 export declare const REMOTE_NAMESPACE = "promptProfiles";
 /** Cordis service key of the delegating remote service (host side). */
 export declare const REMOTE_SERVICE_KEY = "promptProfilesRemote";
+/** One Remote method: its wire name, strict input codec, result codec and descriptor line. */
+export interface MethodSpec {
+    method: string;
+    line: number;
+    input: () => z.ZodType;
+    result: () => z.ZodType;
+}
 /**
  * Memoize one zod schema factory: the registry calls `codec.create()` per
- * decode, and rebuilding a schema on every call is pure waste. Mirrors the
- * generated descriptors' memoized factories (`dsh-goal/lib/typert.host.js`).
+ * decode, and rebuilding a schema on every call is pure waste.
  */
-export declare function memoCreate(build: any): () => any;
+export declare function memoCreate<T>(build: () => T): () => T;
 /**
- * THE method table: one entry per Remote method, each naming its input and
- * result strict zod schema. Host-side `run` adapters (src/host/remote.ts) and
- * the client call helpers (src/client/remote.ts) are both generated from this
- * table.
- *
- * `state` accepts the session hints the MIGRATION 2b contract reserves for
- * the client half ({sessionId?, cwd?, workspaceId?}); the current operation
- * ignores them (state is global, exactly like GET /state today).
- *
- * `line` preserves the sourceLocation line each host descriptor carried when
- * the table lived in src/host/remote.ts (see @rationale in the module
- * contract) — host descriptors must not change in any field.
+ * THE method table. `state` accepts the session hints the 2b contract
+ * reserves for the client half; the operation ignores them (state is global).
  */
-export declare const METHOD_SPECS: ({
-    method: string;
-    line: number;
-    input: () => z.ZodObject<{
-        sessionId: z.ZodOptional<z.ZodString>;
-        cwd: z.ZodOptional<z.ZodString>;
-        workspaceId: z.ZodOptional<z.ZodString>;
-    }, z.core.$strict>;
-    result: () => z.ZodObject<{
-        profiles: z.ZodArray<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
-        sections: z.ZodArray<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
-        builtinOrders: z.ZodRecord<z.ZodString, z.ZodNumber>;
-        modes: z.ZodArray<z.ZodObject<{
-            id: z.ZodString;
-            title: z.ZodString;
-            complete: z.ZodBoolean;
-        }, z.core.$strict>>;
-        default: z.ZodString;
-        lastByWorkspace: z.ZodRecord<z.ZodString, z.ZodString>;
-        revision: z.ZodNullable<z.ZodNumber>;
-    }, z.core.$strict>;
-} | {
-    method: string;
-    line: number;
-    input: () => z.ZodObject<{
-        profileId: z.ZodString;
-        cwd: z.ZodOptional<z.ZodString>;
-    }, z.core.$strict>;
-    result: () => z.ZodObject<{
-        profileId: z.ZodString;
-        title: z.ZodString;
-        sections: z.ZodArray<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
-        skipped: z.ZodArray<z.ZodObject<{
-            id: z.ZodString;
-            title: z.ZodString;
-            reason: z.ZodString;
-        }, z.core.$strict>>;
-        variables: z.ZodRecord<z.ZodString, z.ZodNullable<z.ZodString>>;
-    }, z.core.$strict>;
-} | {
-    method: string;
-    line: number;
-    input: () => z.ZodObject<{
-        id: z.ZodOptional<z.ZodString>;
-        title: z.ZodOptional<z.ZodString>;
-        body: z.ZodOptional<z.ZodString>;
-    }, z.core.$strict>;
-    result: () => z.ZodObject<{
-        rowId: z.ZodString;
-        patchId: z.ZodString;
-        configId: z.ZodString;
-        title: z.ZodString;
-        body: z.ZodString;
-        emits: z.ZodBoolean;
-    }, z.core.$strict>;
-} | {
-    method: string;
-    line: number;
-    input: () => z.ZodObject<{
-        rowId: z.ZodString;
-        value: z.ZodObject<{
-            title: z.ZodString;
-            body: z.ZodString;
-        }, z.core.$strict>;
-        revision: z.ZodOptional<z.ZodNumber>;
-    }, z.core.$strict>;
-    result: () => z.ZodObject<{
-        rowId: z.ZodString;
-        patchId: z.ZodString;
-        emits: z.ZodBoolean;
-    }, z.core.$strict>;
-} | {
-    method: string;
-    line: number;
-    input: () => z.ZodObject<{
-        rowId: z.ZodString;
-    }, z.core.$strict>;
-    result: () => z.ZodObject<{
-        disabled: z.ZodBoolean;
-    }, z.core.$strict>;
-} | {
-    method: string;
-    line: number;
-    input: () => z.ZodObject<{
-        rowId: z.ZodString;
-        id: z.ZodString;
-    }, z.core.$strict>;
-    result: () => z.ZodObject<{
-        rowId: z.ZodString;
-        patchId: z.ZodString;
-        id: z.ZodString;
-        affectedProfiles: z.ZodArray<z.ZodObject<{
-            profileId: z.ZodString;
-            title: z.ZodString;
-        }, z.core.$strict>>;
-    }, z.core.$strict>;
-} | {
-    method: string;
-    line: number;
-    input: () => z.ZodObject<{
-        id: z.ZodOptional<z.ZodString>;
-        title: z.ZodOptional<z.ZodString>;
-        sections: z.ZodOptional<z.ZodArray<z.ZodObject<{
-            id: z.ZodString;
-            order: z.ZodNumber;
-            scope: z.ZodOptional<z.ZodString>;
-        }, z.core.$strict>>>;
-    }, z.core.$strict>;
-    result: () => z.ZodObject<{
-        rowId: z.ZodString;
-        patchId: z.ZodString;
-        configId: z.ZodString;
-        title: z.ZodString;
-        sections: z.ZodArray<z.ZodObject<{
-            id: z.ZodString;
-            order: z.ZodNumber;
-            scope: z.ZodOptional<z.ZodString>;
-        }, z.core.$strict>>;
-    }, z.core.$strict>;
-} | {
-    method: string;
-    line: number;
-    input: () => z.ZodObject<{
-        rowId: z.ZodString;
-        value: z.ZodObject<{
-            title: z.ZodString;
-            sections: z.ZodOptional<z.ZodArray<z.ZodObject<{
-                id: z.ZodString;
-                order: z.ZodNumber;
-                scope: z.ZodOptional<z.ZodString>;
-            }, z.core.$strict>>>;
-        }, z.core.$strict>;
-        revision: z.ZodOptional<z.ZodNumber>;
-    }, z.core.$strict>;
-    result: () => z.ZodObject<{
-        rowId: z.ZodString;
-        patchId: z.ZodString;
-    }, z.core.$strict>;
-} | {
-    method: string;
-    line: number;
-    input: () => z.ZodObject<{
-        profileId: z.ZodString;
-        revision: z.ZodOptional<z.ZodNumber>;
-    }, z.core.$strict>;
-    result: () => z.ZodObject<{
-        ok: z.ZodLiteral<true>;
-    }, z.core.$strict>;
-})[];
+export declare const METHOD_SPECS: readonly MethodSpec[];
 /**
- * Build the hand-written invocation descriptors (one per METHOD_SPECS entry)
- * for one face, in the exact field shape the 2a spike proved against the live
- * rc.2 registry: `{ id, service, namespace, method, invocation: { kind:
- * 'direct' }, parameters: [{ name, wire, source: 'json', codec }], result,
- * sourceLocation }`.
- *
- * @purpose Give `ctx.typert.register` (host) and `ctx.remote.$mount`
- *   (client) identical contributions the strict gateway accepts without any
- *   generator pipeline, keeping the plugin independently installable.
- * @param {"host"|"client"} face - which side the descriptors are for (only
- *   the reported sourceLocation differs).
- * @returns {Array<object>} fresh descriptor array (safe to register once).
+ * @purpose Give `ctx.typert.register` (host) and `ctx.remote.$mount` (client)
+ *   identical contributions the strict gateway accepts without any generator
+ *   pipeline: `{ id, service, namespace, method, invocation, parameters,
+ *   result, sourceLocation }`, with one `input` parameter per invocation.
  */
-export declare function buildRemoteDescriptors(face: any): {
-    id: string;
-    service: string;
-    namespace: string;
-    method: string;
-    invocation: {
-        kind: string;
-    };
-    parameters: {
-        name: string;
-        wire: string;
-        source: string;
-        codec: {
-            mode: string;
-            typeSymbol: string;
-            create: () => any;
-        };
-    }[];
-    result: {
-        mode: string;
-        typeSymbol: string;
-        create: () => any;
-    };
-    sourceLocation: {
-        file: any;
-        line: number;
-        column: number;
-    };
-}[];
+export declare function buildRemoteDescriptors(face: "host" | "client"): Array<Record<string, unknown>>;

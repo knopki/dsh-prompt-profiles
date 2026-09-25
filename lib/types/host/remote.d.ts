@@ -25,9 +25,9 @@
  *    operation runs, so a malformed call can never touch the patch file.
  *  - Every result is plain JSON (recursive guard: no class instances, no
  *    functions, no cycles, no non-finite numbers) AND validated against its
- *    strict result schema; a violation is a thrown ApiError 500 — the call
+ *    strict result schema; a violation is a thrown InternalError — the call
  *    surfaces as a Remote failure, never a silent success.
- *  - Business failures are the SAME ApiError objects the operations throw;
+ *  - Business failures are the SAME DomainError objects the operations throw;
  *    the gateway wraps them as Remote failures with the message preserved.
  *  - `undefined`-returning operations (`last`, `defaultSet`) answer
  *    `{ ok: true }`.
@@ -73,35 +73,7 @@ export { REMOTE_NAMESPACE, REMOTE_SERVICE_KEY, TYPERT_PACKAGE };
  *   installable (MIGRATION "Out of scope").
  * @returns {Array<object>} fresh descriptor array (safe to register once).
  */
-export declare function remoteInvocations(): {
-    id: string;
-    service: string;
-    namespace: string;
-    method: string;
-    invocation: {
-        kind: string;
-    };
-    parameters: {
-        name: string;
-        wire: string;
-        source: string;
-        codec: {
-            mode: string;
-            typeSymbol: string;
-            create: () => any;
-        };
-    }[];
-    result: {
-        mode: string;
-        typeSymbol: string;
-        create: () => any;
-    };
-    sourceLocation: {
-        file: any;
-        line: number;
-        column: number;
-    };
-}[];
+export declare function remoteInvocations(): Record<string, unknown>[];
 /**
  * The delegating Typert Remote service (Cordis key `promptProfilesRemote`,
  * wire namespace `promptProfiles`). Extends `TypertRemoteService` so its

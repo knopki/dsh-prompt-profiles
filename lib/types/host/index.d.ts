@@ -96,9 +96,9 @@ export declare class PromptProfilesPlugin extends Service {
     /** Register one profile row (SPEC §5.1); `source` resolved via provenance when unknown. */
     registerProfile(row: any): () => void;
     /** @returns {Array<object>} section views sorted by id. */
-    sections(): any[];
+    sections(): import("./domain/model.ts").SectionView[];
     /** @returns {Array<object>} profile views sorted by title. */
-    profiles(): any[];
+    profiles(): import("./domain/model.ts").ProfileView[];
     /**
      * Profiles referencing a section, with per-profile scope (editor feed).
      *
@@ -107,10 +107,7 @@ export declare class PromptProfilesPlugin extends Service {
      * @param {string} sectionId
      * @returns {Array<{ profileId: string, scope: string }>}
      */
-    usedIn(sectionId: any): {
-        profileId: any;
-        scope: any;
-    }[];
+    usedIn(sectionId: any): import("./domain/model.ts").UsedInEntry[];
     /**
      * The mirror (SPEC §5.1/§5.2): SECTION_ORDERS keyed by placement key
      * (`TOOL_BASH` → 1000). Lazy, never throws, frozen result.

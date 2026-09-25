@@ -45,6 +45,8 @@
  *   profile patch, yaml, mutex, rollback
  * #endregion moduleContract
  */
+import { toPatchId } from "./domain/ids.ts";
+export { toPatchId };
 declare function withMutex(fn: any): Promise<void>;
 /**
  * Public alias shared with the operations' settings.mutate writes.
@@ -85,16 +87,6 @@ export declare function disableRow({ patchPath, rowId, name }: {
     patchPath: any;
     rowId: any;
 }): Promise<void>;
-/**
- * Normalize ANY row identifier to the unqualified patch row id: strip a
- * leading `<parent>:` qualification chain (`include:group:prompt-section-1` →
- * `prompt-section-1`) and keep the last segment. An already-unqualified id —
- * or a non-string / empty value — passes through unchanged. THE low-level
- * normalizer; every other module imports this instead of keeping a copy.
- * @param {string} value - row id as received.
- * @returns {string} the last `:`-separated segment (value for non-strings).
- */
-export declare function toPatchId(value: any): any;
 /**
  * Prove row ownership from this patch (sync). An id inside ANY `insert` entry
  * is USER-owned; a row present only as a bare override is BUNDLE-provided; a
@@ -172,4 +164,3 @@ export declare function renameSectionRow({ patchPath, row, oldRowId, oldName, bu
 export declare function withPatchBatch({ patchPath }: {
     patchPath: any;
 }, run: any): Promise<void>;
-export {};

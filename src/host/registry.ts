@@ -1,140 +1,153 @@
-// @ts-nocheck
-// TODO(phase 1): remove after typing
 /**
- * Pure registry of prompt sections and profiles (no Cordis at import time).
  * #region moduleContract
  * @modulecontract
- * @purpose Own the authoritative in-memory view of every registered section and
- *   profile row so the service, the editor and the prompt-injection step all
+ * @purpose Own the authoritative in-memory view of every registered section
+ *   and profile row, so the service, the editor and the prompt-injection step
  *   read one consistent, deterministically ordered dataset.
  * @scope
  *  - Registration/disposal with the duplicate-config.id policy (SPEC §5.1),
- *    sorted views, usedIn lookup, and insertionIndex.
+ *    sorted detached views, and the usedIn lookup. Insertion anchoring is a
+ *    domain rule and lives in domain/ordering.ts (re-exported here for the
+ *    modules and tests that reach it through the registry).
  *  - Pure data structure: no Cordis, no filesystem, no clock.
- *  - NOT: mounting rows (section.js/profile.js), serving the registry on ctx
- *    (index.js), prompt injection (PLAN step 3).
+ *  - NOT: mounting rows (section.ts/profile.ts), serving the registry on ctx
+ *    (index.ts), prompt injection.
  * @invariants
  *  - Views are fresh shallow copies in a stable order; mutating one never
  *    affects the registry. Volatile `.get()` fields are unwrapped at READ time
- *    so live settings edits keep flowing (astra finding B).
+ *    so live settings edits keep flowing into views, sorting and usedIn.
  *  - A duplicate config.id resolves to the registration mounted LAST;
- *    disposing an overridden registration is a no-op.
- *  - A section's order is used EXACTLY as the profile states it — equal orders
- *    (with a built-in or a peer) are legal and never normalized.
- * @dependencies USES API: none (pure). Consumers inject warn callbacks.
- * @rationale Q: Why anchor insertion on built-in NAMES, not section.order?
- *   A: Spike R1 proved assembled sections are sorted BEFORE the waterfall and
- *   carry NO `order` field — only names present in that assembly can anchor.
- * @keywords registry, sections, profiles, duplicate, usedIn,
- *   insertionIndex, prompt profiles
+ *    disposing an overridden registration is a no-op, and disposing the winner
+ *    reveals the still-mounted earlier one.
+ * @keywords registry, sections, profiles, duplicate, usedIn
  * #endregion moduleContract
  */
 
-// #region FUNC_unwrapVolatile
+import type {
+  ConfigId,
+  ProfileView,
+  RowKind,
+  RowSource,
+  SectionRef,
+  SectionView,
+  UsedInEntry,
+} from "./domain/model.ts";
+import { insertionIndex } from "./domain/ordering.ts";
+import { usedIn } from "./domain/refs.ts";
+
+export { insertionIndex };
+
+// #region FUNC_configView
 /**
  * Cordis/Schemastery volatile fields arrive as `.get()` wrapper refs. Unwrap
  * AT READ TIME (never once at registration) so live settings edits keep
- * flowing into views (astra finding B); plain values pass through.
+ * flowing into views; plain values pass through.
  */
-const unwrapVolatile = (value) => (value != null && typeof value.get === "function" ? value.get() : value);
-// #endregion FUNC_unwrapVolatile
+const unwrapVolatile = (value: unknown): unknown => {
+  if (value != null && typeof (value as { get?: unknown }).get === "function") {
+    return (value as { get: () => unknown }).get();
+  }
+  return value;
+};
 
-// #region FUNC_configView
 /** Project a stored config into a plain, one-level read view with CURRENT values. */
-function configView(config) {
+function configView(config: { id: string } & Record<string, unknown>): Record<string, unknown> {
   if (config == null || typeof config !== "object") return config;
-  const view = {};
+  const view: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(config)) view[key] = unwrapVolatile(value);
   return view;
 }
 // #endregion FUNC_configView
 
+// #region TYPE_RegistryEntry
+/** One registered row: its loader entry id, its row config and its provenance. */
+interface RegistryEntry {
+  rowId: string | null;
+  config: { id: string } & Record<string, unknown>;
+  source: RowSource;
+}
+
+/** A row handed to the registry by its composition row plugin. */
+interface RegisterRow {
+  rowId?: string | null;
+  config: { id: string } & Record<string, unknown>;
+  source?: RowSource;
+}
+// #endregion TYPE_RegistryEntry
+
 // #region CLASS_PromptProfilesRegistry
 /** Pure in-memory registry of section and profile rows. */
 export class PromptProfilesRegistry {
-  #warn;
-  #sections;
-  #profiles;
-  #stacks;
+  #warn: (message: string, details?: unknown) => void;
+  #sections: Map<string, RegistryEntry>;
+  #profiles: Map<string, RegistryEntry>;
+  #stacks: Map<string, RegistryEntry[]>;
 
-  // #region METHOD_constructor
-  /**
-   * @param {object} [options]
-   * @param {(message: string, details?: unknown) => void} [options.warn]
-   *   duplicate-id sink (defaults to console.warn).
-   */
-  constructor({ warn = console.warn } = {}) {
+  /** @param options.warn duplicate-id sink (defaults to console.warn). */
+  constructor({ warn = console.warn }: { warn?: (message: string, details?: unknown) => void } = {}) {
     this.#warn = warn;
     this.#sections = new Map();
     this.#profiles = new Map();
     this.#stacks = new Map();
   }
-  // #endregion METHOD_constructor
 
-  // #region METHOD_registerSection
   /**
-   * Register one `.../section` row (SPEC §5.1). `source` is
-   * `'bundle' | 'user' | 'unknown'`.
-   * @returns {() => void} disposer; a no-op when a later row with the same
-   *   config.id already overrode this registration.
+   * Register one `.../section` row (SPEC §5.1).
+   * @returns disposer; a no-op when a later row with the same config.id
+   *   already overrode this registration.
    */
-  registerSection(row) {
+  registerSection(row: RegisterRow): () => void {
     return this.#register("section", this.#sections, row);
   }
-  // #endregion METHOD_registerSection
 
-  // #region METHOD_registerProfile
-  /**
-   * Register one `.../profile` row (SPEC §5.1); same disposer semantics as
-   * {@link registerSection}.
-   */
-  registerProfile(row) {
+  /** Register one `.../profile` row; same disposer semantics as registerSection. */
+  registerProfile(row: RegisterRow): () => void {
     return this.#register("profile", this.#profiles, row);
   }
-  // #endregion METHOD_registerProfile
 
-  // #region METHOD_sections
-  /** Detached view of every section, sorted by `id` (SPEC decision). */
-  sections() {
-    return [...this.#sections.values()]
-      .map((entry) => ({ ...configView(entry.config), rowId: entry.rowId, source: entry.source }))
-      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  /** Detached view of every section, sorted by `id`. */
+  sections(): SectionView[] {
+    return (
+      [...this.#sections.values()]
+        // The row's own Config validated id/title/body before registration, so
+        // the projection is total; spreading keeps the view detached.
+        .map((entry) => ({ ...configView(entry.config), rowId: entry.rowId, source: entry.source }) as SectionView)
+        .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    );
   }
-  // #endregion METHOD_sections
 
-  // #region METHOD_profiles
   /** Detached view of every profile, sorted by `title` then `id` (SPEC decision 19). */
-  profiles() {
-    return [...this.#profiles.values()]
-      .map((entry) => ({ ...configView(entry.config), rowId: entry.rowId, source: entry.source }))
-      .sort(
-        (a, b) =>
-          String(a.title ?? "").localeCompare(String(b.title ?? "")) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-      );
+  profiles(): ProfileView[] {
+    return (
+      [...this.#profiles.values()]
+        // Same totality argument as sections(): the row Config validated the
+        // shape before registration.
+        .map((entry) => ({ ...configView(entry.config), rowId: entry.rowId, source: entry.source }) as ProfileView)
+        .sort(
+          (a, b) =>
+            String(a.title ?? "").localeCompare(String(b.title ?? "")) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+        )
+    );
   }
-  // #endregion METHOD_profiles
 
-  // #region METHOD_usedIn
   /**
    * Which profiles reference a section, with per-profile scope — feeds the
-   * editor's read-only «используется в» field (SPEC §2 #26).
-   * @returns {Array<{ profileId: string, scope: string }>} sorted by
-   *   profileId; a section referenced twice contributes one entry per ref.
+   * editor's read-only «используется в» field (SPEC §2 #26). A section
+   * referenced twice contributes one entry per reference.
    */
-  usedIn(sectionId) {
-    const uses = [];
-    for (const profile of this.#profiles.values()) {
-      for (const ref of configView(profile.config).sections ?? []) {
-        if (ref.id === sectionId) {
-          uses.push({ profileId: profile.config.id, scope: ref.scope ?? "inherit" });
-        }
-      }
-    }
-    return uses.sort((a, b) => (a.profileId < b.profileId ? -1 : a.profileId > b.profileId ? 1 : 0));
+  usedIn(sectionId: ConfigId): UsedInEntry[] {
+    return usedIn(
+      [...this.#profiles.values()].map((entry) => {
+        const view = configView(entry.config);
+        return {
+          id: entry.config.id,
+          sections: Array.isArray(view.sections) ? (view.sections as SectionRef[]) : [],
+        };
+      }),
+      sectionId,
+    );
   }
-  // #endregion METHOD_usedIn
 
-  // #region METHOD_register
   /**
    * Shared registration path (SPEC §5.1). Each kind/id keeps a STACK of live
    * registrations; the per-kind Map exposes the top of the stack (later
@@ -142,7 +155,8 @@ export class PromptProfilesRegistry {
    * surviving registration, so an HMR teardown of an overriding row RESTORES
    * the still-mounted one instead of dropping the id from prompts.
    */
-  #register(kind, map, { rowId, config, source = "unknown" }) {
+  #register(kind: RowKind, map: Map<string, RegistryEntry>, row: RegisterRow): () => void {
+    const { rowId = null, config, source = "unknown" } = row;
     if (!config || typeof config.id !== "string" || config.id === "") {
       throw new TypeError(`prompt-profiles: ${kind} row ${rowId ?? "?"} has no valid config.id`);
     }
@@ -155,7 +169,7 @@ export class PromptProfilesRegistry {
           ` — row "${winner.rowId}" is overridden by row "${rowId}" (later registration wins)`,
       );
     }
-    const entry = { rowId, config, source };
+    const entry: RegistryEntry = { rowId, config, source };
     stack.push(entry);
     this.#stacks.set(key, stack);
     map.set(config.id, entry);
@@ -165,7 +179,7 @@ export class PromptProfilesRegistry {
       disposed = true;
       const live = this.#stacks.get(key);
       const index = live?.lastIndexOf(entry) ?? -1;
-      if (index < 0) return;
+      if (live === undefined || index < 0) return;
       live.splice(index, 1);
       if (live.length === 0) {
         this.#stacks.delete(key);
@@ -176,49 +190,5 @@ export class PromptProfilesRegistry {
       if (map.get(config.id) === entry) map.set(config.id, live[live.length - 1]);
     };
   }
-  // #endregion METHOD_register
 }
 // #endregion CLASS_PromptProfilesRegistry
-
-// #region FUNC_insertionIndex
-/**
- * Where our sections must be spliced into an already-sorted
- * `assembly.sections` array. Spike R1 (R1-R2-injection-and-patch.md): the
- * assembly is sorted BEFORE the waterfall and never re-sorted, and its entries
- * carry NO `order` — only a built-in NAME present in that assembly can anchor,
- * so a mirror entry absent from the assembly and foreign names never count.
- *
- * Rule: order `o` goes immediately AFTER the last element whose built-in order
- * is known and `< o` (0 when none). An order EQUAL to a present built-in is NOT
- * shifted — it lands just before that built-in, which keeps the position
- * deterministic (the engine sorts by order, then name).
- *
- * @param {number[]} sectionOrders - our orders EXACTLY as the profile states
- *   them, already ascending (the listener sorts the same way; equal orders keep
- *   profile order).
- * @param {string[]} presentBuiltinNames - names of `assembly.sections` IN ARRAY
- *   ORDER (unknown names are skipped by the scan but occupy slots).
- * @param {Record<string, number>} builtinOrders - name→order map (dotted names
- *   like `tool:bash`; see builtinOrdersByName).
- * @returns {Array<{ order: number, index: number }>} aligned with
- *   sectionOrders; `index` is a position in the ORIGINAL array. Splice from
- *   LAST to FIRST so earlier indices stay valid; equal indices preserve the
- *   input (ascending) order.
- */
-export function insertionIndex(sectionOrders, presentBuiltinNames, builtinOrders) {
-  const names = [...(presentBuiltinNames ?? [])];
-  const knownOrders = [];
-  for (const name of names) {
-    const order = builtinOrders?.[name];
-    knownOrders.push(typeof order === "number" && Number.isFinite(order) ? order : null);
-  }
-  return [...(sectionOrders ?? [])].map((order) => {
-    if (!Number.isFinite(order)) throw new TypeError(`insertionIndex: non-finite order ${order}`);
-    let index = 0;
-    for (let i = 0; i < knownOrders.length; i++) {
-      if (knownOrders[i] !== null && knownOrders[i] < order) index = i + 1;
-    }
-    return { order, index };
-  });
-}
-// #endregion FUNC_insertionIndex

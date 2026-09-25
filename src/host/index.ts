@@ -418,7 +418,7 @@ export class PromptProfilesPlugin extends Service {
    */
   _loadMirror() {
     if (this._mirror) return this._mirror;
-    // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
+    // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use
     let resolveFrom;
     try {
       resolveFrom = this.ctx.profileContext?.dir ?? undefined;
@@ -453,14 +453,14 @@ export class PromptProfilesPlugin extends Service {
    */
   _resolveSource(rowId) {
     if (typeof rowId !== "string" || rowId === "") return "unknown";
-    // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
+    // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use
     let configEditor;
     try {
       configEditor = this.ctx.get?.("configEditor") ?? this.ctx.configEditor;
     } catch {
       configEditor = undefined;
     }
-    // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
+    // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use
     let patchPath;
     try {
       patchPath = configEditor?.documentPath;

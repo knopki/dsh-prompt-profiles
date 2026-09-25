@@ -52,6 +52,9 @@ import { randomBytes } from "node:crypto";
 import { promises as fsp, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { isMap, isSeq, parseDocument } from "yaml";
+import { toPatchId } from "./domain/ids.ts";
+
+export { toPatchId };
 
 // #region CONST_parseOptions
 /** The Loader's `!!js` dialect: tagged scalars round-trip verbatim. */
@@ -115,7 +118,7 @@ function runGated(section) {
  * document it fully understood.
  */
 function loadDocument(patchPath) {
-  // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
+  // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use
   let text;
   try {
     text = readFileSync(patchPath, "utf8");
@@ -356,22 +359,6 @@ export function disableRow({ patchPath, rowId, name }) {
 }
 // #endregion FUNC_disableRow
 
-// #region FUNC_toPatchId
-/**
- * Normalize ANY row identifier to the unqualified patch row id: strip a
- * leading `<parent>:` qualification chain (`include:group:prompt-section-1` →
- * `prompt-section-1`) and keep the last segment. An already-unqualified id —
- * or a non-string / empty value — passes through unchanged. THE low-level
- * normalizer; every other module imports this instead of keeping a copy.
- * @param {string} value - row id as received.
- * @returns {string} the last `:`-separated segment (value for non-strings).
- */
-export function toPatchId(value) {
-  if (typeof value !== "string" || value === "") return value;
-  return value.slice(value.lastIndexOf(":") + 1);
-}
-// #endregion FUNC_toPatchId
-
 // #region FUNC_provenance
 /**
  * Does one patch row name the queried row? A row is named by its loader `id`
@@ -535,7 +522,7 @@ export function renameSectionRow({ patchPath, row, oldRowId, oldName, bundleOwne
 export async function withPatchBatch({ patchPath }, run) {
   return withMutex(() =>
     runGated(async () => {
-      // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use (@ts-nocheck module; annotated in MIGRATION step B).
+      // biome-ignore lint/suspicious/noImplicitAnyLet: assigned in the try below before use
       let backup;
       try {
         backup = await fsp.readFile(patchPath, "utf8");

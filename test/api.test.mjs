@@ -5,7 +5,7 @@
  *   contract: rowId OR patchId addressing, whole-object writes via
  *   settings.replace) against fake settings/configEditor services and a temp
  *   profile patch: validation-first writes, correct dispatch of each
- *   operation, clean ApiError statuses, and failure diagnostics.
+ *   operation, clean domain error codes, and failure diagnostics.
  * @scope node:test with in-memory fakes; NOT: the platform transport (the
  *   Remote surface has its own suites: test/smoke-cordis.test.mjs and
  *   test/remote/client-remote.spec.mjs).
@@ -20,7 +20,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { isSeq, parseDocument } from "yaml";
 import { BUILTIN_ORDERS, builtinOrdersByName as nameBuiltinOrders } from "../lib/builtin-orders.js";
-import { createOperations, errorText, tokenSource } from "../lib/operations.js";
+import { errorMessage } from "../lib/domain/index.js";
+import { createOperations, tokenSource } from "../lib/operations.js";
 import { resolveProfileId } from "../lib/resolve.js";
 
 const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value) => value }] };
@@ -196,7 +197,7 @@ async function harness({
             : await ops[route.op](body ?? {});
         return { status: 200, body: result === undefined ? { ok: true } : { ok: true, ...result } };
       } catch (error) {
-        return { status: error?.status ?? 500, body: { error: { message: errorText(error) } } };
+        return { status: error?.status ?? 500, body: { error: { message: errorMessage(error) } } };
       }
     },
     cleanup: () => rm(dir, { recursive: true, force: true }),

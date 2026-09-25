@@ -27,9 +27,9 @@
  *    operation runs, so a malformed call can never touch the patch file.
  *  - Every result is plain JSON (recursive guard: no class instances, no
  *    functions, no cycles, no non-finite numbers) AND validated against its
- *    strict result schema; a violation is a thrown ApiError 500 — the call
+ *    strict result schema; a violation is a thrown InternalError — the call
  *    surfaces as a Remote failure, never a silent success.
- *  - Business failures are the SAME ApiError objects the operations throw;
+ *  - Business failures are the SAME DomainError objects the operations throw;
  *    the gateway wraps them as Remote failures with the message preserved.
  *  - `undefined`-returning operations (`last`, `defaultSet`) answer
  *    `{ ok: true }`.
@@ -69,7 +69,8 @@ import {
   REMOTE_SERVICE_KEY,
   TYPERT_PACKAGE,
 } from "../shared/remote-contract.ts";
-import { ApiError, createOperations } from "./operations.ts";
+import { InternalError } from "./domain/errors.ts";
+import { createOperations } from "./operations.ts";
 
 export { REMOTE_NAMESPACE, REMOTE_SERVICE_KEY, TYPERT_PACKAGE };
 
@@ -103,18 +104,18 @@ const HOST_RUNNERS = {
  * STRUCTURE, but `z.unknown()` row entries would happily carry a class
  * instance or a function across the wire — the gateway's assertJsonValue
  * would then fail at encode time with an opaque boundary error. This guard
- * fails fast inside the method, as a clean ApiError 500.
+ * fails fast inside the method, as a clean InternalError.
  *
  * @purpose Guarantee the invariant «results are plain JSON-safe objects» at
  *   the source instead of relying on the transport's boundary check.
  * @param {unknown} value - operation result.
  * @param {string} method - Remote method name, for the error message.
  * @param {Set<object>} [ancestors] - cycle guard.
- * @returns {void} throws ApiError(500) on the first violation.
+ * @returns {void} throws InternalError on the first violation.
  */
 function assertPlainJson(value, method, ancestors = new Set()) {
   const fail = (why) => {
-    throw new ApiError(500, `remote ${method}: result is not JSON-safe (${why})`);
+    throw new InternalError(`remote ${method}: result is not JSON-safe (${why})`);
   };
   if (value === null || typeof value === "string" || typeof value === "boolean") return;
   if (typeof value === "number") {
@@ -204,7 +205,7 @@ export class PromptProfilesRemote extends TypertRemoteService {
     /**
      * ONE dispatch path for every method: run the shared operation (via the
      * HOST_RUNNERS adapter), normalize `undefined` to `{ ok: true }`, enforce
-     * JSON-safety and the strict result schema. Business errors (ApiError)
+     * JSON-safety and the strict result schema. Business errors (DomainError)
      * propagate unchanged so the gateway reports a Remote failure with the
      * operation's own message preserved.
      */
@@ -215,8 +216,7 @@ export class PromptProfilesRemote extends TypertRemoteService {
       assertPlainJson(result, method);
       const parsed = spec.result().safeParse(result);
       if (!parsed.success) {
-        throw new ApiError(
-          500,
+        throw new InternalError(
           `remote ${method}: result violates its strict schema (${parsed.error.issues[0]?.path?.join(".") ?? ""} ${parsed.error.issues[0]?.message ?? ""})`,
         );
       }

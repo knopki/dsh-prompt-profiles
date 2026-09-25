@@ -30,7 +30,7 @@
  *    service is NOT reachable bare; zod 4 (bundled, via the shared contract).
  * @rationale
  *  - Q: Why classify conflicts by message text instead of a status field?
- *    A: The gateway serializes a thrown host ApiError as
+ *    A: The gateway serializes a thrown host DomainError as
  *    `{ code: 'gateway/internal', message }` — the status does not cross the
  *    envelope. Until the host can throw a code-carrying RemoteError (deferred
  *    refactor), the two deterministic conflict messages are the only honest
