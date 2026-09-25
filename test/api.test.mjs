@@ -1235,6 +1235,74 @@ test("state modes mark complete presets and degrade without agentPresets", async
     ]);
   } finally { await api.cleanup(); }
 });
+
+/**
+ * @purpose LIVE BUG: `complete` was missed for the shipped minimal preset
+ *   because the persona row sits DEEP (`insert[].config.plugins[]`) while the
+ *   scan only unwrapped `insert`. The fixture below is the real
+ *   `@deepseek-ai/dsh-web-app/presets/minimal.patch.yml` shape (with its `!!js`
+ *   tags), so a shallow scan fails and the recursive one must pass.
+ */
+const REAL_MINIMAL_PRESET = [
+  "# Agent preset minimal: one `@deepseek-ai/dsh-agent-preset` declaration inserted",
+  "# after the web patch. Edits saved from the Web editor override this row's",
+  "# `config.plugins` by id from the profile patch.",
+  "- insert:",
+  "    - id: preset-minimal",
+  "      name: '@deepseek-ai/dsh-agent-preset'",
+  "      config:",
+  "        id: minimal",
+  "        order: 3",
+  "        plugins:",
+  "          - id: persona",
+  "            name: '@deepseek-ai/dsh-persona'",
+  "            config:",
+  "              prefix: You are a helpful software engineer assistant.",
+  "              complete: true",
+  "              includeRuntimeContext: false",
+  "          - id: persistent-shell",
+  "            name: cordis:group",
+  "            group: true",
+  "            isolate:",
+  "              terminals: true",
+  "            config:",
+  "              - id: terminal-bash",
+  "                name: '@deepseek-ai/dsh-terminal-bash'",
+  "                disabled: !!js process.platform === 'win32'",
+  "                config:",
+  "                  timeoutMs: 300000",
+  "",
+].join("\n");
+
+test("state modes find a persona-complete row at any depth, including the real minimal preset", async () => {
+  const documents = {
+    minimal: REAL_MINIMAL_PRESET,
+    standard: "- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    complete: false\n",
+    deep: "- insert:\n    - name: cordis:group\n      group: true\n      config:\n        - name: '@deepseek-ai/dsh-persona'\n          config:\n            complete: true\n",
+    dumped: "- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    complete: true\n",
+    broken: "- name: x\n  config: [1, 2\n", // unclosed flow sequence → parse throws
+  };
+  const agentPresets = {
+    list: async () => Object.keys(documents).map((id) => ({ id })),
+    readDocument: async (id) => ({ agentPreset: id, content: documents[id] }),
+  };
+  const api = await harness({ agentPresets });
+  try {
+    const { status, body } = await api.call("GET", "/state");
+    assert.equal(status, 200);
+    const byId = Object.fromEntries(body.modes.map((mode) => [mode.id, mode.complete]));
+    assert.equal(byId.minimal, true, "real minimal shape: persona under insert[].config.plugins[]");
+    assert.equal(byId.standard, false, "no persona with complete: true → false");
+    assert.equal(byId.deep, true, "nested deeper than one level is found");
+    assert.equal(byId.dumped, true, "a top-level plugin list (readDocument dump) is found too");
+    assert.equal(byId.broken, false, "an unparseable document stays false");
+    assert.ok(api.logs.some((entry) => /preset document unreadable/.test(entry.message)),
+      "the parse failure warns instead of being swallowed");
+    // The `!!js` tags in the real fixture must NOT warn.
+    assert.ok(!api.logs.some((entry) => /preset document unreadable/.test(entry.message) && entry.details?.preset === "minimal"),
+      "!!js tags parse cleanly");
+  } finally { await api.cleanup(); }
+});
 // #endregion TEST_modes
 
 // #region TEST_preview
