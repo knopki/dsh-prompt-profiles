@@ -28,7 +28,7 @@ import {
   Toast,
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
-import { h, React } from "./element.ts";
+import * as React from "react";
 import { idOf, profileLabel } from "./helpers.ts";
 import type { Translate } from "./i18n.ts";
 import type { StateDocument } from "./model.ts";
@@ -71,12 +71,21 @@ export const triggerChevronStyle: React.CSSProperties = {
   display: "inline-flex",
 };
 export const chipMaxWidth: React.CSSProperties = { maxWidth: "220px" };
+// The outline/list rows grow their middle cell through a pass-through `flex`
+// attribute, exactly as the pre-TSX `h("span", { flex: 1 })` calls passed it
+// (React renders it inert). It is NOT a style, and promoting it to one would
+// change the layout this UI has always had.
+export const flexFill = { flex: 1 } as React.HTMLAttributes<HTMLElement>;
 // #endregion CONST_styles
 
 // #region FUNC_inlineError
 /** @purpose The inline error line the edit forms show next to their fields. */
 export const inlineError = (text: string): React.ReactElement | null =>
-  text ? h("div", { role: "alert", style: errorStyle }, text) : null;
+  text ? (
+    <div role="alert" style={errorStyle}>
+      {text}
+    </div>
+  ) : null;
 // #endregion FUNC_inlineError
 
 // #region TYPE_iconControl
@@ -90,6 +99,7 @@ export interface IconControlExtra {
   disabled?: boolean;
   tooltip?: boolean;
   key?: string;
+  /** Extra button attributes (drag/keyboard handlers) forwarded verbatim. */
   props?: Record<string, unknown>;
 }
 // #endregion TYPE_iconControl
@@ -106,20 +116,28 @@ export interface IconControlExtra {
 export function iconControl(
   label: string,
   Icon: IconComponent,
-  onClick: ((event: { stopPropagation: () => void }) => void) | null,
+  onClick: ((event: React.MouseEvent) => void) | null,
   extra: IconControlExtra = {},
 ): React.ReactElement {
-  const button = h(Button, {
-    variant: extra.variant ?? "ghost",
-    size: "sm",
-    icon: h(Icon, { size: 14 }),
-    "aria-label": label,
-    title: extra.title ?? label,
-    disabled: extra.disabled === true,
-    onClick,
-    ...(extra.props ?? {}),
-  });
-  return extra.tooltip === false ? button : h(Tooltip, { key: extra.key ?? label, label }, button);
+  const button = (
+    <Button
+      variant={extra.variant ?? "ghost"}
+      size="sm"
+      icon={<Icon size={14} />}
+      aria-label={label}
+      title={extra.title ?? label}
+      disabled={extra.disabled === true}
+      onClick={onClick ?? undefined}
+      {...(extra.props as React.ComponentProps<typeof Button>)}
+    />
+  );
+  return extra.tooltip === false ? (
+    button
+  ) : (
+    <Tooltip key={extra.key ?? label} label={label}>
+      {button}
+    </Tooltip>
+  );
 }
 // #endregion FUNC_iconControl
 
@@ -158,7 +176,7 @@ export interface Notifier {
  *   RowActionToast): the owner keeps {seq, text}; the Toast COMPONENT is
  *   rendered keyed by seq and unmounts itself through onDone. Toast uses
  *   hooks internally, so calling it as a plain function is an invalid hook
- *   call — it must only ever be used as a createElement type.
+ *   call — it must only ever be used as JSX.
  */
 export function useNotifier(): Notifier {
   const [notice, setNotice] = React.useState<{ seq: number; text: string } | null>(null);
@@ -168,14 +186,9 @@ export function useNotifier(): Notifier {
     setNotice({ seq: seq.current, text: String(text ?? "") });
   }, []);
   const dismiss = React.useCallback(() => setNotice(null), []);
-  const banner =
-    notice &&
-    h(Toast, {
-      key: `notice-${notice.seq}`,
-      text: notice.text,
-      icon: h(IconWarningOutlineRegular, {}),
-      onDone: dismiss,
-    });
+  const banner = notice ? (
+    <Toast key={`notice-${notice.seq}`} text={notice.text} icon={<IconWarningOutlineRegular />} onDone={dismiss} />
+  ) : null;
   return { notify, dismiss, banner };
 }
 // #endregion FUNC_useNotifier
@@ -205,22 +218,26 @@ export function ConfirmDialog({
   onConfirm,
   t,
 }: ConfirmDialogProps): React.ReactElement {
-  return h(
-    Modal,
-    {
-      open,
-      onClose: onCancel,
-      title,
-      closeLabel: t("cancel"),
-      footer: h(
-        React.Fragment,
-        null,
-        h(Button, { variant: "outline", onClick: onCancel }, t("cancel")),
-        h(Button, { variant: "primary", onClick: onConfirm }, actionLabel || t("confirm")),
-      ),
-    },
-    h("p", { style: mutedStyle }, body),
-    extraChildren,
+  return (
+    <Modal
+      open={open}
+      onClose={onCancel}
+      title={title}
+      closeLabel={t("cancel")}
+      footer={
+        <>
+          <Button variant="outline" onClick={onCancel}>
+            {t("cancel")}
+          </Button>
+          <Button variant="primary" onClick={onConfirm}>
+            {actionLabel || t("confirm")}
+          </Button>
+        </>
+      }
+    >
+      <p style={mutedStyle}>{body}</p>
+      {extraChildren}
+    </Modal>
   );
 }
 // #endregion COMPONENT_ConfirmDialog
@@ -241,28 +258,32 @@ export function DefaultMenu({ state, t, onPick }: DefaultMenuProps): React.React
   const selected = profiles.find((p) => idOf(p) === state.default);
   // Owner-controlled Menu: open + anchor (rendered in place) + data rows.
   // The anchor is the Button primitive (ghost/sm) like the composer chip.
-  return h(Menu, {
-    open,
-    onClose: () => setOpen(false),
-    anchor: h(
-      Button,
-      {
-        variant: "ghost",
-        size: "sm",
-        "aria-label": t("defaultForNewSessions"),
-        title: t("defaultForNewSessions"),
-        onClick: () => setOpen(!open),
-        style: chipMaxWidth,
-      },
-      h("span", { style: triggerLabelStyle }, profileLabel(selected, t)),
-      h("span", { "aria-hidden": true, style: triggerChevronStyle }, h(IconChevronDownOutlineRegular, { size: 14 })),
-    ),
-    items: [{ id: "none", label: t("none") }, ...profiles.map((p) => ({ id: idOf(p), label: p.title }))],
-    selectedId: selected ? idOf(selected) : state.default || "none",
-    onSelect: (id: string) => {
-      setOpen(false);
-      onPick(id === "none" ? "" : id);
-    },
-  });
+  return (
+    <Menu
+      open={open}
+      onClose={() => setOpen(false)}
+      anchor={
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label={t("defaultForNewSessions")}
+          title={t("defaultForNewSessions")}
+          onClick={() => setOpen(!open)}
+          style={chipMaxWidth}
+        >
+          <span style={triggerLabelStyle}>{profileLabel(selected, t)}</span>
+          <span aria-hidden style={triggerChevronStyle}>
+            <IconChevronDownOutlineRegular size={14} />
+          </span>
+        </Button>
+      }
+      items={[{ id: "none", label: t("none") }, ...profiles.map((p) => ({ id: idOf(p) as string, label: p.title }))]}
+      selectedId={selected ? (idOf(selected) as string) : state.default || "none"}
+      onSelect={(id: string) => {
+        setOpen(false);
+        onPick(id === "none" ? "" : id);
+      }}
+    />
+  );
 }
 // #endregion COMPONENT_DefaultMenu

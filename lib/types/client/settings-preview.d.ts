@@ -14,7 +14,7 @@
  *    the session's own.
  * @keywords settings, preview tab, interpolation, skipped sections
  * #endregion moduleContract */
-import { React } from "./element.ts";
+import * as React from "react";
 import type { Translate } from "./i18n.ts";
 import type { StateDocument } from "./model.ts";
 import type { RemoteApi } from "./remote.ts";

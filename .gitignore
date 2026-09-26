@@ -2,3 +2,6 @@ node_modules/
 .pnpm-store/
 .spike/
 .bench-baseline-*
+
+# pnpm metadata cache kept inside the checkout by XDG_CACHE_HOME
+.cache

@@ -933,3 +933,157 @@ types on our own components, hooks, api and documents are exact.
   `./client` types entry stays `export {}` (the plugin object is CommonJS).
 - The client bundle got 7% smaller rather than "marginally" — see above: the
   strict-only split removed dead tolerant-parser code from the browser bundle.
+
+## Refactor 3b — TSX and jsdom tests
+
+Goal: the client UI renders JSX and is tested by RENDERING it on real React +
+jsdom, not by walking a fake `createElement` tree. Behaviour frozen.
+
+### Task 1 — the conversion
+
+- Six components became `.tsx` (`ui`, `chip`, `settings-page`,
+  `settings-profiles`, `settings-sections`, `settings-preview`): 13 modules /
+  3745 lines, down from 15/3806.
+- `element.ts` (34 lines) is DELETED: its only job was the permissive `h`
+  factory that the no-JSX rule needed. Modules that still call hooks import
+  `react` directly; `react/jsx-runtime` joins `react` in the bundle's
+  externals (esbuild already had `jsx: automatic`).
+- Two prop shapes were translated, not redesigned:
+  - `flex: 1` was ALWAYS a pass-through attribute (`h("span", { flex: 1 })`),
+    never a style — kept as `flexFill` in `ui.tsx`, because promoting it to a
+    real style would change the layout.
+  - the same for the editor's `marginBottom` pass-through on the source line.
+- `iconControl` now types its click handler as `React.MouseEvent` (it passed a
+  hand-rolled `{ stopPropagation }` shape only because the shim's fake Button
+  had no event type) and forwards `extra.props` through one cast — the
+  dynamic drag/keyboard handlers were the only reason `h` existed.
+- Biome overrides for `src/client/**/*.tsx` (autofocus, labelled control,
+  static-element interactions, key-with-click, array-index keys) and for
+  `settings-shared.ts` (`useExhaustiveDependencies`). These rules only became
+  reachable now that the files are `.tsx` with a real `react` import: the
+  flagged interactions (clickable rows, drag boundaries, the rename autofocus,
+  index-keyed preview groups) are the shipped design, and "fixing" them would
+  change behaviour. Verified: the identical pre-conversion sources rendered the
+  same DOM (see the parity harness below).
+
+### The platform harness was NOT usable
+
+The published `@deepseek-ai/dsh-client-test-runtime@0.1.7-rc.2` ships the jsdom
+slot bench as `lib/index.js`, but that bundle imports
+`@deepseek-ai/dsh-client-ui-renderer/src/client/bind.ts` and
+`@deepseek-ai/dsh-api-session-controller/src/client/scope.ts` — and the `src/`
+tree is not in any published tarball (`files` lists `lib/**` only). Importing
+the package fails immediately with `ERR_MODULE_NOT_FOUND` on the first `src/`
+path (proved by direct `import()`), and the whole-client tier has no `lib/`
+entry at all (types only). So the task's fallback applied: a small local bench.
+
+### Task 2 — the jsdom bench (NEW `test/client/`, 13 specs / 133 tests)
+
+- `vitest.config.mts` becomes two projects: `remote` (node, `test/remote/`)
+  and `client` (jsdom, `test/client/`), each with its own script
+  (`test:remote` = `--project remote`, `test:client` = `--project client`).
+- `harness.ts` mounts a recording Remote namespace through the REAL transport
+  (`ctx.remote.$mount` + `ctx.inject`), so `readyApi()`/`getActiveApi()` and
+  every error path under test are the production ones; `storeHook` builds the
+  zustand-shaped hooks the chip receives from the slot.
+- `primitives-contract.spec.tsx` is the only file that intercepts the platform:
+  each primitive is wrapped in a `forwardRef` recorder that DELEGATES to the
+  real component, so props are observable while the DOM stays production's.
+  That is where the owner-controlled Menu, the render-only Toast, the Button
+  geometry and the Tooltip anchor are pinned.
+- The primitives barrel imports its markdown/highlighter/icon assets eagerly
+  (`shiki`, `micromark`, `mdast`, `katex`, `diff`, `anser`, `simple-icons`).
+  Those are web-app module-table entries and are absent from our
+  devDependencies, so a resolve plugin maps those families to one inert stub.
+  The atoms under test are the real ones; `clsx`, `@deepseek-ai/dsh-client-store`
+  and `@deepseek-ai/dsh-util-workspace-path` were added as devDependencies
+  because the real atoms call into them.
+- devDependencies added: `jsdom`, `@testing-library/react`,
+  `@testing-library/dom`, `clsx`, `zustand`, `immer`,
+  `@deepseek-ai/dsh-client-store`, `@deepseek-ai/dsh-util-workspace-path`
+  (all test-only).
+- `typecheck` now also runs `tsc -p tsconfig.test.json` over `test/client`, so
+  the specs are type-checked rather than only type-stripped.
+- `test/client-shim.test.cjs` is DELETED (3432 lines). Nothing is left behind.
+
+### Shim → test mapping (every PASS line of the shim)
+
+| Shim assertion (`ALL OK` gate) | New test |
+|---|---|
+| loader syntax; `conversation.input.left` / `prompt-profile` / order 10 | `bundle.spec.ts` › the composer chip registers conversation.input.left with its injection shape |
+| `inject(sessionId)` provides sessionId and pick | `bundle.spec.ts` › same test |
+| component returns null (non-blank session, empty state) | `chip.spec.tsx` › refuses to render on a non-blank session or without any profile |
+| chip Menu satisfies open/anchor/onClose/items | `primitives-contract.spec.tsx` › the chip drives the owner-controlled Menu; › the chip's trigger is the installed Button primitive |
+| settings.section / prompt-profiles / order 25 / label + api inject + loading render | `bundle.spec.ts` › the settings section registers settings.section…; `settings-page.spec.tsx` › renders a loading placeholder; › the page root is the scroller with a stable gutter |
+| i18n ru+zh key parity, non-empty values, dead keys | `i18n.spec.ts` (all five tests) |
+| preview words are dictionary-driven | `preview.spec.tsx` › the pane names the profile selector…; `i18n.spec.ts` |
+| remote facade payloads (whole object, rowId, no ops) | `remote.spec.ts` › writes address the unqualified patchId…; › last is keyed by exactly one workspace key |
+| create flow: single POST, poll retry, busy guard, drill, timeout, server error | `flows.spec.ts` › create: one POST under a double submit…; › create: a row that never mounts times out…; › create: a server failure surfaces its message… |
+| runSave 409 re-apply + 500 toast/inline error | `flows.spec.ts` › runSave re-applies once on a stale revision…; › runSave surfaces a non-conflict failure…; › runSave reports a conflict that keeps failing…; `sections.spec.tsx` › the editor shows the inline error line |
+| tabs: modal-free create wired with default titles | `profiles.spec.tsx` › the modal-free create posts the default title payload; `sections.spec.tsx` › the modal-free create posts the default section payload |
+| SectionForm inline error line | `sections.spec.tsx` › the editor shows the inline error line with the server message |
+| helpers: idOf/insertionOrders/outlineRows/filterSections/previewPlan/save gate/used-in/source/rename notice/profileLabel/escapesDrillDown | `helpers.spec.ts` (twelve tests) |
+| refs verbatim, doubled-prefix guard, picker/outline keyed by configId | `helpers.spec.ts` › refs carry the configId verbatim…; › addSectionsToRefs…; › the outline resolves a prefixed configId ref…; `profiles.spec.tsx` › the add-section picker appends the picked ids verbatim |
+| mutation flow: optimistic insert/remove, poll, restore, busy guard | `flows.spec.ts` › mutation: delete…; › mutation: duplicate…; › mutation: a failure restores…; › mutation: a second run while in flight… |
+| rename id sent verbatim + doubled-prefix guard + drill follows new id | `sections.spec.tsx` › rename sends the typed id verbatim and drills into the stored one; › a doubled prefix typed by the user collapses before the request |
+| rename affectedProfiles (list / empty / absent) | `sections.spec.tsx` › a successful rename names the profiles that still hold the old id; › a rename response without affectedProfiles shows no extra notice; `helpers.spec.ts` › renameNotice… |
+| rename no-op + empty-id hint | `sections.spec.tsx` › an unchanged id closes the dialog without a request or a toast; › an empty id is blocked with an inline hint and no request |
+| disabled controls while a flow is in flight | `profiles.spec.tsx` › the create button is disabled while the real create flow is in flight; › duplicate … stays disabled while in flight; `sections.spec.tsx` › the create button is disabled…; › the lifecycle controls are disabled… |
+| ui round 2: back icon, autosave gate/hint, used-in titles, source badge, DnD outline | `primitives-contract.spec.tsx` › iconControl wraps the Button in a Tooltip…; › the add-section action keeps the icon…; `sections.spec.tsx` › the editor never writes before the poll confirmed the row; › an empty title is called out and never written; › leaving the editor flushes a pending body edit…; › the editor renders used-in titles…; › a user-owned row shows no source badge; `sections.spec.tsx` › two refs of one profile both render under unique React keys; `profiles.spec.tsx` › drag & drop reorders the ref…; › the drag grip moves a row with the arrow keys |
+| audit D/E: deterministic ties, counter, preview empty, confirmed removal, untitled chip, grip keyboard, integer orders | `helpers.spec.ts` › outlineRows keeps the persisted orders and ties resolve deterministically; › insertionOrders are the integer gaps…; `profiles.spec.tsx` › the outline renders built-in, own and broken rows with an honest counter; › removing a ref is confirmed and drops only that occurrence; › the drag grip moves a row with the arrow keys; `preview.spec.tsx` › a profile that emits nothing gets an explicit empty state…; `chip.spec.tsx` › an empty bundle title shows the id… |
+| review H1/H2/H3/H6: explicit-none chip, ours-before-builtin, duplicate refs, honest preview variables | `chip.spec.tsx` › a stored empty string is an explicit None…; › a stored profile id shows that profile; a stale one falls back to the default; › choosing None keeps the host's explicit-empty marker after the refresh; `helpers.spec.ts` › outlineRows … (kindsAt(100) = ours,builtin); `profiles.spec.tsx` › the scope selector is per occurrence…; › removing a ref…; `preview.spec.tsx` › a section using an interpolation variable is flagged…; › a variable-free section carries no marker |
+| bundle rename lock (disabled + reason; user/unknown renameable) | `sections.spec.tsx` › a bundle-owned id cannot be changed and the reason is stated inline; › a user-owned id stays renameable |
+| duplicate opens the copy | `sections.spec.tsx` › duplicate opens the COPY, not the source row |
+| theme tokens all shipped | `tokens.spec.ts` |
+| complete mode marker + calm otherwise | `chip.spec.tsx` › a complete active mode marks the trigger and names the mode; `primitives-contract.spec.tsx` › the complete-mode marker sits between label and chevron…; › a non-complete or unknown active mode adds nothing…; `profiles.spec.tsx` › the complete-mode warning lists the modes that discard sections |
+| chip refresh: debounced re-read, deleted profile leaves trigger+menu | `chip.spec.tsx` › a burst of settings mutations collapses into ONE debounced re-read; `helpers.spec.ts` › the profiles-changed signal reaches every live subscriber… |
+| remote failure: no fallback transport, dictionary message reaches the UI | `transport.spec.ts` (three tests); `remote.spec.ts` › before the mount settles every api method refuses…; `settings-page.spec.tsx` › a failed state read surfaces the dictionary message in the toast banner |
+
+Also carried over: the strict-ctx activation guard (`bundle.spec.ts` › an
+undeclared ctx service fails loudly), the no-HTTP/no-fetch/no-path-op/
+no-`Toast(`-as-a-function source guards (`bundle.spec.ts`), the default
+profile showing no `★` marker (`profiles.spec.tsx`), the raw scope enum never
+appearing in visible text (`sections.spec.tsx`), and the "no create modal in
+either tab" assertions (`queryByRole("dialog")` in both tab specs).
+
+### Deliberately NOT carried over (and why)
+
+- The shim's fake-primitive SELF-tests (`Menu.validate` rejects a missing
+  `open`, `Tooltip` rejects `content`, `Toast` is not callable, …). They tested
+  the fake, not the client; the real primitives now throw/render their own way,
+  and `bundle.spec.ts` keeps the source-level guard that neither `Toast(` nor
+  `Menu(` is ever called as a function.
+- Element-tree introspection that has no DOM equivalent is preserved through
+  the recording wrappers in `primitives-contract.spec.tsx`, not dropped.
+- `SectionForm`'s title `onBlur` flush is covered; `ProfileOutline` never had
+  one (its title autosaves on debounce/leave) and the test asserts the leave
+  flush instead — the shim's "title input flushes on blur" case was only ever
+  true for SectionForm.
+- The chip's own failed-`/state` notice: the chip renders `null` without state,
+  so its Toast never reaches the DOM. The notify→banner wiring is covered where
+  it IS observable (`settings-page.spec.tsx` › failed state read), and
+  `chip.spec.tsx` asserts the read is issued and the chip stays unrendered.
+- The non-finite order guard in `changeOrder`: jsdom's number-input value
+  sanitization turns `"Infinity"`/`"abc"` into `""` before the handler runs, so
+  the branch is unreachable from a DOM event (a real browser keeps
+  `"Infinity"`). The finite path is covered by the drag/keyboard/leave tests.
+
+### Verification
+
+- Parity harness (temporary, deleted before the commit): the pre-conversion
+  `h(...)` components from `git archive HEAD` and the new TSX components
+  rendered side by side with identical props; `innerHTML` was byte-identical
+  for 16/16 cases (chip states, complete mode, both tabs, outline, editor,
+  picker, preview, settings page). It caught exactly one real drift — a
+  `marginBottom` pass-through that had been promoted to a style — which was
+  reverted to the attribute.
+- Green: `pnpm test` 125/125, `node --test test/smoke-cordis.test.mjs` 8/8,
+  `pnpm run test:client` 133/133 (13 files), `pnpm run test:remote` 4/4,
+  `pnpm run typecheck` (src + test project), `pnpm run lint`.
+- `lib/client.js`: 848 468 B → 853 799 B (+5 331 B, +0.63 %): the JSX runtime
+  call sites (`(0, import_jsx_runtime.jsx)(…)`) are slightly more verbose than
+  the local `h(…)` identifier. The single-file output and the ModuleLoader id
+  are unchanged.
+- Two consecutive `pnpm run build` runs produce a byte-identical `lib/`
+  (sha256 `5486768cee1fc00966a88cd52e73c16d9fddf0b8bea5001fe2b276e0e10bf980`
+  over the sorted file set; 104 files / 5 933 613 B).

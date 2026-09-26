@@ -16,16 +16,16 @@
  * #endregion moduleContract */
 
 import { SegmentedTabs } from "@deepseek-ai/dsh-client-ui-primitives";
-import { h, React } from "./element.ts";
+import * as React from "react";
 import { escapesDrillDown } from "./helpers.ts";
 import type { Translate } from "./i18n.ts";
 import type { RemoteApi } from "./remote.ts";
-import { PreviewTab } from "./settings-preview.ts";
-import { ProfilesTab } from "./settings-profiles.ts";
-import { SectionsTab } from "./settings-sections.ts";
+import { PreviewTab } from "./settings-preview.tsx";
+import { ProfilesTab } from "./settings-profiles.tsx";
+import { SectionsTab } from "./settings-sections.tsx";
 import { useProfilesState } from "./settings-shared.ts";
 import { unavailableApi } from "./transport.ts";
-import { mutedStyle, useNotifier } from "./ui.ts";
+import { mutedStyle, useNotifier } from "./ui.tsx";
 
 // The host mounts this section as the ONLY child of its own scroll panel
 // (`dsh-client-ui-settings-general` `.options`: flex:1; min-height:0;
@@ -80,49 +80,55 @@ export function PromptProfilesSection(props: PromptProfilesSectionProps): React.
     setTab("sections");
     setDrillState((prev) => ({ ...prev, sections: sectionId }));
   };
-  if (!state) return h("div", { style: pageStyle }, h("p", { style: mutedStyle }, "…"), banner);
-  return h(
-    "div",
-    { style: pageStyle },
-    h(SegmentedTabs, {
-      items: [
-        { value: "profiles", label: t("tabProfiles"), id: "pp-tab-profiles", panelId: "pp-tab-profiles-panel" },
-        { value: "sections", label: t("tabSections"), id: "pp-tab-sections", panelId: "pp-tab-sections-panel" },
-        { value: "preview", label: t("tabPreview"), id: "pp-tab-preview", panelId: "pp-tab-preview-panel" },
-      ],
-      value: tab,
-      onChange: selectTab,
-      label: t("nav"),
-    }),
-    h(
-      "div",
-      { style: { marginTop: "12px" } },
-      tab === "profiles" &&
-        h(ProfilesTab, {
-          state,
-          api: api ?? unavailableApi,
-          reload,
-          t,
-          notify,
-          drill: drill.profiles ?? null,
-          setDrill,
-          onOpenSection,
-          setState,
-        }),
-      tab === "sections" &&
-        h(SectionsTab, {
-          state,
-          api: api ?? unavailableApi,
-          reload,
-          t,
-          notify,
-          drill: drill.sections ?? null,
-          setDrill,
-          setState,
-        }),
-      tab === "preview" && h(PreviewTab, { state, api: api ?? unavailableApi, t, notify }),
-    ),
-    banner,
+  if (!state)
+    return (
+      <div style={pageStyle}>
+        <p style={mutedStyle}>…</p>
+        {banner}
+      </div>
+    );
+  return (
+    <div style={pageStyle}>
+      <SegmentedTabs
+        items={[
+          { value: "profiles", label: t("tabProfiles"), id: "pp-tab-profiles", panelId: "pp-tab-profiles-panel" },
+          { value: "sections", label: t("tabSections"), id: "pp-tab-sections", panelId: "pp-tab-sections-panel" },
+          { value: "preview", label: t("tabPreview"), id: "pp-tab-preview", panelId: "pp-tab-preview-panel" },
+        ]}
+        value={tab}
+        onChange={selectTab}
+        label={t("nav")}
+      />
+      <div style={{ marginTop: "12px" }}>
+        {tab === "profiles" && (
+          <ProfilesTab
+            state={state}
+            api={api ?? unavailableApi}
+            reload={reload}
+            t={t}
+            notify={notify}
+            drill={drill.profiles ?? null}
+            setDrill={setDrill}
+            onOpenSection={onOpenSection}
+            setState={setState}
+          />
+        )}
+        {tab === "sections" && (
+          <SectionsTab
+            state={state}
+            api={api ?? unavailableApi}
+            reload={reload}
+            t={t}
+            notify={notify}
+            drill={drill.sections ?? null}
+            setDrill={setDrill}
+            setState={setState}
+          />
+        )}
+        {tab === "preview" && <PreviewTab state={state} api={api ?? unavailableApi} t={t} notify={notify} />}
+      </div>
+      {banner}
+    </div>
   );
 }
 // #endregion COMPONENT_PromptProfilesSection

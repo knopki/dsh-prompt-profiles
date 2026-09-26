@@ -14,7 +14,7 @@
  *    unmount, so leaving a view never drops an edit still inside the debounce.
  * @keywords settings hooks, autosave, run save, conflict retry, focus select
  * #endregion moduleContract */
-import { React } from "./element.ts";
+import * as React from "react";
 import type { Translate } from "./i18n.ts";
 import type { StateDocument } from "./model.ts";
 import { type RemoteApi } from "./remote.ts";

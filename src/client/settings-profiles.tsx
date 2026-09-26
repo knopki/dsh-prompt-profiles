@@ -33,7 +33,7 @@ import {
   Modal,
   Tag,
 } from "@deepseek-ai/dsh-client-ui-primitives";
-import { h, React } from "./element.ts";
+import * as React from "react";
 import { type CreateFlow, findEntry, makeCreateFlow, makeMutationFlow, optimisticEntry } from "./flows.ts";
 import {
   addSectionsToRefs,
@@ -56,13 +56,14 @@ import {
   DefaultMenu,
   type DragEventLike,
   fieldStyle,
+  flexFill,
   iconControl,
   inlineError,
   type KeyboardEventLike,
   mutedStyle,
   rowStyle,
   type ValueChangeEvent,
-} from "./ui.ts";
+} from "./ui.tsx";
 
 // #region TYPE_profilesTab
 export interface ProfilesTabProps {
@@ -124,47 +125,41 @@ export function AddSectionPicker({
       else next.add(id);
       return next;
     });
-  return h(
-    Modal,
-    { open: true, onClose: onClose, title: t("pickerTitle"), closeLabel: t("cancel") },
-    h(Input, {
-      icon: h(IconSearchOutlineRegular, { size: 14 }),
-      placeholder: t("searchPlaceholder"),
-      value: query,
-      onChange: (e: ValueChangeEvent) => setQuery(e.target.value),
-      style: { width: "100%", boxSizing: "border-box" },
-    }),
-    h(
-      "div",
-      { style: { maxHeight: "320px", overflowY: "auto", marginTop: "8px" } },
-      candidates.length === 0 && h("p", { style: mutedStyle }, t("pickerEmpty")),
-      candidates.map((s) => {
-        const id = refIdOf(s) ?? "";
-        return h(
-          "label",
-          { key: id, style: { ...rowStyle, cursor: "pointer" } },
-          h(Checkbox, { checked: selected.has(id), onChange: () => toggle(id), label: s.title }),
-          h("span", null, s.title),
-          !String(s.body ?? "").trim() && h(Tag, null, t("emptyBody")),
-        );
-      }),
-    ),
-    h(
-      "div",
-      { style: { textAlign: "right", marginTop: "8px" } },
-      h(
-        Button,
-        {
-          variant: "primary",
-          disabled: selected.size === 0,
-          onClick: () => {
+  return (
+    <Modal open onClose={onClose} title={t("pickerTitle")} closeLabel={t("cancel")}>
+      <Input
+        icon={<IconSearchOutlineRegular size={14} />}
+        placeholder={t("searchPlaceholder")}
+        value={query}
+        onChange={(e: ValueChangeEvent) => setQuery(e.target.value)}
+        style={{ width: "100%", boxSizing: "border-box" }}
+      />
+      <div style={{ maxHeight: "320px", overflowY: "auto", marginTop: "8px" }}>
+        {candidates.length === 0 && <p style={mutedStyle}>{t("pickerEmpty")}</p>}
+        {candidates.map((s) => {
+          const id = refIdOf(s) ?? "";
+          return (
+            <label key={id} style={{ ...rowStyle, cursor: "pointer" }}>
+              <Checkbox checked={selected.has(id)} onChange={() => toggle(id)} label={s.title} />
+              <span>{s.title}</span>
+              {!String(s.body ?? "").trim() && <Tag>{t("emptyBody")}</Tag>}
+            </label>
+          );
+        })}
+      </div>
+      <div style={{ textAlign: "right", marginTop: "8px" }}>
+        <Button
+          variant="primary"
+          disabled={selected.size === 0}
+          onClick={() => {
             onAdd([...selected]);
             onClose();
-          },
-        },
-        `${t("pickerAdd")} (${selected.size})`,
-      ),
-    ),
+          }}
+        >
+          {`${t("pickerAdd")} (${selected.size})`}
+        </Button>
+      </div>
+    </Modal>
   );
 }
 // #endregion COMPONENT_AddSectionPicker
@@ -229,7 +224,7 @@ export function ProfileOutline({
   // two refs must move/scope/remove independently.
   const [dragId, setDragId] = React.useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = React.useState<number | null>(null);
-  // Remove-from-profile confirmation (kept LAST so positional test queues hold).
+  // Remove-from-profile confirmation.
   const [confirmRemove, setConfirmRemove] = React.useState<number | null>(null);
   const dragStart = (refSeq: number) => (event: DragEventLike) => {
     setDragId(refSeq);
@@ -286,29 +281,31 @@ export function ProfileOutline({
     // The anchor is the installed Button primitive, not a hand-styled button.
     // Open state is keyed by OCCURRENCE, so two refs to one section do not
     // share (or fight over) a single menu.
-    return h(Menu, {
-      open: scopeOpen === seq,
-      onClose: () => setScopeOpen(null),
-      anchor: h(
-        Button,
-        {
-          variant: "ghost",
-          size: "sm",
-          "aria-label": scopeLabel,
-          onClick: () => setScopeOpen((openSeq) => (openSeq === seq ? null : seq)),
-        },
-        scopeLabel,
-      ),
-      items: ["inherit", "main-only", "subagents-only"].map((scope) => ({
-        id: scope,
-        label: t(scopeKeyOf(scope)),
-      })),
-      selectedId: ref.scope ?? "inherit",
-      onSelect: (scope: string) => {
-        changeScope(seq, scope);
-        setScopeOpen(null);
-      },
-    });
+    return (
+      <Menu
+        open={scopeOpen === seq}
+        onClose={() => setScopeOpen(null)}
+        anchor={
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={scopeLabel}
+            onClick={() => setScopeOpen((openSeq) => (openSeq === seq ? null : seq))}
+          >
+            {scopeLabel}
+          </Button>
+        }
+        items={["inherit", "main-only", "subagents-only"].map((scope) => ({
+          id: scope,
+          label: t(scopeKeyOf(scope)),
+        }))}
+        selectedId={ref.scope ?? "inherit"}
+        onSelect={(scope: string) => {
+          changeScope(seq, scope);
+          setScopeOpen(null);
+        }}
+      />
+    );
   };
   // Insertion boundaries: one per gap between/around the rendered rows. The
   // integer order attached to a boundary is the order of the row that ends up
@@ -344,85 +341,88 @@ export function ProfileOutline({
     if (boundary < 0 || boundary > rows.length) return;
     dropAt(boundary, refSeq);
   };
-  const dropZone = (index: number) =>
-    h("div", {
-      key: `drop-${index}`,
-      "data-drop-index": index,
-      style: {
+  const dropZone = (index: number) => (
+    <div
+      key={`drop-${index}`}
+      data-drop-index={index}
+      style={{
         height: dragOverIndex === index ? "18px" : "6px",
         margin: "2px 0",
         borderRadius: "4px",
         background: dragOverIndex === index ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
-      },
-      onDragOver: (event: DragEventLike) => {
+      }}
+      onDragOver={(event: DragEventLike) => {
         if (event && typeof event.preventDefault === "function") event.preventDefault();
         if (dragId !== null && dragOverIndex !== index) setDragOverIndex(index);
-      },
-      onDrop: (event: DragEventLike) => {
+      }}
+      onDrop={(event: DragEventLike) => {
         if (event && typeof event.preventDefault === "function") event.preventDefault();
         const from = droppedSeq(event);
         dragEnd();
         dropAt(index, from);
-      },
-    });
+      }}
+    />
+  );
   const renderRow = (row: OutlineRow) => {
     if (row.kind === "builtin") {
-      return h(
-        "div",
-        { key: row.key, style: { ...rowStyle, opacity: 0.55 } },
-        h("span", { style: { width: "64px", fontVariantNumeric: "tabular-nums" } }, String(row.order)),
-        h("span", { flex: 1 }, row.name),
-        h(Tag, null, t("builtIn")),
+      return (
+        <div key={row.key} style={{ ...rowStyle, opacity: 0.55 }}>
+          <span style={{ width: "64px", fontVariantNumeric: "tabular-nums" }}>{String(row.order)}</span>
+          <span {...flexFill}>{row.name}</span>
+          <Tag>{t("builtIn")}</Tag>
+        </div>
       );
     }
     if (row.kind === "broken") {
-      return h(
-        "div",
-        { key: row.key, style: { ...rowStyle, color: "var(--dsw-alias-state-warning-primary, orange)" } },
-        h("span", { style: { width: "64px", fontVariantNumeric: "tabular-nums" } }, String(row.ref.order)),
-        h("span", { flex: 1 }, row.ref.id, " — ", t("missingSection")),
-        iconControl(t("remove"), IconTrashOutlineRegular, () => setConfirmRemove(row.seq)),
+      return (
+        <div key={row.key} style={{ ...rowStyle, color: "var(--dsw-alias-state-warning-primary, orange)" }}>
+          <span style={{ width: "64px", fontVariantNumeric: "tabular-nums" }}>{String(row.ref.order)}</span>
+          <span {...flexFill}>
+            {row.ref.id}
+            {" — "}
+            {t("missingSection")}
+          </span>
+          {iconControl(t("remove"), IconTrashOutlineRegular, () => setConfirmRemove(row.seq))}
+        </div>
       );
     }
     const { ref, section, seq } = row;
-    return h(
-      "div",
-      { key: row.key, style: { ...rowStyle, opacity: dragId === seq ? 0.5 : 1 } },
-      // Focusable grip: a real Button (keyboard + semantics), carrying the
-      // drag handlers and ↑/↓ reordering.
-      iconControl(t("dragHandle"), IconChevronsUpDownOutlineRegular, null, {
-        props: {
-          draggable: true,
-          onDragStart: dragStart(seq),
-          onDragEnd: dragEnd,
-          onKeyDown: (event: KeyboardEventLike) => {
-            if (event?.key === "ArrowUp") {
-              event.preventDefault?.();
-              moveRefBy(seq, "up");
-            } else if (event?.key === "ArrowDown") {
-              event.preventDefault?.();
-              moveRefBy(seq, "down");
-            }
+    return (
+      <div key={row.key} style={{ ...rowStyle, opacity: dragId === seq ? 0.5 : 1 }}>
+        {/* Focusable grip: a real Button (keyboard + semantics), carrying the
+            drag handlers and ↑/↓ reordering. */}
+        {iconControl(t("dragHandle"), IconChevronsUpDownOutlineRegular, null, {
+          props: {
+            draggable: true,
+            onDragStart: dragStart(seq),
+            onDragEnd: dragEnd,
+            onKeyDown: (event: KeyboardEventLike) => {
+              if (event?.key === "ArrowUp") {
+                event.preventDefault?.();
+                moveRefBy(seq, "up");
+              } else if (event?.key === "ArrowDown") {
+                event.preventDefault?.();
+                moveRefBy(seq, "down");
+              }
+            },
+            "data-drag-handle": seq,
           },
-          "data-drag-handle": seq,
-        },
-      }),
-      h("input", {
-        type: "number",
-        value: ref.order,
-        "aria-label": t("orderLabel"),
-        onChange: (e: ValueChangeEvent) => changeOrder(seq, Number(e.target.value)),
-        style: { ...fieldStyle, width: "76px" },
-      }),
-      h(
-        "span",
-        { style: { flex: 1, minWidth: 0 } },
-        section.title,
-        !String(section.body ?? "").trim() && h(Tag, null, t("emptyBody")),
-      ),
-      scopeMenu(row),
-      iconControl(t("openInSectionTab"), IconEditOutlineRegular, () => onOpenSection(ref.id)),
-      iconControl(t("remove"), IconTrashOutlineRegular, () => setConfirmRemove(seq)),
+        })}
+        <input
+          type="number"
+          value={ref.order}
+          aria-label={t("orderLabel")}
+          onChange={(e: ValueChangeEvent) => changeOrder(seq, Number(e.target.value))}
+          style={{ ...fieldStyle, width: "76px" }}
+        />
+        <span style={{ flex: 1, minWidth: 0 }}>
+          {section.title}
+          {!String(section.body ?? "").trim() && <Tag>{t("emptyBody")}</Tag>}
+        </span>
+        {scopeMenu(row)}
+        {iconControl(t("openInSectionTab"), IconEditOutlineRegular, () => onOpenSection(ref.id))}
+        {iconControl(t("remove"), IconTrashOutlineRegular, () => setConfirmRemove(seq))}
+      </div>
     );
   };
   const outlineRowsEls: React.ReactElement[] = [];
@@ -431,86 +431,75 @@ export function ProfileOutline({
     outlineRowsEls.push(renderRow(row));
   });
   outlineRowsEls.push(dropZone(rows.length));
-  return h(
-    "div",
-    null,
-    h(
-      "div",
-      { style: { ...rowStyle, borderBottom: "none" } },
-      iconControl(t("back"), IconChevronLeftOutlineMedium, leave, { variant: "outline", tooltip: false, key: "back" }),
-      h("strong", { style: { flex: 1 } }, title || idOf(profile)),
-      // Count only the resolvable sections; broken refs are called out.
-      h(
-        Tag,
-        null,
-        brokenRows.length
-          ? `${ours.length} ${t("sectionsWord")} · ${brokenRows.length} ${t("brokenWord")}`
-          : `${ours.length} ${t("sectionsWord")}`,
-      ),
-    ),
-    h("hr", { style: { border: "none", borderTop: "1px solid var(--dsw-alias-border-l2)" } }),
-    inlineError(error),
-    h(
-      "label",
-      { style: { display: "block", marginBottom: "8px" } },
-      t("titleLabel"),
-      h("input", {
-        ref: titleRef,
-        value: title,
-        onChange: (e: ValueChangeEvent) => setTitle(e.target.value),
-        style: { ...fieldStyle, width: "100%", boxSizing: "border-box", marginTop: "4px" },
-      }),
-    ),
-    h("p", { style: { ...mutedStyle, fontSize: "12px" } }, t("builtInNote")),
-    h("div", null, outlineRowsEls),
-    h(
-      "div",
-      { style: { marginTop: "8px" } },
-      // Icon via the Button `icon` slot — the label is "Add section" with NO
-      // plus in the text (the leading + is the icon only).
-      h(
-        Button,
-        {
+  return (
+    <div>
+      <div style={{ ...rowStyle, borderBottom: "none" }}>
+        {iconControl(t("back"), IconChevronLeftOutlineMedium, leave, {
           variant: "outline",
-          icon: h(IconPlusOutlineRegular, { size: 14 }),
-          onClick: () => setPickerOpen(true),
-        },
-        t("addSection"),
-      ),
-    ),
-    completeModes.length > 0 &&
-      h(
-        "p",
-        {
-          style: { marginTop: "12px", color: "var(--dsw-alias-state-warning-primary, orange)" },
-        },
-        `⚠ ${t("completeModeWarning")} ${completeModes.map((m) => m.title ?? m.id).join(", ")}`,
-      ),
-    // Removing a ref is destructive too — same confirmation as the other
-    // destructive actions (no silent one-click removal). `confirmRemove` is
-    // the ref OCCURRENCE, so removing one of two duplicate refs keeps the other.
-    confirmRemove !== null &&
-      h(ConfirmDialog, {
-        open: true,
-        title: t("confirmRemoveRef"),
-        actionLabel: t("remove"),
-        body: sectionsById.get(refs[confirmRemove]?.id ?? "")?.title || refs[confirmRemove]?.id || "",
-        t,
-        onCancel: () => setConfirmRemove(null),
-        onConfirm: () => {
-          const seq = confirmRemove;
-          setConfirmRemove(null);
-          removeRef(seq);
-        },
-      }),
-    pickerOpen &&
-      h(AddSectionPicker, {
-        sections: state.sections ?? [],
-        alreadyIn: new Set(refs.map((ref) => ref.id)),
-        onAdd: addSections,
-        onClose: () => setPickerOpen(false),
-        t,
-      }),
+          tooltip: false,
+          key: "back",
+        })}
+        <strong style={{ flex: 1 }}>{title || idOf(profile)}</strong>
+        {/* Count only the resolvable sections; broken refs are called out. */}
+        <Tag>
+          {brokenRows.length
+            ? `${ours.length} ${t("sectionsWord")} · ${brokenRows.length} ${t("brokenWord")}`
+            : `${ours.length} ${t("sectionsWord")}`}
+        </Tag>
+      </div>
+      <hr style={{ border: "none", borderTop: "1px solid var(--dsw-alias-border-l2)" }} />
+      {inlineError(error)}
+      <label style={{ display: "block", marginBottom: "8px" }}>
+        {t("titleLabel")}
+        <input
+          ref={titleRef}
+          value={title}
+          onChange={(e: ValueChangeEvent) => setTitle(e.target.value)}
+          style={{ ...fieldStyle, width: "100%", boxSizing: "border-box", marginTop: "4px" }}
+        />
+      </label>
+      <p style={{ ...mutedStyle, fontSize: "12px" }}>{t("builtInNote")}</p>
+      <div>{outlineRowsEls}</div>
+      <div style={{ marginTop: "8px" }}>
+        {/* Icon via the Button `icon` slot — the label is "Add section" with NO
+            plus in the text (the leading + is the icon only). */}
+        <Button variant="outline" icon={<IconPlusOutlineRegular size={14} />} onClick={() => setPickerOpen(true)}>
+          {t("addSection")}
+        </Button>
+      </div>
+      {completeModes.length > 0 && (
+        <p style={{ marginTop: "12px", color: "var(--dsw-alias-state-warning-primary, orange)" }}>
+          {`⚠ ${t("completeModeWarning")} ${completeModes.map((m) => m.title ?? m.id).join(", ")}`}
+        </p>
+      )}
+      {/* Removing a ref is destructive too — same confirmation as the other
+          destructive actions (no silent one-click removal). `confirmRemove` is
+          the ref OCCURRENCE, so removing one of two duplicate refs keeps the other. */}
+      {confirmRemove !== null && (
+        <ConfirmDialog
+          open
+          title={t("confirmRemoveRef")}
+          actionLabel={t("remove")}
+          body={sectionsById.get(refs[confirmRemove]?.id ?? "")?.title || refs[confirmRemove]?.id || ""}
+          t={t}
+          onCancel={() => setConfirmRemove(null)}
+          onConfirm={() => {
+            const seq = confirmRemove;
+            setConfirmRemove(null);
+            removeRef(seq);
+          }}
+        />
+      )}
+      {pickerOpen && (
+        <AddSectionPicker
+          sections={state.sections ?? []}
+          alreadyIn={new Set(refs.map((ref) => ref.id))}
+          onAdd={addSections}
+          onClose={() => setPickerOpen(false)}
+          t={t}
+        />
+      )}
+    </div>
   );
 }
 // #endregion COMPONENT_ProfileOutline
@@ -568,20 +557,22 @@ export function ProfilesTab({
   if (drill) {
     const profile = profiles.find((p) => idOf(p) === drill);
     if (profile) {
-      return h(ProfileOutline, {
-        profile,
-        state,
-        api,
-        reload,
-        t,
-        notify,
-        autoFocusTitle: justCreated === drill,
-        onBack: () => {
-          setJustCreated(null);
-          setDrill(null);
-        },
-        onOpenSection,
-      });
+      return (
+        <ProfileOutline
+          profile={profile}
+          state={state}
+          api={api}
+          reload={reload}
+          t={t}
+          notify={notify}
+          autoFocusTitle={justCreated === drill}
+          onBack={() => {
+            setJustCreated(null);
+            setDrill(null);
+          }}
+          onOpenSection={onOpenSection}
+        />
+      );
     }
     setDrill(null);
   }
@@ -608,74 +599,63 @@ export function ProfilesTab({
       agree: (polled) => !findEntry(polled, profile.patchId),
     });
   const setDefault = (value: string) => runSave(() => api.setDefault(value), reload, t, notify);
-  return h(
-    "div",
-    null,
-    profiles.length === 0 && h("p", { style: mutedStyle }, t("noProfiles")),
-    profiles.map((profile) =>
-      h(
-        "div",
-        {
-          key: idOf(profile),
-          style: { ...rowStyle, cursor: "pointer" },
-          onClick: () => setDrill(idOf(profile)),
-        },
-        h("span", { flex: 1 }, profile.title),
-        h("span", { style: mutedStyle }, `${(profile.sections ?? []).length} ${t("sectionsWord")}`),
-        iconControl("edit", IconEditOutlineRegular, () => setDrill(idOf(profile))),
-        iconControl(
-          t("duplicate"),
-          IconCopyOutlineRegular,
-          (e) => {
-            e.stopPropagation();
-            duplicateProfile(profile);
-          },
-          { disabled: mutating },
-        ),
-        iconControl(
-          t("deleteLabel"),
-          IconTrashOutlineRegular,
-          (e) => {
-            e.stopPropagation();
-            setConfirming(profile);
-          },
-          { disabled: mutating },
-        ),
-      ),
-    ),
-    h(
-      "div",
-      { style: { marginTop: "8px" } },
-      h(
-        Button,
-        {
-          variant: "outline",
-          disabled: creating || mutating,
-          onClick: () => flow.create("profile", { title: t("defaultProfileTitle"), sections: [] }),
-        },
-        creating ? t("creating") : t("newProfile"),
-      ),
-    ),
-    h(
-      "div",
-      { style: { marginTop: "16px", display: "flex", alignItems: "center", gap: "8px" } },
-      h("span", { style: mutedStyle }, t("defaultForNewSessions")),
-      h(DefaultMenu, { state, t, onPick: setDefault }),
-    ),
-    confirming &&
-      h(ConfirmDialog, {
-        open: true,
-        title: t("confirmDeleteProfile"),
-        actionLabel: t("deleteLabel"),
-        body: confirming.title,
-        t,
-        onCancel: () => setConfirming(null),
-        onConfirm: () => {
-          const profile = confirming;
-          setConfirming(null);
-          deleteProfile(profile);
-        },
-      }),
+  return (
+    <div>
+      {profiles.length === 0 && <p style={mutedStyle}>{t("noProfiles")}</p>}
+      {profiles.map((profile) => (
+        <div key={idOf(profile)} style={{ ...rowStyle, cursor: "pointer" }} onClick={() => setDrill(idOf(profile))}>
+          <span {...flexFill}>{profile.title}</span>
+          <span style={mutedStyle}>{`${(profile.sections ?? []).length} ${t("sectionsWord")}`}</span>
+          {iconControl("edit", IconEditOutlineRegular, () => setDrill(idOf(profile)))}
+          {iconControl(
+            t("duplicate"),
+            IconCopyOutlineRegular,
+            (e) => {
+              e.stopPropagation();
+              duplicateProfile(profile);
+            },
+            { disabled: mutating },
+          )}
+          {iconControl(
+            t("deleteLabel"),
+            IconTrashOutlineRegular,
+            (e) => {
+              e.stopPropagation();
+              setConfirming(profile);
+            },
+            { disabled: mutating },
+          )}
+        </div>
+      ))}
+      <div style={{ marginTop: "8px" }}>
+        <Button
+          variant="outline"
+          disabled={creating || mutating}
+          onClick={() => flow.create("profile", { title: t("defaultProfileTitle"), sections: [] })}
+        >
+          {creating ? t("creating") : t("newProfile")}
+        </Button>
+      </div>
+      <div style={{ marginTop: "16px", display: "flex", alignItems: "center", gap: "8px" }}>
+        <span style={mutedStyle}>{t("defaultForNewSessions")}</span>
+        <DefaultMenu state={state} t={t} onPick={setDefault} />
+      </div>
+      {confirming && (
+        <ConfirmDialog
+          open
+          title={t("confirmDeleteProfile")}
+          actionLabel={t("deleteLabel")}
+          body={confirming.title}
+          t={t}
+          onCancel={() => setConfirming(null)}
+          onConfirm={() => {
+            const profile = confirming;
+            setConfirming(null);
+            deleteProfile(profile);
+          }}
+        />
+      )}
+    </div>
   );
 }
 // #endregion COMPONENT_ProfilesTab

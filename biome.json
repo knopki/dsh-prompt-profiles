@@ -27,6 +27,34 @@
       }
     }
   },
+  "overrides": [
+    {
+      "includes": ["src/client/**/*.tsx"],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "noAutofocus": "off",
+            "noLabelWithoutControl": "off",
+            "noStaticElementInteractions": "off",
+            "useKeyWithClickEvents": "off"
+          },
+          "suspicious": {
+            "noArrayIndexKey": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/client/settings-shared.ts"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "useExhaustiveDependencies": "off"
+          }
+        }
+      }
+    }
+  ],
   "javascript": {
     "formatter": {
       "quoteStyle": "double",

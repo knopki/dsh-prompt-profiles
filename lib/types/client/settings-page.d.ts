@@ -14,7 +14,7 @@
  *    never renders a tab against a missing document.
  * @keywords settings page, tabs, drill down, escape, scroll gutter
  * #endregion moduleContract */
-import { React } from "./element.ts";
+import * as React from "react";
 import type { Translate } from "./i18n.ts";
 import type { RemoteApi } from "./remote.ts";
 export interface PromptProfilesSectionProps {

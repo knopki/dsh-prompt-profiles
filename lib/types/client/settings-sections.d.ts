@@ -16,7 +16,7 @@
  *    than rewrite the bundle, so the action is blocked with a reason.
  * @keywords settings, sections tab, section form, rename id, autosave
  * #endregion moduleContract */
-import { React } from "./element.ts";
+import * as React from "react";
 import { type CreateFlow } from "./flows.ts";
 import type { Translate } from "./i18n.ts";
 import type { RowEntry, StateDocument } from "./model.ts";

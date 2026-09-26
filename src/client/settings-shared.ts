@@ -15,7 +15,7 @@
  * @keywords settings hooks, autosave, run save, conflict retry, focus select
  * #endregion moduleContract */
 
-import { React } from "./element.ts";
+import * as React from "react";
 import { errText, notifyProfilesChanged } from "./helpers.ts";
 import type { Translate } from "./i18n.ts";
 import type { StateDocument } from "./model.ts";

@@ -26,7 +26,7 @@ import {
   Input,
   Tag,
 } from "@deepseek-ai/dsh-client-ui-primitives";
-import { h, React } from "./element.ts";
+import * as React from "react";
 import { type CreateFlow, findEntry, makeCreateFlow, makeMutationFlow, optimisticEntry } from "./flows.ts";
 import {
   canSaveSection,
@@ -46,12 +46,13 @@ import { runSave, useAutosave, useFocusSelect } from "./settings-shared.ts";
 import {
   ConfirmDialog,
   fieldStyle,
+  flexFill,
   iconControl,
   inlineError,
   mutedStyle,
   rowStyle,
   type ValueChangeEvent,
-} from "./ui.ts";
+} from "./ui.tsx";
 
 // #region TYPE_sectionsTab
 export interface SectionsTabProps {
@@ -108,8 +109,6 @@ export function SectionForm({
   const [confirmRename, setConfirmRename] = React.useState(false);
   const [error, setError] = React.useState("");
   const [mutating, setMutating] = React.useState(false);
-  // Inline hint inside the Change-id dialog (empty value). Kept LAST so the
-  // shim's stateQueue sequences stay positional.
   const [renameHint, setRenameHint] = React.useState("");
   const titleRef = React.useRef<HTMLInputElement | null>(null);
   useFocusSelect(titleRef, autoFocusTitle === true);
@@ -229,130 +228,121 @@ export function SectionForm({
   // ownership).
   const bundleOwned = section.source === "bundle";
   const emptyBody = !String(body ?? "").trim();
-  return h(
-    "div",
-    null,
-    h(
-      "div",
-      { style: { ...rowStyle, borderBottom: "none" } },
-      iconControl(t("back"), IconChevronLeftOutlineMedium, leave, { variant: "outline", tooltip: false, key: "back" }),
-      h("strong", { style: { flex: 1 } }, idOf(section)),
-      iconControl(t("duplicate"), IconCopyOutlineRegular, duplicate, { disabled: mutating }),
-      iconControl(t("deleteLabel"), IconTrashOutlineRegular, () => setConfirmDelete(true), { disabled: mutating }),
-    ),
-    h("hr", { style: { border: "none", borderTop: "1px solid var(--dsw-alias-border-l2)" } }),
-    inlineError(error),
-    h(
-      "label",
-      { style: { display: "block", marginBottom: "8px" } },
-      t("titleLabel"),
-      h("input", {
-        ref: titleRef,
-        value: title,
-        onChange: (e: ValueChangeEvent) => setTitle(e.target.value),
-        onBlur: flushTitle,
-        style: { ...fieldStyle, width: "100%", boxSizing: "border-box", marginTop: "4px" },
-      }),
-      !titleOk && h("span", { style: { ...mutedStyle, fontSize: "12px" } }, t("titleRequired")),
-    ),
-    h(
-      "label",
-      { style: { display: "block", marginBottom: "8px" } },
-      t("bodyLabel"),
-      h("textarea", {
-        value: body,
-        rows: 8,
-        onChange: (e: ValueChangeEvent) => setBody(e.target.value),
-        onBlur: flushBody,
-        style: { ...fieldStyle, width: "100%", boxSizing: "border-box", marginTop: "4px", resize: "vertical" },
-      }),
-      emptyBody && h("span", { style: { ...mutedStyle, fontSize: "12px" } }, t("emptyBody")),
-    ),
-    h(
-      "div",
-      { style: mutedStyle, marginBottom: "4px" },
-      `${t("usedIn")}: `,
-      usedIn.length === 0
-        ? t("notUsed")
-        : usedIn.map((u, index) =>
-            h(
-              "span",
-              {
+  return (
+    <div>
+      <div style={{ ...rowStyle, borderBottom: "none" }}>
+        {iconControl(t("back"), IconChevronLeftOutlineMedium, leave, {
+          variant: "outline",
+          tooltip: false,
+          key: "back",
+        })}
+        <strong style={{ flex: 1 }}>{idOf(section)}</strong>
+        {iconControl(t("duplicate"), IconCopyOutlineRegular, duplicate, { disabled: mutating })}
+        {iconControl(t("deleteLabel"), IconTrashOutlineRegular, () => setConfirmDelete(true), { disabled: mutating })}
+      </div>
+      <hr style={{ border: "none", borderTop: "1px solid var(--dsw-alias-border-l2)" }} />
+      {inlineError(error)}
+      <label style={{ display: "block", marginBottom: "8px" }}>
+        {t("titleLabel")}
+        <input
+          ref={titleRef}
+          value={title}
+          onChange={(e: ValueChangeEvent) => setTitle(e.target.value)}
+          onBlur={flushTitle}
+          style={{ ...fieldStyle, width: "100%", boxSizing: "border-box", marginTop: "4px" }}
+        />
+        {!titleOk && <span style={{ ...mutedStyle, fontSize: "12px" }}>{t("titleRequired")}</span>}
+      </label>
+      <label style={{ display: "block", marginBottom: "8px" }}>
+        {t("bodyLabel")}
+        <textarea
+          value={body}
+          rows={8}
+          onChange={(e: ValueChangeEvent) => setBody(e.target.value)}
+          onBlur={flushBody}
+          style={{ ...fieldStyle, width: "100%", boxSizing: "border-box", marginTop: "4px", resize: "vertical" }}
+        />
+        {emptyBody && <span style={{ ...mutedStyle, fontSize: "12px" }}>{t("emptyBody")}</span>}
+      </label>
+      <div {...({ style: mutedStyle, marginBottom: "4px" } as React.HTMLAttributes<HTMLDivElement>)}>
+        {`${t("usedIn")}: `}
+        {usedIn.length === 0
+          ? t("notUsed")
+          : usedIn.map((u, index) => (
+              <span
                 // profileId alone repeats when one profile references the section
                 // with two scopes — the index keeps every React key unique.
-                key: `${u.profileId}:${u.scope}:${index}`,
-                style: { marginRight: "8px" },
-              },
-              `${usedInProfileName(state, u.profileId)} — ${t("scopeLabel")}: ${t(scopeKeyOf(u.scope))}`,
-            ),
-          ),
-    ),
-    sourceKind &&
-      h(
-        "div",
-        { style: mutedStyle, marginBottom: "8px" },
-        `${t("sourceLabel")}: ${t(sourceKind === "bundle" ? "sourceBundle" : "sourceUnknown")}`,
-      ),
-    h(
-      "div",
-      { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } },
-      h(
-        Button,
-        {
-          variant: "outline",
-          disabled: mutating || bundleOwned,
+                key={`${u.profileId}:${u.scope}:${index}`}
+                style={{ marginRight: "8px" }}
+              >
+                {`${usedInProfileName(state, u.profileId)} — ${t("scopeLabel")}: ${t(scopeKeyOf(u.scope))}`}
+              </span>
+            ))}
+      </div>
+      {sourceKind && (
+        <div {...({ style: mutedStyle, marginBottom: "8px" } as React.HTMLAttributes<HTMLDivElement>)}>
+          {`${t("sourceLabel")}: ${t(sourceKind === "bundle" ? "sourceBundle" : "sourceUnknown")}`}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+        <Button
+          variant="outline"
+          disabled={mutating || bundleOwned}
           // Both the button's own label and the confirmation carry the honest
           // warning that profile references are NOT rewritten any more.
-          title: bundleOwned ? t("renameIdLocked") : t("renameNote"),
-          onClick: () => {
+          title={bundleOwned ? t("renameIdLocked") : t("renameNote")}
+          onClick={() => {
             setRenameValue(refIdOf(section));
             setRenameHint("");
             setConfirmRename(true);
-          },
-        },
-        t("renameId"),
-      ),
-      // Blocked with a plain-language reason instead of a silent dead button.
-      bundleOwned && h("span", { style: { ...mutedStyle, fontSize: "12px" } }, t("renameIdLocked")),
-    ),
-    confirmDelete &&
-      h(ConfirmDialog, {
-        open: true,
-        title: t("confirmDeleteSection"),
-        actionLabel: t("deleteLabel"),
-        body: section.title,
-        t,
-        onCancel: () => setConfirmDelete(false),
-        onConfirm: () => {
-          setConfirmDelete(false);
-          remove();
-        },
-      }),
-    confirmRename &&
-      h(ConfirmDialog, {
-        open: true,
-        title: t("confirmRename"),
-        actionLabel: t("confirm"),
-        body: t("renameNote"),
-        t,
-        onCancel: () => {
-          setConfirmRename(false);
-          setRenameHint("");
-        },
-        onConfirm: rename,
-        extraChildren: h(
-          React.Fragment,
-          null,
-          h("input", {
-            value: renameValue,
-            autoFocus: true,
-            onChange: (e: ValueChangeEvent) => setRenameValue(e.target.value),
-            style: { ...fieldStyle, width: "100%", boxSizing: "border-box" },
-          }),
-          // Soft hint: the id may not be blank (the dialog stays open).
-          renameHint && h("p", { style: { ...mutedStyle, marginTop: "8px", marginBottom: 0 } }, renameHint),
-        ),
-      }),
+          }}
+        >
+          {t("renameId")}
+        </Button>
+        {/* Blocked with a plain-language reason instead of a silent dead button. */}
+        {bundleOwned && <span style={{ ...mutedStyle, fontSize: "12px" }}>{t("renameIdLocked")}</span>}
+      </div>
+      {confirmDelete && (
+        <ConfirmDialog
+          open
+          title={t("confirmDeleteSection")}
+          actionLabel={t("deleteLabel")}
+          body={section.title}
+          t={t}
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => {
+            setConfirmDelete(false);
+            remove();
+          }}
+        />
+      )}
+      {confirmRename && (
+        <ConfirmDialog
+          open
+          title={t("confirmRename")}
+          actionLabel={t("confirm")}
+          body={t("renameNote")}
+          t={t}
+          onCancel={() => {
+            setConfirmRename(false);
+            setRenameHint("");
+          }}
+          onConfirm={rename}
+          extraChildren={
+            <>
+              <input
+                value={renameValue as string}
+                autoFocus
+                onChange={(e: ValueChangeEvent) => setRenameValue(e.target.value)}
+                style={{ ...fieldStyle, width: "100%", boxSizing: "border-box" }}
+              />
+              {/* Soft hint: the id may not be blank (the dialog stays open). */}
+              {renameHint && <p style={{ ...mutedStyle, marginTop: "8px", marginBottom: 0 }}>{renameHint}</p>}
+            </>
+          }
+        />
+      )}
+    </div>
   );
 }
 // #endregion COMPONENT_SectionForm
@@ -397,84 +387,80 @@ export function SectionsTab({
   if (drill) {
     const live = (state.sections ?? []).find((s) => idOf(s) === drill);
     if (live)
-      return h(SectionForm, {
-        // Key on the row id: after DUPLICATE the drill moves to the copy and
-        // React must remount the form with the copy's state, not reuse the
-        // original's useState values.
-        key: idOf(live),
-        section: live,
-        state,
-        api,
-        reload,
-        t,
-        notify,
-        autoFocusTitle: justCreated === drill,
-        onBack: () => {
-          setJustCreated(null);
-          setDrill(null);
-        },
-        // After a rename the drill must follow the NEW id or the form drops
-        // back to the list (the old id no longer resolves).
-        onRenamed: (id: string) => {
-          setJustCreated(null);
-          setDrill(id);
-        },
-        // Duplicate opens the copy (creation-style drill).
-        onDrill: (id: string | null) => {
-          setJustCreated(null);
-          setDrill(id);
-        },
-        setState,
-      });
+      return (
+        <SectionForm
+          // Key on the row id: after DUPLICATE the drill moves to the copy and
+          // React must remount the form with the copy's state, not reuse the
+          // original's useState values.
+          key={idOf(live) as string}
+          section={live}
+          state={state}
+          api={api}
+          reload={reload}
+          t={t}
+          notify={notify}
+          autoFocusTitle={justCreated === drill}
+          onBack={() => {
+            setJustCreated(null);
+            setDrill(null);
+          }}
+          // After a rename the drill must follow the NEW id or the form drops
+          // back to the list (the old id no longer resolves).
+          onRenamed={(id: string) => {
+            setJustCreated(null);
+            setDrill(id);
+          }}
+          // Duplicate opens the copy (creation-style drill).
+          onDrill={(id: string | null) => {
+            setJustCreated(null);
+            setDrill(id);
+          }}
+          setState={setState}
+        />
+      );
     setDrill(null);
   }
-  return h(
-    "div",
-    null,
-    h(
-      "div",
-      { style: { display: "flex", gap: "8px", marginBottom: "8px" } },
-      h(Input, {
-        icon: h(IconSearchOutlineRegular, { size: 14 }),
-        placeholder: t("searchPlaceholder"),
-        value: query,
-        onChange: (e: ValueChangeEvent) => setQuery(e.target.value),
-        style: { flex: 1 },
-      }),
-      h(
-        Button,
-        {
-          variant: "outline",
-          disabled: creating,
-          onClick: () => flow.create("section", { title: t("defaultSectionTitle"), body: "" }),
-        },
-        creating ? t("creating") : t("newSection"),
-      ),
-    ),
-    sections.length === 0 && h("p", { style: mutedStyle }, t("noSections")),
-    sections.map((section) => {
-      const sourceKind = sourceKindOf(section.source);
-      return h(
-        "div",
-        {
-          key: idOf(section),
-          style: { ...rowStyle, cursor: "pointer" },
-          onClick: () => setDrill(idOf(section)),
-        },
-        h("span", { flex: 1 }, section.title, !String(section.body ?? "").trim() && h(Tag, null, t("emptyBody"))),
-        h(
-          "span",
-          { style: mutedStyle },
-          `${t("usedIn")}: `,
-          (section.usedIn ?? []).length === 0
-            ? t("notUsed")
-            : (section.usedIn ?? []).map((u) => usedInProfileName(state, u.profileId)).join(", "),
-        ),
-        // Source badge only for `bundle`/`unknown`; `user` rows stay calm.
-        sourceKind &&
-          h(Tag, null, `${t("sourceLabel")}: ${t(sourceKind === "bundle" ? "sourceBundle" : "sourceUnknown")}`),
-      );
-    }),
+  return (
+    <div>
+      <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
+        <Input
+          icon={<IconSearchOutlineRegular size={14} />}
+          placeholder={t("searchPlaceholder")}
+          value={query}
+          onChange={(e: ValueChangeEvent) => setQuery(e.target.value)}
+          style={{ flex: 1 }}
+        />
+        <Button
+          variant="outline"
+          disabled={creating}
+          onClick={() => flow.create("section", { title: t("defaultSectionTitle"), body: "" })}
+        >
+          {creating ? t("creating") : t("newSection")}
+        </Button>
+      </div>
+      {sections.length === 0 && <p style={mutedStyle}>{t("noSections")}</p>}
+      {sections.map((section) => {
+        const sourceKind = sourceKindOf(section.source);
+        return (
+          <div key={idOf(section)} style={{ ...rowStyle, cursor: "pointer" }} onClick={() => setDrill(idOf(section))}>
+            <span {...flexFill}>
+              {section.title}
+              {!String(section.body ?? "").trim() && <Tag>{t("emptyBody")}</Tag>}
+            </span>
+            <span style={mutedStyle}>
+              {`${t("usedIn")}: `}
+              {(section.usedIn ?? []).length === 0
+                ? t("notUsed")
+                : (section.usedIn ?? []).map((u) => usedInProfileName(state, u.profileId)).join(", ")}
+            </span>
+            {/* Source badge only for `bundle`/`unknown`; `user` rows stay calm. */}
+            {sourceKind && (
+              <Tag>{`${t("sourceLabel")}: ${t(sourceKind === "bundle" ? "sourceBundle" : "sourceUnknown")}`}</Tag>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 // #endregion COMPONENT_SectionsTab

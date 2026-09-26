@@ -17,7 +17,7 @@
  *    orders are broken by position.
  * @keywords settings, profiles tab, outline, drag reorder, add section picker
  * #endregion moduleContract */
-import { React } from "./element.ts";
+import * as React from "react";
 import { type CreateFlow } from "./flows.ts";
 import type { Translate } from "./i18n.ts";
 import type { RowEntry, StateDocument } from "./model.ts";

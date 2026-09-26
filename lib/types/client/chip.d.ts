@@ -17,7 +17,7 @@
  *  - A burst of settings mutations collapses into one debounced /state re-read.
  * @keywords chip, composer, profile choice, complete mode, store hooks
  * #endregion moduleContract */
-import { React } from "./element.ts";
+import * as React from "react";
 import type { Translate } from "./i18n.ts";
 /** The session store the composer reads. */
 export interface SessionStoreState {

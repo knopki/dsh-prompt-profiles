@@ -24,12 +24,12 @@ import {
   IconWarningOutlineRegular,
   Menu,
 } from "@deepseek-ai/dsh-client-ui-primitives";
-import { h, React } from "./element.ts";
+import * as React from "react";
 import { errText, idOf, PROFILES_REFRESH_DEBOUNCE_MS, profileLabel, subscribeProfilesChanged } from "./helpers.ts";
 import type { Translate } from "./i18n.ts";
 import type { StateDocument } from "./model.ts";
 import { readyApi } from "./transport.ts";
-import { chipMaxWidth, triggerChevronStyle, triggerLabelStyle, useNotifier } from "./ui.ts";
+import { chipMaxWidth, triggerChevronStyle, triggerLabelStyle, useNotifier } from "./ui.tsx";
 
 // #region TYPE_stores
 /** The session store the composer reads. */
@@ -180,60 +180,59 @@ export function PromptProfileChip(props: PromptProfileChipProps): React.ReactEle
   // third-party plugin in this version, so no "Manage profiles…" entry.
   const items = [
     { id: "none", label: t("none") },
-    ...profiles.map((profile) => ({ id: idOf(profile), label: profile.title })),
+    ...profiles.map((profile) => ({ id: idOf(profile) as string, label: profile.title })),
   ];
-  // Trigger content, left to right: the profile label, then (only in a
-  // complete mode) the warning glyph, then the trailing chevron. Built as an
-  // explicit list so a non-complete trigger really has two children.
-  const triggerChildren = [
-    h("span", { style: triggerLabelStyle }, profileLabel(selected, t)),
-    completeMode &&
-      h(
-        "span",
-        {
-          "data-complete-warning": completeMode.id,
-          "aria-hidden": true,
-          style: { color: "var(--dsw-alias-state-warning-primary, orange)", flex: "none", display: "inline-flex" },
-        },
-        h(IconWarningOutlineRegular, { size: 14 }),
-      ),
-    h("span", { "aria-hidden": true, style: triggerChevronStyle }, h(IconChevronDownOutlineRegular, { size: 14 })),
-  ].filter(Boolean);
-  return h(
-    React.Fragment,
-    null,
-    h(Menu, {
-      open,
-      onClose: () => setOpen(false),
-      // Match the composer's own dropdowns (see conversation.input.permission):
-      // they open UPWARD, portaled out of the composer's clipping.
-      side: "top",
-      portal: true,
-      // Button owns radius/padding/typography/colour and the hover, focus
-      // and active states; the chevron is a TRAILING child (the primitive has
-      // no trailing-icon slot), after the label, as on the neighbouring
-      // composer controls.
-      anchor: h(
-        Button,
-        {
-          variant: "ghost",
-          size: "sm",
-          "aria-label": t("menuLabel"),
-          // The complete-mode warning wins the hover text (it explains why the
-          // chosen profile will not be used); otherwise the blocked state
-          // explains itself and the accessible name stays the control's label.
-          title: modeWarning ?? (lastKey ? t("menuLabel") : t("chooseNeedsWorkspace")),
-          onClick: () => setOpen(!open),
-          // Dim the trigger in a complete mode — the profile is inert.
-          style: completeMode ? { ...chipMaxWidth, opacity: 0.6 } : chipMaxWidth,
-        },
-        ...triggerChildren,
-      ),
-      items,
-      selectedId: selected ? idOf(selected) : "none",
-      onSelect: (id: string) => choose(id === "none" ? "" : id),
-    }),
-    banner,
+  return (
+    <>
+      <Menu
+        open={open}
+        onClose={() => setOpen(false)}
+        // Match the composer's own dropdowns (see conversation.input.permission):
+        // they open UPWARD, portaled out of the composer's clipping.
+        side="top"
+        portal
+        // Button owns radius/padding/typography/colour and the hover, focus
+        // and active states; the chevron is a TRAILING child (the primitive has
+        // no trailing-icon slot), after the label, as on the neighbouring
+        // composer controls.
+        anchor={
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={t("menuLabel")}
+            // The complete-mode warning wins the hover text (it explains why the
+            // chosen profile will not be used); otherwise the blocked state
+            // explains itself and the accessible name stays the control's label.
+            title={modeWarning ?? (lastKey ? t("menuLabel") : t("chooseNeedsWorkspace"))}
+            onClick={() => setOpen(!open)}
+            // Dim the trigger in a complete mode — the profile is inert.
+            style={completeMode ? { ...chipMaxWidth, opacity: 0.6 } : chipMaxWidth}
+          >
+            <span style={triggerLabelStyle}>{profileLabel(selected, t)}</span>
+            {completeMode && (
+              <span
+                data-complete-warning={completeMode.id}
+                aria-hidden
+                style={{
+                  color: "var(--dsw-alias-state-warning-primary, orange)",
+                  flex: "none",
+                  display: "inline-flex",
+                }}
+              >
+                <IconWarningOutlineRegular size={14} />
+              </span>
+            )}
+            <span aria-hidden style={triggerChevronStyle}>
+              <IconChevronDownOutlineRegular size={14} />
+            </span>
+          </Button>
+        }
+        items={items}
+        selectedId={selected ? (idOf(selected) as string) : "none"}
+        onSelect={(id: string) => choose(id === "none" ? "" : id)}
+      />
+      {banner}
+    </>
   );
 }
 // #endregion COMPONENT_PromptProfileChip

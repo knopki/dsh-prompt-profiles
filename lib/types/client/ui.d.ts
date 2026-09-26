@@ -18,7 +18,7 @@
  *    called as a function), SegmentedTabs items carry value/label/id/panelId.
  * @keywords ui, primitives, shared styles, notifier, confirm dialog, default menu
  * #endregion moduleContract */
-import { React } from "./element.ts";
+import * as React from "react";
 import type { Translate } from "./i18n.ts";
 import type { StateDocument } from "./model.ts";
 export declare const errorStyle: React.CSSProperties;
@@ -28,6 +28,7 @@ export declare const fieldStyle: React.CSSProperties;
 export declare const triggerLabelStyle: React.CSSProperties;
 export declare const triggerChevronStyle: React.CSSProperties;
 export declare const chipMaxWidth: React.CSSProperties;
+export declare const flexFill: React.HTMLAttributes<HTMLElement>;
 /** @purpose The inline error line the edit forms show next to their fields. */
 export declare const inlineError: (text: string) => React.ReactElement | null;
 /** @purpose What an icon factory must accept (the platform's IconProps subset this UI uses). */
@@ -41,6 +42,7 @@ export interface IconControlExtra {
     disabled?: boolean;
     tooltip?: boolean;
     key?: string;
+    /** Extra button attributes (drag/keyboard handlers) forwarded verbatim. */
     props?: Record<string, unknown>;
 }
 /**
@@ -51,9 +53,7 @@ export interface IconControlExtra {
  *   variant and whether a Tooltip wrapper is wanted (the back button relies on
  *   the Button's own native `title`).
  */
-export declare function iconControl(label: string, Icon: IconComponent, onClick: ((event: {
-    stopPropagation: () => void;
-}) => void) | null, extra?: IconControlExtra): React.ReactElement;
+export declare function iconControl(label: string, Icon: IconComponent, onClick: ((event: React.MouseEvent) => void) | null, extra?: IconControlExtra): React.ReactElement;
 /** The change event surface the controlled fields read. */
 export interface ValueChangeEvent {
     target: {
@@ -84,7 +84,7 @@ export interface Notifier {
  *   RowActionToast): the owner keeps {seq, text}; the Toast COMPONENT is
  *   rendered keyed by seq and unmounts itself through onDone. Toast uses
  *   hooks internally, so calling it as a plain function is an invalid hook
- *   call — it must only ever be used as a createElement type.
+ *   call — it must only ever be used as JSX.
  */
 export declare function useNotifier(): Notifier;
 export interface ConfirmDialogProps {

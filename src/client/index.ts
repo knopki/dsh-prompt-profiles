@@ -20,16 +20,16 @@
  * @keywords plugin entry, cordis, slots, locale, module loader, client bundle
  * #endregion moduleContract */
 
-import { PromptProfileChip } from "./chip.ts";
+import { PromptProfileChip } from "./chip.tsx";
 import { findEntry, makeCreateFlow, makeMutationFlow, optimisticEntry } from "./flows.ts";
 import { helpers } from "./helpers.ts";
 import { bindT, messages, NS } from "./i18n.ts";
 import type { LastChoice } from "./remote.ts";
 import * as remoteClient from "./remote.ts";
-import { PromptProfilesSection } from "./settings-page.ts";
-import { PreviewTab } from "./settings-preview.ts";
-import { ProfileOutline, ProfilesTab } from "./settings-profiles.ts";
-import { SectionForm, SectionsTab } from "./settings-sections.ts";
+import { PromptProfilesSection } from "./settings-page.tsx";
+import { PreviewTab } from "./settings-preview.tsx";
+import { ProfileOutline, ProfilesTab } from "./settings-profiles.tsx";
+import { SectionForm, SectionsTab } from "./settings-sections.tsx";
 import { runSave } from "./settings-shared.ts";
 import { getActiveApi, mountRemote, type PluginCtx, readyApi } from "./transport.ts";
 
