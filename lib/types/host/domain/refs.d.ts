@@ -9,7 +9,7 @@
  *    section, one-reference resolution to the id that must be STORED, and the
  *    usedIn computation.
  *  - NOT: reading the patch file (the caller supplies the pending ids), wire
- *    schemas (validation.ts), ordering (ordering.ts).
+ *    schemas (src/shared/wire-schemas.ts), ordering (ordering.ts).
  * @invariants
  *  - A stored reference is ALWAYS the registered `config.id`, because runtime
  *    lookups key on it; an id that names no registered section is accepted

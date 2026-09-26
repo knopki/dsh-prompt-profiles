@@ -826,3 +826,110 @@ loads the current side from `lib/application/index.js`.
 - Two consecutive `pnpm run build` runs produce a byte-identical `lib/`
   (sha256 aba78a55dc98a4e9e18c5788c41179619bd46b1f3873697919c3da65861b5585 over
   the sorted file set).
+
+## Refactor 3a — schema split and client modules
+
+Goal: (1) get zod out of `src/host/domain/` without ending up with two
+definitions of a field, and (2) split the 2675-line `@ts-nocheck`
+`src/client/index.ts` into typed modules — behaviour frozen, still `h(...)`,
+no JSX (that is 3b).
+
+### Task 1 — where each schema piece went and why
+
+- `src/shared/wire-schemas.ts` (NEW, 168) — the **strict wire codecs**:
+  `sectionRefFields`, the per-method field maps, all `<method>Input` and
+  `<method>Result` schemas. Shared, because the client contribution must mount
+  codecs byte-identical to the host's and a transport contract is not a layer.
+  It imports `SCOPES` from `src/host/domain/model.ts` — an inward dependency on
+  a dependency-free domain constant, the direction hexagonal layering allows.
+- `src/host/application/payloads.ts` (NEW, 113) — the **tolerant business
+  parse**: the payload schemas, their types, `parsePayload` and the
+  `nonBlank`/`nonEmpty` refinements, plus the one piece of the wire that has no
+  counterpart (`defaultPayload`, the internal `default` op). It is a use-case
+  concern and imports `InvalidInputError` from the domain.
+- `src/host/domain/validation.ts` (237) — **deleted**; the domain barrel no
+  longer exports it. No field is defined twice: `WIRE_FIELDS` carries one rule
+  per field and the payloads compose the same entries with `z.object` instead
+  of `z.strictObject` plus refinements (the nested `value` objects and the ref
+  lists are the only places the strict/loose wrapper differs, and both wrap the
+  same shared field records).
+- Consumers moved with it: `src/shared/remote-contract.ts` imports
+  `./wire-schemas.ts`; `application/sections.ts` and `application/profiles.ts`
+  import `./payloads.ts` and take ONLY the non-schema names from the domain
+  barrel.
+- `src/host/domain/` now imports nothing but `node:crypto` (ids.ts) — 733 lines
+  over 6 files (was 970 over 7).
+
+### Task 2 — client module tree (15 files / 3806 lines)
+
+- `index.ts` 97 — the plugin entry: `inject`, `apply`, and the `module.exports`
+  seams the shim test loads (`lib/client.js` and its ModuleLoader id are
+  unchanged; esbuild still emits one file).
+- `i18n.ts` 264 — `NS`, the en/ru/zh dictionaries (`ru`/`zh` typed as
+  `Record<MessageKey, string>`, so a missing key is a compile error) and the
+  locale binder (`bindT`/`boundT`).
+- `helpers.ts` 538 — the pure helpers plus the profile-changed signal, exported
+  as the same `helpers` aggregate.
+- `flows.ts` 285 — `makeCreateFlow` / `makeMutationFlow`, `findEntry`,
+  `optimisticEntry`, `PollTimeoutError`.
+- `remote.ts` 219 — the API facade (unchanged surface) now typed: request view
+  types, `RemoteEnvelope`/`RemoteScope`, `RemoteApi`.
+- `transport.ts` 153 — `mountRemote` and the active-api holder
+  (`readyApi`/`getActiveApi`/`unavailableApi`) plus the narrow `PluginCtx`.
+- `ui.ts` 268 — shared React building blocks: primitive imports, layout tokens,
+  `inlineError`, `iconControl`, `useNotifier`, `ConfirmDialog`, `DefaultMenu`.
+- `chip.ts` 239 — `PromptProfileChip` and its store/prop shapes.
+- `settings-page.ts` 128 — the tab shell, drill-down and Esc handling.
+- `settings-shared.ts` 160 — `useProfilesState`, `useAutosave`, `runSave`,
+  `useFocusSelect`.
+- `settings-profiles.ts` 681 — `ProfilesTab`, `ProfileOutline`,
+  `AddSectionPicker`.
+- `settings-sections.ts` 480 — `SectionsTab`, `SectionForm`.
+- `settings-preview.ts` 145 — `PreviewTab`.
+- `element.ts` 34 — the React binding and the `h` factory.
+- `model.ts` 115 — the client's view of the `/state` and `preview` documents.
+
+`model.ts` collapses section/profile rows into ONE duck-typed `RowEntry`
+(the wire declares open-shaped record views anyway): `title` and `patchId` are
+required because every host view carries them, and the rest stays optional.
+`h` remains a deliberate permissive cast of `React.createElement` (call sites
+pass `flex` and DOM pass-through props the React prop types do not declare);
+types on our own components, hooks, api and documents are exact.
+
+### `@ts-nocheck`
+
+- REMOVED: `src/client/index.ts`, `src/client/remote.ts` — `src/` now has ZERO
+  `@ts-nocheck` headers.
+- The old `src/client/index.ts` is gone; its content is the 14 modules above.
+
+### Sizes and verification
+
+- `src/`: 28 files / 8277 lines → 43 files / 9294.
+- `lib/`: 91 files / 5 925 496 B → 105 files / 5 931 578 B.
+- `lib/client.js`: 914 628 B → 848 468 B (−66 160 B, −7.2%): the client bundle
+  no longer drags in the tolerant parsers/refinements that lived in
+  `domain/validation.ts`, only the strict codecs it actually publishes.
+- Two consecutive `pnpm run build` runs produce a byte-identical `lib/`
+  (sha256 `0a2bdd8a35d7734066f1b0a16dfa8af96b17b4ca0867e4429d77a12cac684e63`
+  over the sorted file set).
+- Green: `pnpm test` 125/125 (124 behavioural + the 68-case differential bench),
+  `node --test test/smoke-cordis.test.mjs` 8/8, `node test/client-shim.test.cjs`
+  ALL OK (the behaviour gate for the split), `pnpm run test:remote` 4/4,
+  `pnpm run lint` and `pnpm run typecheck` clean.
+
+### Decisions and surprises
+
+- **`@types/react` was NOT available**, contrary to the task assumption: `react`
+  18 ships no types, `node_modules/@types/` held only `node`, and a probe file
+  failed with TS7016 (the DSH packages hide it behind `skipLibCheck`). Added
+  `@types/react@^18.3.31` as a devDependency — the only way to type the client
+  for real instead of hand-writing a React shim.
+- The client split is mechanical: same components, same hook order, same props,
+  no JSX. The only type-driven edits are narrow event/prop annotations, `?? ""`
+  fallbacks where a row field is optional, and the `outlineRows` comparator
+  rewritten for a discriminated row union — the shim's ordering assertions and
+  the `Tabs`/`DnD`/`rename`/`complete-mode` cases all still pass unchanged.
+- `lib/types/client/remote.d.ts` upgraded from `any`-shaped to real types; the
+  `./client` types entry stays `export {}` (the plugin object is CommonJS).
+- The client bundle got 7% smaller rather than "marginally" — see above: the
+  strict-only split removed dead tolerant-parser code from the browser bundle.

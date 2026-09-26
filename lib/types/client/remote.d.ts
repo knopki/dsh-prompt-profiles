@@ -2,16 +2,14 @@
  * @modulecontract
  * @purpose The CLIENT half of the promptProfiles Remote surface: the mirrored
  *   contribution (`{ package, descriptors }` — the exact same shape the host
- *   registers, built from the ONE shared method table) plus small typed call
- *   helpers that call `scope.remote.promptProfiles.<method>({...})`, always
- *   pass an object, and unwrap the RemoteResult envelope into the error path
- *   the UI already handles.
+ *   registers, built from the ONE shared method table) plus the typed endpoint
+ *   facade the UI consumes, which unwraps the RemoteResult envelope into the
+ *   error path the UI already handles.
  * @scope
- *  - clientContribution, remoteCall (per-method helper factory), the
- *    isRemoteConflict classifier, and makeRemoteApi (the endpoint facade the
- *    UI consumes).
- *  - NOT: the mount lifecycle (src/client/index.ts owns the Cordis effect)
- *    and anything host-side.
+ *  - clientContribution, remoteCall, the isRemoteConflict classifier, the
+ *    request/response view types and makeRemoteApi.
+ *  - NOT: the mount lifecycle (src/client/transport.ts owns the Cordis
+ *    effect) and anything host-side.
  * @invariants
  *  - The descriptors are byte-identical in shape to the host's (same method
  *    set, same strict zod codecs, same typeSymbols) — only the reported
@@ -25,7 +23,7 @@
  *    status, so the two known stale-revision messages are classified from the
  *    message text.
  * @dependencies
- *  - USES API: ctx.remote.$mount (mount, owner: src/client/index.ts),
+ *  - USES API: ctx.remote.$mount (mount, owner: src/client/transport.ts),
  *    ctx.inject(['remote.promptProfiles'], scope => ...) — the namespace
  *    service is NOT reachable bare; zod 4 (bundled, via the shared contract).
  * @rationale
@@ -38,14 +36,77 @@
  * @keywords remote, client, contribution, $mount, inject, envelope, unwrap,
  *   RemoteResult, facade, phase 2b
  * #endregion moduleContract */
+import type { CreateResponse, PreviewResponse, RenameResponse, SectionRef, StateDocument } from "./model.ts";
+/** One RemoteResult envelope as the gateway delivers it. */
+export interface RemoteEnvelope {
+    ok?: boolean;
+    value?: unknown;
+    error?: {
+        code?: string;
+        message?: string;
+    } | null;
+}
+/**
+ * The namespace service `ctx.inject(['remote.promptProfiles'])` exposes: one
+ * callable per method, always taking an object.
+ */
+export interface RemoteNamespace {
+    [method: string]: (args: object) => Promise<RemoteEnvelope>;
+}
+/** The injected scope: only the dotted namespace key is reachable, never `ctx.remote` bare. */
+export interface RemoteScope {
+    remote: Record<string, RemoteNamespace>;
+}
+/** What a section create/duplicate sends. */
+export interface SectionCreateRequest {
+    id?: string;
+    title?: string;
+    body?: string;
+}
+/** What a whole-object section update sends as `value`. */
+export interface SectionUpdateValue {
+    title: string;
+    body: string;
+}
+/** What a profile create/duplicate sends. */
+export interface ProfileCreateRequest {
+    id?: string;
+    title?: string;
+    sections?: SectionRef[];
+}
+/** What a whole-object profile update sends as `value`. */
+export interface ProfileUpdateValue {
+    title: string;
+    sections?: SectionRef[];
+}
+/** The `last` choice: keyed by exactly one of workspaceId/cwd. */
+export interface LastChoice {
+    profileId: string;
+    workspaceId?: string;
+    cwd?: string;
+}
+/** The endpoint facade the chip, the settings page and the flows consume. */
+export interface RemoteApi {
+    loadState(): Promise<StateDocument>;
+    preview(profileId: string): Promise<PreviewResponse>;
+    sectionCreate(value: SectionCreateRequest): Promise<CreateResponse>;
+    sectionUpdate(patchId: string, value: SectionUpdateValue): Promise<unknown>;
+    sectionDelete(patchId: string): Promise<unknown>;
+    sectionRename(patchId: string, id: string): Promise<RenameResponse>;
+    profileCreate(value: ProfileCreateRequest): Promise<CreateResponse>;
+    profileUpdate(patchId: string, value: ProfileUpdateValue): Promise<unknown>;
+    profileDelete(patchId: string): Promise<unknown>;
+    setDefault(value: string): Promise<unknown>;
+    last(choice: LastChoice): Promise<unknown>;
+}
 /**
  * The client contribution mounted through `ctx.remote.$mount(...)`: our
  * package identity plus the descriptors built from the ONE shared method
  * table — the same namespace (`promptProfiles`) and methods the host serves.
  */
 declare const clientContribution: {
-    package: any;
-    descriptors: any;
+    package: string;
+    descriptors: Record<string, unknown>[];
 };
 /**
  * The Error a `{ ok: false, error }` envelope becomes: the envelope's message
@@ -53,56 +114,34 @@ declare const clientContribution: {
  * without string matching on anything but the documented conflict messages.
  */
 declare class RemoteCallError extends Error {
-    constructor(code: any, message: any);
+    readonly code: string | undefined;
+    constructor(code: string | undefined, message: string | undefined);
 }
 /**
  * @purpose Unwrap one RemoteResult envelope: `{ ok: true, value }` resolves
  *   to `value`, `{ ok: false, error }` rejects with RemoteCallError — the
  *   failure path every existing UI handler (notify, inline error, runSave)
  *   already consumes via err.message.
- * @param {{ok: boolean, value?: any, error?: {code?: string, message?: string}}} envelope
- * @returns {Promise<any>} the unwrapped business value.
  */
-declare function unwrapRemoteResult(envelope: any): Promise<any>;
+declare function unwrapRemoteResult<T>(envelope: RemoteEnvelope | null | undefined): Promise<T>;
 /**
- * @purpose One typed call helper per method: `remoteCall(scope, method, args)`
- *   calls `scope.remote.promptProfiles.<method>(args ?? {})` through the
- *   injected namespace service and unwraps the envelope. The argument is
- *   ALWAYS an object (`undefined` fails the wire contract with
- *   `missing "input"`).
- * @param {object} scope - the ctx.inject(['remote.promptProfiles']) scope.
- * @param {string} method - Remote method name (from the shared table).
- * @param {object} args - the strict-schema input object.
- * @returns {Promise<any>} the unwrapped result.
+ * @purpose One typed call helper per method: calls the injected namespace
+ *   service and unwraps the envelope. The argument is ALWAYS an object
+ *   (`undefined` fails the wire contract with `missing "input"`).
  */
-declare function remoteCall(scope: any, method: any, args: any): Promise<any>;
+declare function remoteCall<T>(scope: RemoteScope, method: string, args: object): Promise<T>;
 /**
  * @purpose Conflict classifier shared by runSave's re-apply flow: true for a
  *   stale-revision message, so the conflict behaviour (reload, re-apply once,
  *   conflictError notice on the second failure) is preserved.
  */
-declare function isRemoteConflict(err: any): boolean;
+declare function isRemoteConflict(err: unknown): boolean;
 /**
  * @purpose The endpoint facade over the Remote namespace: WRITES send the
  *   unqualified `patchId` in the `rowId` field, updates carry WHOLE objects in
  *   `value`, `setDefault("")` means none, `last(choice)` keys the choice by
  *   exactly one of workspaceId/cwd. Results come from the envelope unwrap;
  *   failures throw with the message preserved.
- * @param {object} scope - the ctx.inject(['remote.promptProfiles']) scope.
- * @returns {object} the api facade consumed by the chip, settings page and
- *   the create/mutation flows.
  */
-declare const makeRemoteApi: (scope: any) => {
-    loadState: () => Promise<any>;
-    preview: (profileId: any) => Promise<any>;
-    sectionCreate: (value: any) => Promise<any>;
-    sectionUpdate: (patchId: any, value: any) => Promise<any>;
-    sectionDelete: (patchId: any) => Promise<any>;
-    sectionRename: (patchId: any, id: any) => Promise<any>;
-    profileCreate: (value: any) => Promise<any>;
-    profileUpdate: (patchId: any, value: any) => Promise<any>;
-    profileDelete: (patchId: any) => Promise<any>;
-    setDefault: (value: any) => Promise<any>;
-    last: (choice: any) => Promise<any>;
-};
+declare const makeRemoteApi: (scope: RemoteScope) => RemoteApi;
 export { clientContribution, isRemoteConflict, makeRemoteApi, RemoteCallError, remoteCall, unwrapRemoteResult };

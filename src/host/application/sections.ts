@@ -26,18 +26,20 @@
 import {
   InvalidInputError,
   newRowId,
-  parsePayload,
   refNamesRow,
   rowAliases,
   SECTION_PLUGIN_NAME,
-  sectionCreatePayload,
-  sectionDeletePayload,
-  sectionRenamePayload,
-  sectionUpdatePayload,
   toPatchId,
   UnavailableError,
 } from "../domain/index.ts";
 import { explicitRowId, titleOrDefault, type UseCaseEnv } from "./env.ts";
+import {
+  parsePayload,
+  sectionCreatePayload,
+  sectionDeletePayload,
+  sectionRenamePayload,
+  sectionUpdatePayload,
+} from "./payloads.ts";
 
 // #region TYPE_sectionResults
 export interface SectionCreateResult {

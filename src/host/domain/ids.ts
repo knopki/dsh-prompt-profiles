@@ -9,7 +9,7 @@
  *  - Normalization (`toPatchId`, `normalizeNewRowId`), row lookup (`findRow`),
  *    token generation (`tokenSource`, `newRowId`) and the taken-id sets.
  *  - NOT: the patch file (writer.ts), registry views (registry.ts), payload
- *    schemas (validation.ts).
+ *    schemas (src/shared/wire-schemas.ts).
  * @invariants
  *  - A created row's `config.id` IS its full row id; the token part matches
  *    ID_TOKEN_PATTERN, and ids are never derived from a title.

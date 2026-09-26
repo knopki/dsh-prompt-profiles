@@ -23,23 +23,25 @@
  */
 
 import {
-  defaultPayload,
   errorMessage,
   InvalidInputError,
-  lastPayload,
   NotFoundError,
   newRowId,
   PROFILE_PLUGIN_NAME,
-  parsePayload,
-  profileCreatePayload,
-  profileDeletePayload,
-  profileUpdatePayload,
   resolveSectionRefId,
   rowAliases,
   type Scope,
   type SectionRef,
 } from "../domain/index.ts";
 import { explicitRowId, titleOrDefault, type UseCaseEnv } from "./env.ts";
+import {
+  defaultPayload,
+  lastPayload,
+  parsePayload,
+  profileCreatePayload,
+  profileDeletePayload,
+  profileUpdatePayload,
+} from "./payloads.ts";
 import type { SettingsOp } from "./ports.ts";
 
 // #region TYPE_profileResults

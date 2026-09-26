@@ -8,7 +8,7 @@
  *  - Types and frozen literals only — no logic, no I/O.
  *  - NOT: id algorithms (domain/ids.ts), ordering and skip rules
  *    (domain/ordering.ts), reference matching (domain/refs.ts), wire schemas
- *    (domain/validation.ts).
+ *    (src/shared/wire-schemas.ts).
  * @invariants
  *  - Only the three SCOPES values change selection; any other scope string is
  *    reported as an unknown scope and never coerced.

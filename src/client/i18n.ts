@@ -1,0 +1,264 @@
+/** #region moduleContract
+ * @modulecontract
+ * @purpose The client's three dictionaries and the translation entry point:
+ *   `en` is the fallback every key must exist in, `ru`/`zh` are registered
+ *   beside it, and `boundT` translates through the locale service the plugin
+ *   entry binds once `apply` runs.
+ * @scope
+ *  - The dictionaries, the registered `messages` bundle and the binder.
+ *  - NOT: any rendering (components receive `t` as a prop from the slot).
+ * @invariants
+ *  - `ru` and `zh` are key-for-key identical to `en`; a missing key is a
+ *    compile error and, at runtime, the lookup falls back to the key itself.
+ * @keywords i18n, dictionaries, locale, prompt profiles strings
+ * #endregion moduleContract */
+
+export const NS = "promptProfiles";
+
+export const en = {
+  // chip
+  none: "None",
+  untitled: "(no title)",
+  loadError: "Could not load prompt profiles.",
+  saveError: "Could not save prompt profile.",
+  remoteUnavailable: "Prompt profiles are unavailable: the Remote connection is not mounted. Reload the page.",
+  menuLabel: "Choose a prompt profile",
+  chooseNeedsWorkspace: "Choose a workspace first — the profile choice is remembered per workspace.",
+  // settings page
+  nav: "Prompt profiles",
+  tabProfiles: "Profiles",
+  tabSections: "Sections",
+  tabPreview: "Preview",
+  profileWord: "Profile",
+  back: "Back",
+  searchPlaceholder: "Search…",
+  newProfile: "+ New profile",
+  newSection: "+ New section",
+  addSection: "Add section",
+  creating: "creating…",
+  defaultSectionTitle: "New section",
+  defaultProfileTitle: "New profile",
+  createError: "Could not create:",
+  createTimeout: "the new item did not appear in time — retry or reload the page.",
+  defaultForNewSessions: "Default for new sessions",
+  builtIn: "built-in",
+  builtInNote: "Some built-in sections may be absent in a given mode.",
+  scopeLabel: "Scope",
+  scopeInherit: "inherit",
+  scopeMainOnly: "main-only",
+  scopeSubagentsOnly: "subagents-only",
+  sourceLabel: "source",
+  sourceBundle: "bundle",
+  sourceUnknown: "unknown",
+  usedIn: "Used in",
+  notUsed: "not used",
+  openInSectionTab: "Open in Sections",
+  remove: "Remove from profile",
+  duplicate: "Duplicate",
+  deleteLabel: "Delete",
+  renameId: "Change id",
+  copySuffix: "(copy)",
+  renameIdLocked: "Bundle-owned section — its id cannot be changed, only disabled.",
+  titleLabel: "Title",
+  bodyLabel: "Body",
+  orderLabel: "Order",
+  cancel: "Cancel",
+  confirm: "Confirm",
+  confirmDeleteProfile: "Delete this profile?",
+  confirmDeleteSection: "Delete this section?",
+  confirmRemoveRef: "Remove this section from the profile?",
+  confirmRename: "Change section id?",
+  // The host no longer rewrites profile references on rename.
+  renameNote: "Change the id? References in profiles are NOT updated — fix them manually.",
+  renameAffected: "These profiles still reference the old id — fix them manually:",
+  renameEmpty: "Enter a new id — it cannot be empty.",
+  titleRequired: "Enter a name — a section needs a non-empty title before it can be saved.",
+  dragHandle: "Drag to reorder",
+  missingSection: "section not found",
+  emptyBody: "empty body — not emitted",
+  completeModeWarning: "Profile sections are discarded in complete modes:",
+  conflictError: "Concurrent edit — state reloaded.",
+  pickerTitle: "Add sections",
+  pickerAdd: "Add",
+  pickerEmpty: "No sections to add",
+  builtinMarker: "⟨built-in⟩",
+  skippedMarker: "⟨skipped⟩",
+  brokenWord: "broken",
+  noProfiles: "No profiles yet.",
+  noSections: "No sections yet.",
+  previewEmpty: "This profile emits no sections.",
+  previewVariables: "Substituted at session start — may differ from this preview:",
+  sectionsWord: "sections",
+};
+
+/** The locale key set `en` defines; `ru`/`zh` must carry exactly these keys. */
+export type MessageKey = keyof typeof en;
+
+export const ru: Record<MessageKey, string> = {
+  // chip
+  none: "Нет",
+  untitled: "(без названия)",
+  loadError: "Не удалось загрузить профили промпта.",
+  saveError: "Не удалось сохранить профиль промпта.",
+  remoteUnavailable: "Профили промпта недоступны: Remote-соединение не установлено, перезагрузите страницу.",
+  menuLabel: "Выберите профиль промпта",
+  chooseNeedsWorkspace: "Сначала выберите воркспейс — выбор профиля запоминается для воркспейса.",
+  // settings page
+  nav: "Профили промпта",
+  tabProfiles: "Профили",
+  tabSections: "Секции",
+  tabPreview: "Предпросмотр",
+  profileWord: "Профиль",
+  back: "Назад",
+  searchPlaceholder: "Поиск…",
+  newProfile: "+ Новый профиль",
+  newSection: "+ Новая секция",
+  addSection: "Добавить секцию",
+  creating: "создание…",
+  defaultSectionTitle: "Новая секция",
+  defaultProfileTitle: "Новый профиль",
+  createError: "Не удалось создать:",
+  createTimeout: "новый элемент не появился вовремя — повторите или перезагрузите страницу.",
+  defaultForNewSessions: "По умолчанию для новых сессий",
+  builtIn: "встроенная",
+  builtInNote: "Часть встроенных секций может отсутствовать в конкретном режиме.",
+  scopeLabel: "Область",
+  scopeInherit: "наследуется",
+  scopeMainOnly: "только основной агент",
+  scopeSubagentsOnly: "только субагенты",
+  sourceLabel: "источник",
+  sourceBundle: "из бандла",
+  sourceUnknown: "неизвестно",
+  usedIn: "Используется в",
+  notUsed: "не используется",
+  openInSectionTab: "Открыть в «Секциях»",
+  remove: "Убрать из профиля",
+  duplicate: "Дублировать",
+  deleteLabel: "Удалить",
+  renameId: "Изменить id",
+  copySuffix: "(копия)",
+  renameIdLocked: "Секция из бандла — id изменить нельзя, можно только отключить.",
+  titleLabel: "Название",
+  bodyLabel: "Текст",
+  orderLabel: "Порядок",
+  cancel: "Отмена",
+  confirm: "Подтвердить",
+  confirmDeleteProfile: "Удалить этот профиль?",
+  confirmDeleteSection: "Удалить эту секцию?",
+  confirmRemoveRef: "Убрать эту секцию из профиля?",
+  confirmRename: "Изменить id секции?",
+  renameNote: "Ссылки в профилях при этом НЕ обновятся — их придётся поправить вручную.",
+  renameAffected: "В этих профилях осталась старая ссылка — поправьте вручную:",
+  renameEmpty: "Введите новый id — пустым он быть не может.",
+  titleRequired: "Введите название — секцию нельзя сохранить с пустым названием.",
+  dragHandle: "Перетащите, чтобы изменить порядок",
+  missingSection: "секция не найдена",
+  emptyBody: "пустой текст — не вставляется",
+  completeModeWarning: "В режимах с полной заменой промпта секции профиля отбрасываются:",
+  conflictError: "Параллельная правка — состояние перезагружено.",
+  pickerTitle: "Добавить секции",
+  pickerAdd: "Добавить",
+  pickerEmpty: "Нет секций для добавления",
+  builtinMarker: "⟨встроенная⟩",
+  skippedMarker: "⟨пропущено⟩",
+  brokenWord: "битых",
+  noProfiles: "Профилей пока нет.",
+  noSections: "Секций пока нет.",
+  previewEmpty: "Этот профиль не выдаёт ни одной секции.",
+  previewVariables: "Подстановка произойдёт при старте сессии — может отличаться от предпросмотра:",
+  sectionsWord: "секций",
+};
+
+export const zh: Record<MessageKey, string> = {
+  // chip
+  none: "无",
+  untitled: "（无标题）",
+  loadError: "无法加载提示配置。",
+  saveError: "无法保存提示配置。",
+  remoteUnavailable: "提示配置不可用：Remote 连接未建立，请重新加载页面。",
+  menuLabel: "选择提示配置",
+  chooseNeedsWorkspace: "请先选择工作区——提示配置的选择按工作区保存。",
+  // settings page
+  nav: "提示配置",
+  tabProfiles: "配置",
+  tabSections: "片段",
+  tabPreview: "预览",
+  profileWord: "配置",
+  back: "返回",
+  searchPlaceholder: "搜索…",
+  newProfile: "+ 新建配置",
+  newSection: "+ 新建片段",
+  addSection: "添加片段",
+  creating: "创建中…",
+  defaultSectionTitle: "新片段",
+  defaultProfileTitle: "新配置",
+  createError: "创建失败：",
+  createTimeout: "新条目未能及时出现——请重试或刷新页面。",
+  defaultForNewSessions: "新会话默认",
+  builtIn: "内置",
+  builtInNote: "部分内置片段在特定模式下可能不存在。",
+  scopeLabel: "作用范围",
+  scopeInherit: "继承",
+  scopeMainOnly: "仅主代理",
+  scopeSubagentsOnly: "仅子代理",
+  sourceLabel: "来源",
+  sourceBundle: "来自插件包",
+  sourceUnknown: "未知",
+  usedIn: "用于",
+  notUsed: "未使用",
+  openInSectionTab: "在「片段」中打开",
+  remove: "从配置中移除",
+  duplicate: "复制",
+  deleteLabel: "删除",
+  renameId: "修改 id",
+  copySuffix: "（副本）",
+  renameIdLocked: "插件包提供的片段——无法修改其 id，只能停用。",
+  titleLabel: "标题",
+  bodyLabel: "内容",
+  orderLabel: "顺序",
+  cancel: "取消",
+  confirm: "确认",
+  confirmDeleteProfile: "删除此配置？",
+  confirmDeleteSection: "删除此片段？",
+  confirmRemoveRef: "从配置中移除此片段？",
+  confirmRename: "修改片段 id？",
+  renameNote: "配置中的引用不会随之更新——请手动修改。",
+  renameAffected: "以下配置仍引用旧 id——请手动修改：",
+  renameEmpty: "请输入新的 id——不能为空。",
+  titleRequired: "请输入名称——片段标题不能为空才能保存。",
+  dragHandle: "拖动以调整顺序",
+  missingSection: "未找到片段",
+  emptyBody: "内容为空——不会注入",
+  completeModeWarning: "在完全替换提示词的模式下，配置片段会被丢弃：",
+  conflictError: "并发编辑——状态已重新加载。",
+  pickerTitle: "添加片段",
+  pickerAdd: "添加",
+  pickerEmpty: "没有可添加的片段",
+  builtinMarker: "⟨内置⟩",
+  skippedMarker: "⟨已跳过⟩",
+  brokenWord: "损坏",
+  noProfiles: "还没有配置。",
+  noSections: "还没有片段。",
+  previewEmpty: "此配置不会注入任何片段。",
+  previewVariables: "将在会话启动时替换——可能与预览不同：",
+  sectionsWord: "个片段",
+};
+
+/** Every registered dictionary, as `ctx.locale.register(NS, messages)` takes it. */
+export const messages = { en, ru, zh };
+
+/** @purpose A dictionary lookup, as the locale service hands one out. */
+export type Translate = (key: string) => string;
+
+// Until `apply` binds the service, English is the only content that exists.
+let bound: Translate = (key) => en[key as MessageKey] ?? key;
+
+/** @purpose Translate through the bound locale service, else through `en`. */
+export function boundT(key: string): string {
+  return bound(key);
+}
+
+/** @purpose Install the locale service's per-key binder (called once by the plugin entry). */
+export function bindT(translate: Translate): void {
+  bound = translate;
+}

@@ -7,12 +7,12 @@
  *   (`ctx.typert.register`) and the client contribution
  *   (`ctx.remote.$mount`) can never drift apart.
  * @scope
- *  - Identity constants, the METHOD_SPECS table over the domain payload
- *    schemas (src/host/domain/validation.ts), the memoized codec factories and
+ *  - Identity constants, the METHOD_SPECS table over the strict wire schemas
+ *    (src/shared/wire-schemas.ts), the memoized codec factories and
  *    buildRemoteDescriptors(face).
- *  - NOT: the host-side run adapters (src/host/entrypoints/remote.ts), argument business
- *    rules (domain/validation.ts payload variants), and the client mount/call
- *    helpers (src/client/remote.ts).
+ *  - NOT: the host-side run adapters (src/host/entrypoints/remote.ts),
+ *    argument business rules (host/application/payloads.ts), and the client
+ *    mount/call helpers (src/client/remote.ts).
  * @invariants
  *  - Descriptors have the exact field shape the 2a spike proved on live rc.2
  *    (id/service/namespace/method/invocation/parameters/result/sourceLocation,
@@ -50,7 +50,7 @@ import {
   sectionUpdateResult,
   stateInput,
   stateResult,
-} from "../host/domain/validation.ts";
+} from "./wire-schemas.ts";
 
 // #region CONST_identity
 /** Typert package identity (the plugin's npm name, like every contribution). */

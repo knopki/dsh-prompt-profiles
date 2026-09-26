@@ -1,33 +1,129 @@
-/**
- * #region moduleContract
+/** #region moduleContract
  * @modulecontract
- * @purpose ONE definition of the promptProfiles payload shapes: the strict
- *   wire codecs the Remote descriptors publish on both faces, the tolerant
- *   business parse the operations apply, and the strict result schemas the
- *   host validates its answers against.
+ * @purpose ONE definition of the promptProfiles WIRE shapes both faces of the
+ *   Remote contract publish: the strict input codecs, the strict result codecs
+ *   and the per-method field rules the host's tolerant business parsers build
+ *   on. Shared, not layered, because the client contribution must mount codecs
+ *   identical to the host's.
  * @scope
- *  - Field rules and refinements per method (zod 4), the inferred payload
- *    types, and `parsePayload`.
- *  - NOT: the method table and descriptor builder (src/shared/remote-contract.ts),
- *    cross-field reference resolution (refs.ts) or registry lookups — those
- *    need host state and stay in the operations.
+ *  - Field rules (zod 4), the strict `<method>Input` / `<method>Result`
+ *    schemas and `WIRE_FIELDS`, the field maps the tolerant payload parsers
+ *    derive from.
+ *  - NOT: the method table and descriptor builder (remote-contract.ts) or the
+ *    tolerant business parse (host/application/payloads.ts).
  * @invariants
- *  - `<method>Input` is the STRICT wire codec: unknown keys are rejected, which
- *    is what both faces have published since phase 2b.
- *  - `<method>Payload` is the TOLERANT business parse of the same fields:
- *    unknown keys are ignored, and the business refinements (non-blank titles,
- *    a required workspace key) are applied on top.
- *  - A shape change lands in both variants at once, so the wire and the
+ *  - An input rejects missing, extra and wrong-typed fields; a result is
+ *    validated as strictly as the host produces it.
+ *  - Every field rule is defined exactly once: the strict codec and the
+ *    tolerant parser compose the same `WIRE_FIELDS` entry, so the wire and the
  *    business rules cannot drift.
- * @keywords zod, payload schema, strict codec, remote input, result schema
- * #endregion moduleContract
- */
+ * @dependencies USES API: zod 4 (bundled into both artifacts — the browser
+ *   module table has no bare `zod` entry) and the domain scope vocabulary.
+ * @keywords wire schemas, zod, strict codec, remote input, result schema
+ * #endregion moduleContract */
 import { z } from "zod";
+/** Field rules of one section reference inside a profile value. */
+export declare const sectionRefFields: {
+    id: z.ZodString;
+    order: z.ZodNumber;
+    scope: z.ZodOptional<z.ZodEnum<{
+        inherit: "inherit";
+        "main-only": "main-only";
+        "subagents-only": "subagents-only";
+    }>>;
+};
 /**
- * Strict wire codecs. These are the schemas `buildRemoteDescriptors` publishes:
- * missing, extra and wrong-typed fields are rejected before any business code
- * runs, on BOTH sides of the wire.
+ * The per-method field rules, public so the host's tolerant parsers derive
+ * their fields from the SAME definitions. A tolerant variant differs only in
+ * the wrapper (`z.object` instead of `z.strictObject`) and in the refinements
+ * it adds.
  */
+export declare const WIRE_FIELDS: {
+    readonly preview: {
+        profileId: z.ZodString;
+        cwd: z.ZodOptional<z.ZodString>;
+    };
+    readonly sectionCreate: {
+        id: z.ZodOptional<z.ZodString>;
+        title: z.ZodOptional<z.ZodString>;
+        body: z.ZodOptional<z.ZodString>;
+    };
+    readonly sectionValue: {
+        title: z.ZodString;
+        body: z.ZodString;
+    };
+    readonly sectionUpdate: {
+        rowId: z.ZodString;
+        value: z.ZodObject<{
+            title: z.ZodString;
+            body: z.ZodString;
+        }, z.core.$strict>;
+        revision: z.ZodOptional<z.ZodNumber>;
+    };
+    readonly sectionDelete: {
+        rowId: z.ZodString;
+    };
+    readonly sectionRename: {
+        rowId: z.ZodString;
+        id: z.ZodString;
+    };
+    readonly profileCreate: {
+        id: z.ZodOptional<z.ZodString>;
+        title: z.ZodOptional<z.ZodString>;
+        sections: z.ZodOptional<z.ZodArray<z.ZodObject<{
+            id: z.ZodString;
+            order: z.ZodNumber;
+            scope: z.ZodOptional<z.ZodEnum<{
+                inherit: "inherit";
+                "main-only": "main-only";
+                "subagents-only": "subagents-only";
+            }>>;
+        }, z.core.$strict>>>;
+    };
+    readonly profileValue: {
+        title: z.ZodString;
+        sections: z.ZodOptional<z.ZodArray<z.ZodObject<{
+            id: z.ZodString;
+            order: z.ZodNumber;
+            scope: z.ZodOptional<z.ZodEnum<{
+                inherit: "inherit";
+                "main-only": "main-only";
+                "subagents-only": "subagents-only";
+            }>>;
+        }, z.core.$strict>>>;
+    };
+    readonly profileUpdate: {
+        rowId: z.ZodString;
+        value: z.ZodObject<{
+            title: z.ZodString;
+            sections: z.ZodOptional<z.ZodArray<z.ZodObject<{
+                id: z.ZodString;
+                order: z.ZodNumber;
+                scope: z.ZodOptional<z.ZodEnum<{
+                    inherit: "inherit";
+                    "main-only": "main-only";
+                    "subagents-only": "subagents-only";
+                }>>;
+            }, z.core.$strict>>>;
+        }, z.core.$strict>;
+        revision: z.ZodOptional<z.ZodNumber>;
+    };
+    readonly profileDelete: {
+        rowId: z.ZodString;
+        revision: z.ZodOptional<z.ZodNumber>;
+    };
+    readonly last: {
+        workspaceId: z.ZodOptional<z.ZodString>;
+        cwd: z.ZodOptional<z.ZodString>;
+        profileId: z.ZodString;
+        revision: z.ZodOptional<z.ZodNumber>;
+    };
+    readonly defaultSet: {
+        profileId: z.ZodString;
+        revision: z.ZodOptional<z.ZodNumber>;
+    };
+};
+/** Strict wire codecs published by `buildRemoteDescriptors` on both faces. */
 export declare const stateInput: z.ZodObject<{
     sessionId: z.ZodOptional<z.ZodString>;
     cwd: z.ZodOptional<z.ZodString>;
@@ -100,79 +196,6 @@ export declare const defaultSetInput: z.ZodObject<{
     profileId: z.ZodString;
     revision: z.ZodOptional<z.ZodNumber>;
 }, z.core.$strict>;
-/**
- * Business parses of the same field rules: unknown keys are ignored (rows from
- * other layers and older clients may carry more than the wire declares) and
- * the refinements the operations used to hand-check are enforced here.
- */
-export declare const previewPayload: z.ZodObject<{
-    profileId: z.ZodString;
-    cwd: z.ZodOptional<z.ZodString>;
-}, z.core.$strip>;
-export declare const sectionCreatePayload: z.ZodObject<{
-    id: z.ZodOptional<z.ZodString>;
-    title: z.ZodOptional<z.ZodString>;
-    body: z.ZodOptional<z.ZodString>;
-}, z.core.$strip>;
-export declare const sectionUpdatePayload: z.ZodObject<{
-    rowId: z.ZodString;
-    value: z.ZodObject<{
-        title: z.ZodString;
-        body: z.ZodString;
-    }, z.core.$strip>;
-    revision: z.ZodOptional<z.ZodNumber>;
-}, z.core.$strip>;
-export declare const sectionDeletePayload: z.ZodObject<{
-    rowId: z.ZodString;
-}, z.core.$strip>;
-export declare const sectionRenamePayload: z.ZodObject<{
-    rowId: z.ZodString;
-    id: z.ZodString;
-}, z.core.$strip>;
-export declare const profileCreatePayload: z.ZodObject<{
-    id: z.ZodOptional<z.ZodString>;
-    title: z.ZodOptional<z.ZodString>;
-    sections: z.ZodOptional<z.ZodArray<z.ZodObject<{
-        id: z.ZodString;
-        order: z.ZodNumber;
-        scope: z.ZodOptional<z.ZodEnum<{
-            inherit: "inherit";
-            "main-only": "main-only";
-            "subagents-only": "subagents-only";
-        }>>;
-    }, z.core.$strip>>>;
-}, z.core.$strip>;
-export declare const profileUpdatePayload: z.ZodObject<{
-    rowId: z.ZodString;
-    value: z.ZodObject<{
-        title: z.ZodString;
-        sections: z.ZodOptional<z.ZodArray<z.ZodObject<{
-            id: z.ZodString;
-            order: z.ZodNumber;
-            scope: z.ZodOptional<z.ZodEnum<{
-                inherit: "inherit";
-                "main-only": "main-only";
-                "subagents-only": "subagents-only";
-            }>>;
-        }, z.core.$strip>>>;
-    }, z.core.$strip>;
-    revision: z.ZodOptional<z.ZodNumber>;
-}, z.core.$strip>;
-export declare const profileDeletePayload: z.ZodObject<{
-    rowId: z.ZodString;
-    revision: z.ZodOptional<z.ZodNumber>;
-}, z.core.$strip>;
-/** `last` must name the workspace by at least one key: the registry id or the cwd. */
-export declare const lastPayload: z.ZodObject<{
-    workspaceId: z.ZodOptional<z.ZodString>;
-    cwd: z.ZodOptional<z.ZodString>;
-    profileId: z.ZodString;
-    revision: z.ZodOptional<z.ZodNumber>;
-}, z.core.$strip>;
-/** The internal `default` operation: an id string, "" for none, or null to clear. */
-export declare const defaultPayload: z.ZodObject<{
-    default: z.ZodUnion<readonly [z.ZodString, z.ZodNull]>;
-}, z.core.$strip>;
 /** Strict result schemas: a result that violates its schema fails the call loudly. */
 export declare const stateResult: z.ZodObject<{
     profiles: z.ZodArray<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
@@ -248,19 +271,3 @@ export declare const profileDeleteResult: z.ZodObject<{
 export declare const okResult: z.ZodObject<{
     ok: z.ZodLiteral<true>;
 }, z.core.$strict>;
-/**
- * @purpose Apply a business payload schema and report the FIRST violation as a
- *   clean InvalidInputError carrying the labelled field path, so a malformed
- *   request never reaches a write.
- */
-export declare function parsePayload<S extends z.ZodType>(schema: S, value: unknown, label: string): z.output<S>;
-export type PreviewPayload = z.output<typeof previewPayload>;
-export type SectionCreatePayload = z.output<typeof sectionCreatePayload>;
-export type SectionUpdatePayload = z.output<typeof sectionUpdatePayload>;
-export type SectionDeletePayload = z.output<typeof sectionDeletePayload>;
-export type SectionRenamePayload = z.output<typeof sectionRenamePayload>;
-export type ProfileCreatePayload = z.output<typeof profileCreatePayload>;
-export type ProfileUpdatePayload = z.output<typeof profileUpdatePayload>;
-export type ProfileDeletePayload = z.output<typeof profileDeletePayload>;
-export type LastPayload = z.output<typeof lastPayload>;
-export type DefaultPayload = z.output<typeof defaultPayload>;
