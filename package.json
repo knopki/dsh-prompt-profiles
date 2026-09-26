@@ -1,7 +1,15 @@
 {
   "name": "@knopki/dsh-prompt-profiles",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
+  "description": "DSH bundle adding a per-session prompt-profile axis: named system-prompt sections grouped into profiles with per-section order and scope, sealed into the session prompt.",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "prompt-profiles",
+    "system-prompt",
+    "bundle"
+  ],
   "type": "module",
   "main": "lib/index.js",
   "exports": {
