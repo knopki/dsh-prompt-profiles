@@ -19,16 +19,21 @@
  * #endregion moduleContract */
 
 import { z } from "zod";
+import type * as zmini from "zod/mini";
 import { sectionRefFields, WIRE_FIELDS } from "../../shared/wire-schemas.ts";
 import { InvalidInputError } from "../domain/errors.ts";
 
 // #region CONST_refinements
-/** Business rule on top of `z.string()`: the value must not be blank. */
-const nonBlank = (schema: z.ZodString) =>
-  schema.refine((value) => value.trim() !== "", { message: "must be a non-empty string" });
-/** Business rule on top of `z.string()`: the value must not be empty. */
-const nonEmpty = (schema: z.ZodString) =>
-  schema.refine((value) => value !== "", { message: "must be a non-empty string" });
+/**
+ * Business rule on a mini string field: the value must not be blank. Mini
+ * schemas have no chainable methods, so the classic check factory feeds
+ * `.check()` — which clones, leaving the shared `WIRE_FIELDS` entry clean.
+ */
+const nonBlank = <S extends zmini.ZodMiniString>(schema: S): S =>
+  schema.check(z.refine<string>((value) => value.trim() !== "", { message: "must be a non-empty string" }));
+/** Business rule on a mini string field: the value must not be empty. */
+const nonEmpty = <S extends zmini.ZodMiniString>(schema: S): S =>
+  schema.check(z.refine<string>((value) => value !== "", { message: "must be a non-empty string" }));
 
 /** Tolerant section-ref list: the ref fields are shared, extra ref keys ignored. */
 const looseSectionRefs = () => z.array(z.object(sectionRefFields));

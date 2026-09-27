@@ -6,7 +6,7 @@
  *   on. Shared, not layered, because the client contribution must mount codecs
  *   identical to the host's.
  * @scope
- *  - Field rules (zod 4), the strict `<method>Input` / `<method>Result`
+ *  - Field rules (zod 4 via the `zod/mini` subpath), the strict `<method>Input` / `<method>Result`
  *    schemas and `WIRE_FIELDS`, the field maps the tolerant payload parsers
  *    derive from.
  *  - NOT: the method table and descriptor builder (remote-contract.ts) or the
@@ -17,20 +17,24 @@
  *  - Every field rule is defined exactly once: the strict codec and the
  *    tolerant parser compose the same `WIRE_FIELDS` entry, so the wire and the
  *    business rules cannot drift.
- * @dependencies USES API: zod 4 (bundled into both artifacts — the browser
- *   module table has no bare `zod` entry) and the domain scope vocabulary.
- * @keywords wire schemas, zod, strict codec, remote input, result schema
+ * @dependencies USES API: zod 4 via the `zod/mini` subpath (bundled
+ *   into both artifacts — the browser module table has no bare `zod` entry).
+ *   Mini keeps only the strict wire surface (`strictObject`, `object`,
+ *   `record`, `array`, `enum`, `literal`, `string`, `number`, `boolean`,
+ *   `unknown`, `optional`, `nullable` as free functions); the tolerant host
+ *   parsers stay on zod classic (host bundle only).
+ * @keywords wire schemas, zod mini, strict codec, remote input, result schema
  * #endregion moduleContract */
 
-import { z } from "zod";
+import * as z from "zod/mini";
 import { SCOPES } from "../host/domain/model.ts";
 
 // #region CONST_fieldRules
 /** Optional optimistic-concurrency revision every mutating payload may carry. */
-const revision = z.number().optional();
+const revision = z.optional(z.number());
 
 /** Field rules of one section reference inside a profile value. */
-export const sectionRefFields = { id: z.string(), order: z.number(), scope: z.enum(SCOPES).optional() };
+export const sectionRefFields = { id: z.string(), order: z.number(), scope: z.optional(z.enum(SCOPES)) };
 
 /** One row view — open-shaped by design (registry views evolve). */
 const jsonRow = () => z.record(z.string(), z.unknown());
@@ -39,27 +43,27 @@ const jsonRows = () => z.array(jsonRow());
 // The session hints `state` reserves for the client half; the operation
 // ignores them (state is global).
 const stateFields = {
-  sessionId: z.string().optional(),
-  cwd: z.string().optional(),
-  workspaceId: z.string().optional(),
+  sessionId: z.optional(z.string()),
+  cwd: z.optional(z.string()),
+  workspaceId: z.optional(z.string()),
 };
-const previewFields = { profileId: z.string(), cwd: z.string().optional() };
-const sectionCreateFields = { id: z.string().optional(), title: z.string().optional(), body: z.string().optional() };
+const previewFields = { profileId: z.string(), cwd: z.optional(z.string()) };
+const sectionCreateFields = { id: z.optional(z.string()), title: z.optional(z.string()), body: z.optional(z.string()) };
 const sectionValueFields = { title: z.string(), body: z.string() };
 const sectionUpdateFields = { rowId: z.string(), value: z.strictObject(sectionValueFields), revision };
 const sectionDeleteFields = { rowId: z.string() };
 const sectionRenameFields = { rowId: z.string(), id: z.string() };
 const profileCreateFields = {
-  id: z.string().optional(),
-  title: z.string().optional(),
-  sections: z.array(z.strictObject(sectionRefFields)).optional(),
+  id: z.optional(z.string()),
+  title: z.optional(z.string()),
+  sections: z.optional(z.array(z.strictObject(sectionRefFields))),
 };
-const profileValueFields = { title: z.string(), sections: z.array(z.strictObject(sectionRefFields)).optional() };
+const profileValueFields = { title: z.string(), sections: z.optional(z.array(z.strictObject(sectionRefFields))) };
 const profileUpdateFields = { rowId: z.string(), value: z.strictObject(profileValueFields), revision };
 const profileDeleteFields = { rowId: z.string(), revision };
 const lastFields = {
-  workspaceId: z.string().optional(),
-  cwd: z.string().optional(),
+  workspaceId: z.optional(z.string()),
+  cwd: z.optional(z.string()),
   profileId: z.string(),
   revision,
 };
@@ -121,7 +125,7 @@ export const stateResult = z.strictObject({
   modes: z.array(z.strictObject({ id: z.string(), title: z.string(), complete: z.boolean() })),
   default: z.string(),
   lastByWorkspace: z.record(z.string(), z.string()),
-  revision: z.number().nullable(),
+  revision: z.nullable(z.number()),
 });
 
 export const previewResult = z.strictObject({
@@ -129,7 +133,7 @@ export const previewResult = z.strictObject({
   title: z.string(),
   sections: jsonRows(),
   skipped: z.array(z.strictObject({ id: z.string(), title: z.string(), reason: z.string() })),
-  variables: z.record(z.string(), z.string().nullable()),
+  variables: z.record(z.string(), z.nullable(z.string())),
 });
 
 export const sectionCreateResult = z.strictObject({

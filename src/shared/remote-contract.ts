@@ -21,13 +21,13 @@
  *    byte-identical.
  *  - Both faces see the same method set and the same codec typeSymbols; every
  *    args schema rejects unknown and wrong-typed fields.
- * @dependencies USES API: zod 4 (bundled into both artifacts — the browser
- *   module table has no bare `zod` entry).
- * @keywords remote, contract, descriptors, method table, zod, strict codecs
+ * @dependencies USES API: zod 4 via the `zod/mini` subpath (bundled into
+ *   both artifacts — the browser module table has no bare `zod` entry).
+ * @keywords remote, contract, descriptors, method table, zod mini, strict codecs
  * #endregion moduleContract
  */
 
-import type { z } from "zod";
+import type * as zmini from "zod/mini";
 import {
   defaultSetInput,
   lastInput,
@@ -62,12 +62,16 @@ export const REMOTE_SERVICE_KEY = "promptProfilesRemote";
 // #endregion CONST_identity
 
 // #region TYPE_MethodSpec
-/** One Remote method: its wire name, strict input codec, result codec and descriptor line. */
+/**
+ * One Remote method: its wire name, strict input codec, result codec and descriptor line.
+ * The codec type is mini's own, type-only (erased at runtime), so no classic
+ * zod types leak into the client graph.
+ */
 export interface MethodSpec {
   method: string;
   line: number;
-  input: () => z.ZodType;
-  result: () => z.ZodType;
+  input: () => zmini.ZodMiniType;
+  result: () => zmini.ZodMiniType;
 }
 // #endregion TYPE_MethodSpec
 

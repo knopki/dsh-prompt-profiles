@@ -1,5 +1,9 @@
 node_modules/
 .pnpm-store/
+# The same two names also occur as symlinks in a linked worktree, where the
+# trailing slash does not match: git treats a symlink as a file, not a directory.
+node_modules
+.pnpm-store
 .bench-baseline-*
 
 # pnpm metadata cache kept inside the checkout by XDG_CACHE_HOME

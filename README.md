@@ -74,7 +74,8 @@ pnpm run check        # typecheck + lint + test + test:client + test:remote + bu
 - **Strict sealing.** A session's decision is made once and never revised — an empty decision
   included. A session that started before the snapshot record existed keeps its result; to get a
   profile in such a session, start a new one.
-- **Bundle size.** `lib/client.js` is ~854 KB because zod 4 is bundled into the client artifact (the
-  browser module table has no bare `zod`).
+- **Bundle size.** `lib/client.js` is 139 289 B: the strict codecs are built on `zod/mini`
+  (a subpath of the `zod` package), so only the mini part is bundled into the client artifact
+  (the browser module table has no bare `zod`).
 
 See [SPEC.md](SPEC.md) for the full contract and [PLAN.md](PLAN.md) for status.

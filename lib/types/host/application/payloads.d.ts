@@ -18,37 +18,38 @@
  * @keywords payload schema, tolerant parse, business rules, validation
  * #endregion moduleContract */
 import { z } from "zod";
+import type * as zmini from "zod/mini";
 export declare const previewPayload: z.ZodObject<{
-    cwd: z.ZodOptional<z.ZodString>;
-    profileId: z.ZodString;
+    cwd: zmini.ZodMiniOptional<zmini.ZodMiniString<string>>;
+    profileId: zmini.ZodMiniString<string>;
 }, z.core.$strip>;
 export declare const sectionCreatePayload: z.ZodObject<{
-    id: z.ZodOptional<z.ZodString>;
-    title: z.ZodOptional<z.ZodString>;
-    body: z.ZodOptional<z.ZodString>;
+    id: zmini.ZodMiniOptional<zmini.ZodMiniString<string>>;
+    title: zmini.ZodMiniOptional<zmini.ZodMiniString<string>>;
+    body: zmini.ZodMiniOptional<zmini.ZodMiniString<string>>;
 }, z.core.$strip>;
 export declare const sectionUpdatePayload: z.ZodObject<{
-    revision: z.ZodOptional<z.ZodNumber>;
-    rowId: z.ZodString;
+    revision: zmini.ZodMiniOptional<zmini.ZodMiniNumber<number>>;
+    rowId: zmini.ZodMiniString<string>;
     value: z.ZodObject<{
-        body: z.ZodString;
-        title: z.ZodString;
+        body: zmini.ZodMiniString<string>;
+        title: zmini.ZodMiniString<string>;
     }, z.core.$strip>;
 }, z.core.$strip>;
 export declare const sectionDeletePayload: z.ZodObject<{
-    rowId: z.ZodString;
+    rowId: zmini.ZodMiniString<string>;
 }, z.core.$strip>;
 export declare const sectionRenamePayload: z.ZodObject<{
-    id: z.ZodString;
-    rowId: z.ZodString;
+    id: zmini.ZodMiniString<string>;
+    rowId: zmini.ZodMiniString<string>;
 }, z.core.$strip>;
 export declare const profileCreatePayload: z.ZodObject<{
-    id: z.ZodOptional<z.ZodString>;
-    title: z.ZodOptional<z.ZodString>;
+    id: zmini.ZodMiniOptional<zmini.ZodMiniString<string>>;
+    title: zmini.ZodMiniOptional<zmini.ZodMiniString<string>>;
     sections: z.ZodOptional<z.ZodArray<z.ZodObject<{
-        id: z.ZodString;
-        order: z.ZodNumber;
-        scope: z.ZodOptional<z.ZodEnum<{
+        id: zmini.ZodMiniString<string>;
+        order: zmini.ZodMiniNumber<number>;
+        scope: zmini.ZodMiniOptional<zmini.ZodMiniEnum<{
             inherit: "inherit";
             "main-only": "main-only";
             "subagents-only": "subagents-only";
@@ -56,14 +57,14 @@ export declare const profileCreatePayload: z.ZodObject<{
     }, z.core.$strip>>>;
 }, z.core.$strip>;
 export declare const profileUpdatePayload: z.ZodObject<{
-    revision: z.ZodOptional<z.ZodNumber>;
-    rowId: z.ZodString;
+    revision: zmini.ZodMiniOptional<zmini.ZodMiniNumber<number>>;
+    rowId: zmini.ZodMiniString<string>;
     value: z.ZodObject<{
-        title: z.ZodString;
+        title: zmini.ZodMiniString<string>;
         sections: z.ZodOptional<z.ZodArray<z.ZodObject<{
-            id: z.ZodString;
-            order: z.ZodNumber;
-            scope: z.ZodOptional<z.ZodEnum<{
+            id: zmini.ZodMiniString<string>;
+            order: zmini.ZodMiniNumber<number>;
+            scope: zmini.ZodMiniOptional<zmini.ZodMiniEnum<{
                 inherit: "inherit";
                 "main-only": "main-only";
                 "subagents-only": "subagents-only";
@@ -72,15 +73,15 @@ export declare const profileUpdatePayload: z.ZodObject<{
     }, z.core.$strip>;
 }, z.core.$strip>;
 export declare const profileDeletePayload: z.ZodObject<{
-    revision: z.ZodOptional<z.ZodNumber>;
-    rowId: z.ZodString;
+    revision: zmini.ZodMiniOptional<zmini.ZodMiniNumber<number>>;
+    rowId: zmini.ZodMiniString<string>;
 }, z.core.$strip>;
 /** `last` must name the workspace by at least one key: the registry id or the cwd. */
 export declare const lastPayload: z.ZodObject<{
-    workspaceId: z.ZodOptional<z.ZodString>;
-    cwd: z.ZodOptional<z.ZodString>;
-    profileId: z.ZodString;
-    revision: z.ZodOptional<z.ZodNumber>;
+    workspaceId: zmini.ZodMiniOptional<zmini.ZodMiniString<string>>;
+    cwd: zmini.ZodMiniOptional<zmini.ZodMiniString<string>>;
+    profileId: zmini.ZodMiniString<string>;
+    revision: zmini.ZodMiniOptional<zmini.ZodMiniNumber<number>>;
 }, z.core.$strip>;
 /** The internal `default` operation: an id string, "" for none, or null to clear. */
 export declare const defaultPayload: z.ZodObject<{

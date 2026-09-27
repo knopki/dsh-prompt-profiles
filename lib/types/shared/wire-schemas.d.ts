@@ -6,7 +6,7 @@
  *   on. Shared, not layered, because the client contribution must mount codecs
  *   identical to the host's.
  * @scope
- *  - Field rules (zod 4), the strict `<method>Input` / `<method>Result`
+ *  - Field rules (zod 4 via the `zod/mini` subpath), the strict `<method>Input` / `<method>Result`
  *    schemas and `WIRE_FIELDS`, the field maps the tolerant payload parsers
  *    derive from.
  *  - NOT: the method table and descriptor builder (remote-contract.ts) or the
@@ -17,16 +17,20 @@
  *  - Every field rule is defined exactly once: the strict codec and the
  *    tolerant parser compose the same `WIRE_FIELDS` entry, so the wire and the
  *    business rules cannot drift.
- * @dependencies USES API: zod 4 (bundled into both artifacts — the browser
- *   module table has no bare `zod` entry) and the domain scope vocabulary.
- * @keywords wire schemas, zod, strict codec, remote input, result schema
+ * @dependencies USES API: zod 4 via the `zod/mini` subpath (bundled
+ *   into both artifacts — the browser module table has no bare `zod` entry).
+ *   Mini keeps only the strict wire surface (`strictObject`, `object`,
+ *   `record`, `array`, `enum`, `literal`, `string`, `number`, `boolean`,
+ *   `unknown`, `optional`, `nullable` as free functions); the tolerant host
+ *   parsers stay on zod classic (host bundle only).
+ * @keywords wire schemas, zod mini, strict codec, remote input, result schema
  * #endregion moduleContract */
-import { z } from "zod";
+import * as z from "zod/mini";
 /** Field rules of one section reference inside a profile value. */
 export declare const sectionRefFields: {
-    id: z.ZodString;
-    order: z.ZodNumber;
-    scope: z.ZodOptional<z.ZodEnum<{
+    id: z.ZodMiniString<string>;
+    order: z.ZodMiniNumber<number>;
+    scope: z.ZodMiniOptional<z.ZodMiniEnum<{
         inherit: "inherit";
         "main-only": "main-only";
         "subagents-only": "subagents-only";
@@ -40,40 +44,40 @@ export declare const sectionRefFields: {
  */
 export declare const WIRE_FIELDS: {
     readonly preview: {
-        profileId: z.ZodString;
-        cwd: z.ZodOptional<z.ZodString>;
+        profileId: z.ZodMiniString<string>;
+        cwd: z.ZodMiniOptional<z.ZodMiniString<string>>;
     };
     readonly sectionCreate: {
-        id: z.ZodOptional<z.ZodString>;
-        title: z.ZodOptional<z.ZodString>;
-        body: z.ZodOptional<z.ZodString>;
+        id: z.ZodMiniOptional<z.ZodMiniString<string>>;
+        title: z.ZodMiniOptional<z.ZodMiniString<string>>;
+        body: z.ZodMiniOptional<z.ZodMiniString<string>>;
     };
     readonly sectionValue: {
-        title: z.ZodString;
-        body: z.ZodString;
+        title: z.ZodMiniString<string>;
+        body: z.ZodMiniString<string>;
     };
     readonly sectionUpdate: {
-        rowId: z.ZodString;
-        value: z.ZodObject<{
-            title: z.ZodString;
-            body: z.ZodString;
+        rowId: z.ZodMiniString<string>;
+        value: z.ZodMiniObject<{
+            title: z.ZodMiniString<string>;
+            body: z.ZodMiniString<string>;
         }, z.core.$strict>;
-        revision: z.ZodOptional<z.ZodNumber>;
+        revision: z.ZodMiniOptional<z.ZodMiniNumber<number>>;
     };
     readonly sectionDelete: {
-        rowId: z.ZodString;
+        rowId: z.ZodMiniString<string>;
     };
     readonly sectionRename: {
-        rowId: z.ZodString;
-        id: z.ZodString;
+        rowId: z.ZodMiniString<string>;
+        id: z.ZodMiniString<string>;
     };
     readonly profileCreate: {
-        id: z.ZodOptional<z.ZodString>;
-        title: z.ZodOptional<z.ZodString>;
-        sections: z.ZodOptional<z.ZodArray<z.ZodObject<{
-            id: z.ZodString;
-            order: z.ZodNumber;
-            scope: z.ZodOptional<z.ZodEnum<{
+        id: z.ZodMiniOptional<z.ZodMiniString<string>>;
+        title: z.ZodMiniOptional<z.ZodMiniString<string>>;
+        sections: z.ZodMiniOptional<z.ZodMiniArray<z.ZodMiniObject<{
+            id: z.ZodMiniString<string>;
+            order: z.ZodMiniNumber<number>;
+            scope: z.ZodMiniOptional<z.ZodMiniEnum<{
                 inherit: "inherit";
                 "main-only": "main-only";
                 "subagents-only": "subagents-only";
@@ -81,11 +85,11 @@ export declare const WIRE_FIELDS: {
         }, z.core.$strict>>>;
     };
     readonly profileValue: {
-        title: z.ZodString;
-        sections: z.ZodOptional<z.ZodArray<z.ZodObject<{
-            id: z.ZodString;
-            order: z.ZodNumber;
-            scope: z.ZodOptional<z.ZodEnum<{
+        title: z.ZodMiniString<string>;
+        sections: z.ZodMiniOptional<z.ZodMiniArray<z.ZodMiniObject<{
+            id: z.ZodMiniString<string>;
+            order: z.ZodMiniNumber<number>;
+            scope: z.ZodMiniOptional<z.ZodMiniEnum<{
                 inherit: "inherit";
                 "main-only": "main-only";
                 "subagents-only": "subagents-only";
@@ -93,181 +97,181 @@ export declare const WIRE_FIELDS: {
         }, z.core.$strict>>>;
     };
     readonly profileUpdate: {
-        rowId: z.ZodString;
-        value: z.ZodObject<{
-            title: z.ZodString;
-            sections: z.ZodOptional<z.ZodArray<z.ZodObject<{
-                id: z.ZodString;
-                order: z.ZodNumber;
-                scope: z.ZodOptional<z.ZodEnum<{
+        rowId: z.ZodMiniString<string>;
+        value: z.ZodMiniObject<{
+            title: z.ZodMiniString<string>;
+            sections: z.ZodMiniOptional<z.ZodMiniArray<z.ZodMiniObject<{
+                id: z.ZodMiniString<string>;
+                order: z.ZodMiniNumber<number>;
+                scope: z.ZodMiniOptional<z.ZodMiniEnum<{
                     inherit: "inherit";
                     "main-only": "main-only";
                     "subagents-only": "subagents-only";
                 }>>;
             }, z.core.$strict>>>;
         }, z.core.$strict>;
-        revision: z.ZodOptional<z.ZodNumber>;
+        revision: z.ZodMiniOptional<z.ZodMiniNumber<number>>;
     };
     readonly profileDelete: {
-        rowId: z.ZodString;
-        revision: z.ZodOptional<z.ZodNumber>;
+        rowId: z.ZodMiniString<string>;
+        revision: z.ZodMiniOptional<z.ZodMiniNumber<number>>;
     };
     readonly last: {
-        workspaceId: z.ZodOptional<z.ZodString>;
-        cwd: z.ZodOptional<z.ZodString>;
-        profileId: z.ZodString;
-        revision: z.ZodOptional<z.ZodNumber>;
+        workspaceId: z.ZodMiniOptional<z.ZodMiniString<string>>;
+        cwd: z.ZodMiniOptional<z.ZodMiniString<string>>;
+        profileId: z.ZodMiniString<string>;
+        revision: z.ZodMiniOptional<z.ZodMiniNumber<number>>;
     };
     readonly defaultSet: {
-        profileId: z.ZodString;
-        revision: z.ZodOptional<z.ZodNumber>;
+        profileId: z.ZodMiniString<string>;
+        revision: z.ZodMiniOptional<z.ZodMiniNumber<number>>;
     };
 };
 /** Strict wire codecs published by `buildRemoteDescriptors` on both faces. */
-export declare const stateInput: z.ZodObject<{
-    sessionId: z.ZodOptional<z.ZodString>;
-    cwd: z.ZodOptional<z.ZodString>;
-    workspaceId: z.ZodOptional<z.ZodString>;
+export declare const stateInput: z.ZodMiniObject<{
+    sessionId: z.ZodMiniOptional<z.ZodMiniString<string>>;
+    cwd: z.ZodMiniOptional<z.ZodMiniString<string>>;
+    workspaceId: z.ZodMiniOptional<z.ZodMiniString<string>>;
 }, z.core.$strict>;
-export declare const previewInput: z.ZodObject<{
-    profileId: z.ZodString;
-    cwd: z.ZodOptional<z.ZodString>;
+export declare const previewInput: z.ZodMiniObject<{
+    profileId: z.ZodMiniString<string>;
+    cwd: z.ZodMiniOptional<z.ZodMiniString<string>>;
 }, z.core.$strict>;
-export declare const sectionCreateInput: z.ZodObject<{
-    id: z.ZodOptional<z.ZodString>;
-    title: z.ZodOptional<z.ZodString>;
-    body: z.ZodOptional<z.ZodString>;
+export declare const sectionCreateInput: z.ZodMiniObject<{
+    id: z.ZodMiniOptional<z.ZodMiniString<string>>;
+    title: z.ZodMiniOptional<z.ZodMiniString<string>>;
+    body: z.ZodMiniOptional<z.ZodMiniString<string>>;
 }, z.core.$strict>;
-export declare const sectionUpdateInput: z.ZodObject<{
-    rowId: z.ZodString;
-    value: z.ZodObject<{
-        title: z.ZodString;
-        body: z.ZodString;
+export declare const sectionUpdateInput: z.ZodMiniObject<{
+    rowId: z.ZodMiniString<string>;
+    value: z.ZodMiniObject<{
+        title: z.ZodMiniString<string>;
+        body: z.ZodMiniString<string>;
     }, z.core.$strict>;
-    revision: z.ZodOptional<z.ZodNumber>;
+    revision: z.ZodMiniOptional<z.ZodMiniNumber<number>>;
 }, z.core.$strict>;
-export declare const sectionDeleteInput: z.ZodObject<{
-    rowId: z.ZodString;
+export declare const sectionDeleteInput: z.ZodMiniObject<{
+    rowId: z.ZodMiniString<string>;
 }, z.core.$strict>;
-export declare const sectionRenameInput: z.ZodObject<{
-    rowId: z.ZodString;
-    id: z.ZodString;
+export declare const sectionRenameInput: z.ZodMiniObject<{
+    rowId: z.ZodMiniString<string>;
+    id: z.ZodMiniString<string>;
 }, z.core.$strict>;
-export declare const profileCreateInput: z.ZodObject<{
-    id: z.ZodOptional<z.ZodString>;
-    title: z.ZodOptional<z.ZodString>;
-    sections: z.ZodOptional<z.ZodArray<z.ZodObject<{
-        id: z.ZodString;
-        order: z.ZodNumber;
-        scope: z.ZodOptional<z.ZodEnum<{
+export declare const profileCreateInput: z.ZodMiniObject<{
+    id: z.ZodMiniOptional<z.ZodMiniString<string>>;
+    title: z.ZodMiniOptional<z.ZodMiniString<string>>;
+    sections: z.ZodMiniOptional<z.ZodMiniArray<z.ZodMiniObject<{
+        id: z.ZodMiniString<string>;
+        order: z.ZodMiniNumber<number>;
+        scope: z.ZodMiniOptional<z.ZodMiniEnum<{
             inherit: "inherit";
             "main-only": "main-only";
             "subagents-only": "subagents-only";
         }>>;
     }, z.core.$strict>>>;
 }, z.core.$strict>;
-export declare const profileUpdateInput: z.ZodObject<{
-    rowId: z.ZodString;
-    value: z.ZodObject<{
-        title: z.ZodString;
-        sections: z.ZodOptional<z.ZodArray<z.ZodObject<{
-            id: z.ZodString;
-            order: z.ZodNumber;
-            scope: z.ZodOptional<z.ZodEnum<{
+export declare const profileUpdateInput: z.ZodMiniObject<{
+    rowId: z.ZodMiniString<string>;
+    value: z.ZodMiniObject<{
+        title: z.ZodMiniString<string>;
+        sections: z.ZodMiniOptional<z.ZodMiniArray<z.ZodMiniObject<{
+            id: z.ZodMiniString<string>;
+            order: z.ZodMiniNumber<number>;
+            scope: z.ZodMiniOptional<z.ZodMiniEnum<{
                 inherit: "inherit";
                 "main-only": "main-only";
                 "subagents-only": "subagents-only";
             }>>;
         }, z.core.$strict>>>;
     }, z.core.$strict>;
-    revision: z.ZodOptional<z.ZodNumber>;
+    revision: z.ZodMiniOptional<z.ZodMiniNumber<number>>;
 }, z.core.$strict>;
-export declare const profileDeleteInput: z.ZodObject<{
-    rowId: z.ZodString;
-    revision: z.ZodOptional<z.ZodNumber>;
+export declare const profileDeleteInput: z.ZodMiniObject<{
+    rowId: z.ZodMiniString<string>;
+    revision: z.ZodMiniOptional<z.ZodMiniNumber<number>>;
 }, z.core.$strict>;
-export declare const lastInput: z.ZodObject<{
-    workspaceId: z.ZodOptional<z.ZodString>;
-    cwd: z.ZodOptional<z.ZodString>;
-    profileId: z.ZodString;
-    revision: z.ZodOptional<z.ZodNumber>;
+export declare const lastInput: z.ZodMiniObject<{
+    workspaceId: z.ZodMiniOptional<z.ZodMiniString<string>>;
+    cwd: z.ZodMiniOptional<z.ZodMiniString<string>>;
+    profileId: z.ZodMiniString<string>;
+    revision: z.ZodMiniOptional<z.ZodMiniNumber<number>>;
 }, z.core.$strict>;
-export declare const defaultSetInput: z.ZodObject<{
-    profileId: z.ZodString;
-    revision: z.ZodOptional<z.ZodNumber>;
+export declare const defaultSetInput: z.ZodMiniObject<{
+    profileId: z.ZodMiniString<string>;
+    revision: z.ZodMiniOptional<z.ZodMiniNumber<number>>;
 }, z.core.$strict>;
 /** Strict result schemas: a result that violates its schema fails the call loudly. */
-export declare const stateResult: z.ZodObject<{
-    profiles: z.ZodArray<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
-    sections: z.ZodArray<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
-    builtinOrders: z.ZodRecord<z.ZodString, z.ZodNumber>;
-    modes: z.ZodArray<z.ZodObject<{
-        id: z.ZodString;
-        title: z.ZodString;
-        complete: z.ZodBoolean;
+export declare const stateResult: z.ZodMiniObject<{
+    profiles: z.ZodMiniArray<z.ZodMiniRecord<z.ZodMiniString<string>, z.ZodMiniUnknown>>;
+    sections: z.ZodMiniArray<z.ZodMiniRecord<z.ZodMiniString<string>, z.ZodMiniUnknown>>;
+    builtinOrders: z.ZodMiniRecord<z.ZodMiniString<string>, z.ZodMiniNumber<number>>;
+    modes: z.ZodMiniArray<z.ZodMiniObject<{
+        id: z.ZodMiniString<string>;
+        title: z.ZodMiniString<string>;
+        complete: z.ZodMiniBoolean<boolean>;
     }, z.core.$strict>>;
-    default: z.ZodString;
-    lastByWorkspace: z.ZodRecord<z.ZodString, z.ZodString>;
-    revision: z.ZodNullable<z.ZodNumber>;
+    default: z.ZodMiniString<string>;
+    lastByWorkspace: z.ZodMiniRecord<z.ZodMiniString<string>, z.ZodMiniString<string>>;
+    revision: z.ZodMiniNullable<z.ZodMiniNumber<number>>;
 }, z.core.$strict>;
-export declare const previewResult: z.ZodObject<{
-    profileId: z.ZodString;
-    title: z.ZodString;
-    sections: z.ZodArray<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
-    skipped: z.ZodArray<z.ZodObject<{
-        id: z.ZodString;
-        title: z.ZodString;
-        reason: z.ZodString;
+export declare const previewResult: z.ZodMiniObject<{
+    profileId: z.ZodMiniString<string>;
+    title: z.ZodMiniString<string>;
+    sections: z.ZodMiniArray<z.ZodMiniRecord<z.ZodMiniString<string>, z.ZodMiniUnknown>>;
+    skipped: z.ZodMiniArray<z.ZodMiniObject<{
+        id: z.ZodMiniString<string>;
+        title: z.ZodMiniString<string>;
+        reason: z.ZodMiniString<string>;
     }, z.core.$strict>>;
-    variables: z.ZodRecord<z.ZodString, z.ZodNullable<z.ZodString>>;
+    variables: z.ZodMiniRecord<z.ZodMiniString<string>, z.ZodMiniNullable<z.ZodMiniString<string>>>;
 }, z.core.$strict>;
-export declare const sectionCreateResult: z.ZodObject<{
-    rowId: z.ZodString;
-    patchId: z.ZodString;
-    configId: z.ZodString;
-    title: z.ZodString;
-    body: z.ZodString;
-    emits: z.ZodBoolean;
+export declare const sectionCreateResult: z.ZodMiniObject<{
+    rowId: z.ZodMiniString<string>;
+    patchId: z.ZodMiniString<string>;
+    configId: z.ZodMiniString<string>;
+    title: z.ZodMiniString<string>;
+    body: z.ZodMiniString<string>;
+    emits: z.ZodMiniBoolean<boolean>;
 }, z.core.$strict>;
-export declare const sectionUpdateResult: z.ZodObject<{
-    rowId: z.ZodString;
-    patchId: z.ZodString;
-    emits: z.ZodBoolean;
+export declare const sectionUpdateResult: z.ZodMiniObject<{
+    rowId: z.ZodMiniString<string>;
+    patchId: z.ZodMiniString<string>;
+    emits: z.ZodMiniBoolean<boolean>;
 }, z.core.$strict>;
-export declare const sectionDeleteResult: z.ZodObject<{
-    disabled: z.ZodBoolean;
+export declare const sectionDeleteResult: z.ZodMiniObject<{
+    disabled: z.ZodMiniBoolean<boolean>;
 }, z.core.$strict>;
-export declare const sectionRenameResult: z.ZodObject<{
-    rowId: z.ZodString;
-    patchId: z.ZodString;
-    id: z.ZodString;
-    affectedProfiles: z.ZodArray<z.ZodObject<{
-        profileId: z.ZodString;
-        title: z.ZodString;
+export declare const sectionRenameResult: z.ZodMiniObject<{
+    rowId: z.ZodMiniString<string>;
+    patchId: z.ZodMiniString<string>;
+    id: z.ZodMiniString<string>;
+    affectedProfiles: z.ZodMiniArray<z.ZodMiniObject<{
+        profileId: z.ZodMiniString<string>;
+        title: z.ZodMiniString<string>;
     }, z.core.$strict>>;
 }, z.core.$strict>;
-export declare const profileCreateResult: z.ZodObject<{
-    rowId: z.ZodString;
-    patchId: z.ZodString;
-    configId: z.ZodString;
-    title: z.ZodString;
-    sections: z.ZodArray<z.ZodObject<{
-        id: z.ZodString;
-        order: z.ZodNumber;
-        scope: z.ZodOptional<z.ZodEnum<{
+export declare const profileCreateResult: z.ZodMiniObject<{
+    rowId: z.ZodMiniString<string>;
+    patchId: z.ZodMiniString<string>;
+    configId: z.ZodMiniString<string>;
+    title: z.ZodMiniString<string>;
+    sections: z.ZodMiniArray<z.ZodMiniObject<{
+        id: z.ZodMiniString<string>;
+        order: z.ZodMiniNumber<number>;
+        scope: z.ZodMiniOptional<z.ZodMiniEnum<{
             inherit: "inherit";
             "main-only": "main-only";
             "subagents-only": "subagents-only";
         }>>;
     }, z.core.$strict>>;
 }, z.core.$strict>;
-export declare const profileUpdateResult: z.ZodObject<{
-    rowId: z.ZodString;
-    patchId: z.ZodString;
+export declare const profileUpdateResult: z.ZodMiniObject<{
+    rowId: z.ZodMiniString<string>;
+    patchId: z.ZodMiniString<string>;
 }, z.core.$strict>;
-export declare const profileDeleteResult: z.ZodObject<{
-    disabled: z.ZodBoolean;
+export declare const profileDeleteResult: z.ZodMiniObject<{
+    disabled: z.ZodMiniBoolean<boolean>;
 }, z.core.$strict>;
-export declare const okResult: z.ZodObject<{
-    ok: z.ZodLiteral<true>;
+export declare const okResult: z.ZodMiniObject<{
+    ok: z.ZodMiniLiteral<true>;
 }, z.core.$strict>;
