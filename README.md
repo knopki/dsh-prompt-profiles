@@ -35,7 +35,7 @@ dsh plugin --profile <name> remove @knopki/dsh-prompt-profiles
 |---|---|
 | Section and profile rows, per-row overrides | the profile's patch rows in `cordis.patch.yml` (written by this bundle's writer) |
 | `default` and `lastByWorkspace` | volatile settings of the `prompt-profiles` main row |
-| Sealed per-session snapshots | `$DSH_HOME/storages/prompt_profiles.json` |
+| Sealed per-session snapshots | `$DSH_HOME/storages/prompt_profiles/sessions/<sessionId>.json` (per-record layout, like the platform's own `session_projcache`; the backend bootstraps a pre-per-record `prompt_profiles.json` once and leaves that file in place) |
 
 ## Use it
 

@@ -51,6 +51,18 @@ import { registerRemote } from "./remote.ts";
 // #region CONST_promptProfilesDomain
 /**
  * Durable session snapshots; bad records are backed up and treated as absent.
+ * `per-record` (the layout the platform's own per-session sidecar,
+ * `session_projcache`, also uses) stores one document per session: a seal
+ * rewrites only its own record instead of the whole unit, and the version
+ * check applies per record, so a future schema change discards stale records
+ * instead of failing the unit and losing every session's seal at once.
+ *
+ * The record carries ONLY the fields the insertion reads (`id`, `order`,
+ * `text`). `title` and `profileId` were dropped because no reader ever used
+ * them; an existing version-1 record still parses, because Zod objects strip
+ * unknown keys, and the backend bootstraps the legacy whole-unit file into
+ * per-record documents without a version bump.
+ *
  * Record schemas are ZOD, not Schemastery: dsh-storage-domain reopens tables
  * through `tableSpec.valueSchema.parse(raw)` (Zod protocol), while Schemastery
  * has no `.nullable()` and is reserved for the plugin `Config`.
@@ -58,15 +70,14 @@ import { registerRemote } from "./remote.ts";
 export const promptProfilesDomain = defineDomain({
   name: "prompt_profiles",
   version: 1,
+  layout: "per-record",
   invalidRecords: "backup-and-skip",
   tables: {
     sessions: domainTable(
       zod.object({
-        profileId: zod.string().nullable(),
         sections: zod.array(
           zod.object({
             id: zod.string(),
-            title: zod.string(),
             order: zod.number(),
             text: zod.string(),
           }),

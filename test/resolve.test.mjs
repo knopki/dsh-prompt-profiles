@@ -226,10 +226,9 @@ test("scope matrix: root, ordinary child, seeded child, seeded root", () => {
 test("snapshot copies text, keeps profile order, and excludes blank, unknown and disabled sections", () => {
   const snapshot = buildSnapshot({ profile, sectionsById: sections });
   assert.deepEqual(snapshot, {
-    profileId: "light",
     sections: [
-      { id: "inherited", title: "Inherited", order: 1100, text: "Always" },
-      { id: "main", title: "Main", order: 1200, text: "Main only" },
+      { id: "inherited", order: 1100, text: "Always" },
+      { id: "main", order: 1200, text: "Main only" },
     ],
   });
   sections.get("inherited").body = "Edited";
@@ -496,8 +495,8 @@ test("unknown variable skips the section with a warning; known variables are res
     warn,
   });
   assert.deepEqual(snapshot.sections, [
-    { id: "ok", title: "Ok", order: 1, text: "Work in /tmp/x, model glm." },
-    { id: "literal", title: "Literal", order: 3, text: "Math: {{ is prose, no closing braces" },
+    { id: "ok", order: 1, text: "Work in /tmp/x, model glm." },
+    { id: "literal", order: 3, text: "Math: {{ is prose, no closing braces" },
   ]);
   assert.equal(warnings.length, 2);
   assert.match(warnings[0], /unknown prompt variable "\{\{unknown\}\}"/);

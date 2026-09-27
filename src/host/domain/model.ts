@@ -108,17 +108,20 @@ export interface ProfileView extends Profile {
 // #endregion TYPE_shapes
 
 // #region TYPE_snapshot
-/** One sealed section: text frozen at seal time, never re-interpolated. */
+/**
+ * One sealed section: text frozen at seal time, never re-interpolated. Carries
+ * ONLY what the insertion rules read (`id` names the entry, `order` places it,
+ * `text` renders it); the profile and section titles are deliberately absent,
+ * so the durable record needs no maintenance when presentation changes.
+ */
 export interface SnapshotSection {
   id: ConfigId;
-  title: string;
   order: number;
   text: string;
 }
 
-/** A session's frozen profile decision (`profileId: null` means "none"). */
+/** A session's frozen contribution to the system prompt; empty means "none". */
 export interface Snapshot {
-  profileId: ConfigId | null;
   sections: SnapshotSection[];
 }
 

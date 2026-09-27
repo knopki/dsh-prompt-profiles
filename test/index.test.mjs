@@ -50,12 +50,19 @@ function stubContext() {
 test("module evaluates; the domain spec is the Zod protocol dsh-storage-domain parses", () => {
   const table = promptProfilesDomain.tables.sessions;
   assert.equal(typeof table.valueSchema.parse, "function", "records reopen through valueSchema.parse (Zod)");
-  const record = { profileId: null, sections: [{ id: "x", title: "X", order: 1050, text: "final text" }] };
+  assert.equal(promptProfilesDomain.layout, "per-record", "one document per session, not a whole-unit rewrite");
+  const record = { sections: [{ id: "x", order: 1050, text: "final text" }] };
   assert.deepEqual(table.valueSchema.parse(record), record);
-  const withProfile = { profileId: "light", sections: [] };
-  assert.deepEqual(table.valueSchema.parse(withProfile), withProfile);
-  assert.throws(() => table.valueSchema.parse({ profileId: 5, sections: [] }));
-  assert.throws(() => table.valueSchema.parse({ profileId: null, sections: [{ id: "x", order: "many" }] }));
+  // A record written before the trim (version 1, carrying `profileId` and a
+  // per-section `title`) still parses: Zod objects strip unknown keys, so the
+  // existing file needs no version bump and no migration.
+  const legacy = {
+    profileId: "light",
+    sections: [{ id: "x", title: "X", order: 1050, text: "final text" }],
+  };
+  assert.deepEqual(table.valueSchema.parse(legacy), record);
+  assert.throws(() => table.valueSchema.parse({ sections: [{ id: "x", order: "many", text: "t" }] }));
+  assert.throws(() => table.valueSchema.parse({ sections: [{ id: "x", order: 1 }] }));
 });
 // #endregion TEST_zodDomainSpec
 
@@ -269,9 +276,7 @@ test("assembler resolves the workspace key, seals and logs the decision, and pin
   config.lastByWorkspace = { get: () => ({ "ws-session": "other" }) };
   const second = await runAssembly({ cwd: "/second" });
   assert.deepEqual(second.sections, first.sections);
-  assert.deepEqual(records.get("s1").sections, [
-    { id: "cwd-note", title: "Cwd", order: 1050, text: "Work in /first." },
-  ]);
+  assert.deepEqual(records.get("s1").sections, [{ id: "cwd-note", order: 1050, text: "Work in /first." }]);
   // A literal `{{` body would be skipped at seal time — nothing render-hostile
   // is ever persisted or inserted.
   service.registerSection({

@@ -142,7 +142,7 @@ function previewResponse(env: UseCaseEnv, profileId: string, { cwd }: { cwd?: un
   // profile order). `ours` is already in planInsertion's sort order, so
   // plan[i] corresponds to ours[i].
   const plan = planInsertion({
-    snapshot: { sections: ours.map((row) => ({ id: row.id, title: row.title, order: row.order, text: row.text })) },
+    snapshot: { sections: ours.map((row) => ({ id: row.id, order: row.order, text: row.text })) },
     assemblySections: builtins.map((row) => ({ name: row.name })),
     builtinOrdersByName,
   });

@@ -221,9 +221,9 @@ export function buildSnapshot({
       skip(ref.id, SKIP_REASONS.emptyAfterInterpolation);
       continue;
     }
-    sections.push({ id: ref.id, title: section.title, order: ref.order, text });
+    sections.push({ id: ref.id, order: ref.order, text });
   }
-  return { profileId: profile?.id ?? null, sections };
+  return { sections };
 }
 // #endregion FUNC_buildSnapshot
 
@@ -307,7 +307,7 @@ export function createPromptAssembler(ports: AssemblerPorts) {
           log("info", "prompt-profiles seal", {
             sessionId: session.id,
             workspaceKey,
-            profileId: sealed.profileId,
+            profileId,
             selected: sealed.sections.length,
             skipped: skips.length,
             skipReasons: skips,
@@ -332,7 +332,6 @@ export function createPromptAssembler(ports: AssemblerPorts) {
           log("debug", "prompt-profiles inserted", {
             sessionId: session.id,
             workspaceKey,
-            profileId: snapshot.profileId,
             inserted: planned.map((entry) => ({ name: entry.name, index: entry.index })),
             assemblySections: assembly.sections.length,
           });
@@ -340,7 +339,6 @@ export function createPromptAssembler(ports: AssemblerPorts) {
           log("info", "prompt-profiles: no sections to insert", {
             sessionId: session.id,
             workspaceKey,
-            profileId: snapshot.profileId,
             assemblySections: assembly.sections.length,
           });
         }
