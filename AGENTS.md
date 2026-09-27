@@ -78,10 +78,14 @@ Load the `grace-lite` skill before editing and follow its templates.
 
 - `SPEC.md` holds the coarse product contract: concepts, cross-module invariants, deployment. If
   something can be stated in a module, state it in that module's contract instead.
-- `README.md` is the operator view: requirements, install, data locations, use, develop commands,
-  user-facing limits.
-- Neither file carries markup or frontmatter; the title is an H1. No byte sizes, millisecond values,
-  counts, internal file paths, method tables or phase history.
+- `README.md` is the operator view: the badge header, screenshots, requirements, install, data
+  locations, use, develop commands, user-facing limits.
+- `README.ru.md` and `README.zh.md` translate `README.md`. A change to the English file belongs in all
+  three in the same commit, with section order, screenshots, code blocks and the language switcher
+  kept identical.
+- Wording in the translated files follows the dictionaries in `src/client/i18n.ts`, so the UI names
+  quoted in the docs are the ones the interface shows.
+- No byte sizes, millisecond values, counts, internal file paths, method tables or phase history.
 - `PLAN.md` and `MIGRATION.md` were removed deliberately. Do not recreate a status log or a migration
   diary; durable facts belong in module contracts.
 
