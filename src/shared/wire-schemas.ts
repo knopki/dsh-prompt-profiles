@@ -1,35 +1,17 @@
 /** #region moduleContract
  * @modulecontract
- * @purpose ONE definition of the promptProfiles WIRE shapes both faces of the
- *   Remote contract publish: the strict input codecs, the strict result codecs
- *   and the per-method field rules the host's tolerant business parsers build
- *   on. Shared, not layered, because the client contribution must mount codecs
- *   identical to the host's.
+ * @purpose Define the promptProfiles wire shapes published by both Remote faces.
  * @scope
- *  - Field rules (zod 4 via the `zod/mini` subpath), the strict `<method>Input` / `<method>Result`
- *    schemas and `WIRE_FIELDS`, the field maps the tolerant payload parsers
- *    derive from.
- *  - NOT: the method table and descriptor builder (remote-contract.ts) or the
- *    tolerant business parse (host/application/payloads.ts).
+ *  - Strict codecs, result schemas, and `WIRE_FIELDS` for tolerant parsers.
+ *  - NOT: the method table (remote-contract.ts) or business parsing.
  * @invariants
- *  - An input rejects missing, extra and wrong-typed fields; a result is
- *    validated as strictly as the host produces it.
- *  - Every field rule is defined exactly once: the strict codec and the
- *    tolerant parser compose the same `WIRE_FIELDS` entry, so the wire and the
- *    business rules cannot drift.
- * @dependencies USES API: zod 4 via the `zod/mini` subpath (bundled
- *   into both artifacts — the browser module table has no bare `zod` entry).
- *   Mini keeps only the strict wire surface (`strictObject`, `object`,
- *   `record`, `array`, `enum`, `literal`, `string`, `number`, `boolean`,
- *   `unknown`, `optional`, `nullable` as free functions); the tolerant host
- *   parsers stay on zod classic (host bundle only).
- * @keywords wire schemas, zod mini, strict codec, remote input, result schema
+ *  - Inputs reject missing, extra and wrong-typed fields.
+ *  - Each field rule is defined once; strict and tolerant parsers share it.
  * #endregion moduleContract */
 
 import * as z from "zod/mini";
 import { SCOPES } from "../host/domain/model.ts";
 
-// #region CONST_fieldRules
 /** Optional optimistic-concurrency revision every mutating payload may carry. */
 const revision = z.optional(z.number());
 
@@ -69,12 +51,7 @@ const lastFields = {
 };
 const defaultSetFields = { profileId: z.string(), revision };
 
-/**
- * The per-method field rules, public so the host's tolerant parsers derive
- * their fields from the SAME definitions. A tolerant variant differs only in
- * the wrapper (`z.object` instead of `z.strictObject`) and in the refinements
- * it adds.
- */
+/** Per-method field rules the host's tolerant parsers derive from. */
 export const WIRE_FIELDS = {
   preview: previewFields,
   sectionCreate: sectionCreateFields,
@@ -89,9 +66,7 @@ export const WIRE_FIELDS = {
   last: lastFields,
   defaultSet: defaultSetFields,
 } as const;
-// #endregion CONST_fieldRules
 
-// #region CONST_inputs
 /** Strict wire codecs published by `buildRemoteDescriptors` on both faces. */
 export const stateInput = z.strictObject(stateFields);
 
@@ -114,9 +89,7 @@ export const profileDeleteInput = z.strictObject(profileDeleteFields);
 export const lastInput = z.strictObject(lastFields);
 
 export const defaultSetInput = z.strictObject(defaultSetFields);
-// #endregion CONST_inputs
 
-// #region CONST_results
 /** Strict result schemas: a result that violates its schema fails the call loudly. */
 export const stateResult = z.strictObject({
   profiles: jsonRows(),
@@ -169,4 +142,3 @@ export const profileUpdateResult = z.strictObject({ rowId: z.string(), patchId: 
 export const profileDeleteResult = z.strictObject({ disabled: z.boolean() });
 
 export const okResult = z.strictObject({ ok: z.literal(true) });
-// #endregion CONST_results

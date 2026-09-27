@@ -1,9 +1,10 @@
 /**
- * The pure view helpers, asserted directly (they are render-free by design):
- * row identity and references, the outline order and its integer insertion
- * boundaries, the preview plan and variable honesty, the save gate, the
- * used-in/source labels, the rename report, the Esc guard and the
- * profiles-changed signal.
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Prove the pure view helpers directly (render-free by design): row
+ *   identity, outline order, preview plan, save gate, labels, rename report,
+ *   Esc guard, and the profiles-changed signal.
+ * #endregion moduleContract
  */
 import { expect, test } from "vitest";
 import {

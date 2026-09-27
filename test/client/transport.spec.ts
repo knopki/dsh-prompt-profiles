@@ -1,12 +1,12 @@
 /**
- * The Remote mount lifecycle (src/client/transport.ts): the contribution is
- * mounted from a Cordis effect and the namespace is reached through
- * `ctx.inject`; data paths wait for the outcome; a FAILED mount is loud with its
- * stage and leaves an api that refuses with the dictionary message — there is no
- * second transport to fall back to.
- *
- * The active-api holder is module state in the shipped bundle, so every case
- * re-imports the module on a fresh registry.
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Prove the Remote mount lifecycle: effect-mounted contribution,
+ *   namespace through `ctx.inject`, data paths waiting on the outcome, and a
+ *   loud FAILED mount that leaves a refusing api with no fallback transport.
+ * @invariants The active-api holder is module state, so every case re-imports
+ *   the module on a fresh registry.
+ * #endregion moduleContract
  */
 import { expect, test, vi } from "vitest";
 

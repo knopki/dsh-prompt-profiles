@@ -1,21 +1,10 @@
 /** #region moduleContract
  * @modulecontract
- * @purpose The composer chip: choose the prompt profile for the next new
- *   session, with the three states the host resolves (absent key → default,
- *   explicit "" → none, a valid id → that profile) and an honest warning when
- *   the ACTIVE agent preset is a complete mode, which discards every section.
- * @scope
- *  - `PromptProfileChip` and the narrow store/prop shapes it reads from the
- *    slot injection.
- *  - NOT: the mount lifecycle (src/client/transport.ts), the settings page or
- *    any host operation.
+ * @purpose The composer chip: choose the prompt profile for the next new session.
  * @invariants
- *  - Renders ONLY on a blank session with profiles present.
- *  - A choice is keyed by exactly ONE value: the Workspace when the Session is
- *    accounted to one, otherwise the Session cwd; with neither, the click is
- *    blocked with an explanation instead of sending a doomed request.
- *  - A burst of settings mutations collapses into one debounced /state re-read.
- * @keywords chip, composer, profile choice, complete mode, store hooks
+ *  - Renders only on a blank session with profiles present.
+ *  - A choice is keyed by exactly one value: workspace id, else session cwd.
+ *  - Absent key means default, present `""` means explicit none.
  * #endregion moduleContract */
 
 import {
@@ -31,24 +20,23 @@ import type { StateDocument } from "./model.ts";
 import { readyApi } from "./transport.ts";
 import { chipMaxWidth, triggerChevronStyle, triggerLabelStyle, useNotifier } from "./ui.tsx";
 
-// #region TYPE_stores
 /** The session store the composer reads. */
-export interface SessionStoreState {
+interface SessionStoreState {
   blank?: boolean;
 }
-export interface WorkspaceItem {
+interface WorkspaceItem {
   workspaceId: string;
   sessionIds: string[];
   path?: string;
 }
-export interface WorkspacesStoreState {
+interface WorkspacesStoreState {
   items: WorkspaceItem[];
 }
-export interface SessionRecord {
+interface SessionRecord {
   cwd?: string;
   projectionValues?: { agentPreset?: unknown };
 }
-export interface SessionsStoreState {
+interface SessionsStoreState {
   byId?: Record<string, SessionRecord>;
 }
 /** A zustand-style store hook: selector only, selected value or undefined. */
@@ -63,15 +51,10 @@ export interface PromptProfileChipProps {
   /** The `last` choice the host stores: exactly one workspace key plus the profile. */
   pick: (choice: { profileId: string; workspaceId?: string; cwd?: string }) => Promise<unknown>;
 }
-// #endregion TYPE_stores
 
 // #region COMPONENT_PromptProfileChip
 /**
- * @purpose Chooses a prompt profile for the next new session. The control is
- *   built from the installed primitives — `Button` (ghost/sm, the compact
- *   capsule the neighbouring composer controls use, carrying its own hover/
- *   focus/active states) and `Menu` — instead of hand-written inline
- *   geometry, which had lost the hover background.
+ * @purpose Select the next-session profile from the composer.
  */
 export function PromptProfileChip(props: PromptProfileChipProps): React.ReactElement | null {
   const { sessionId, useSession, useWorkspaces, useSessions = () => undefined, t, pick } = props;
@@ -167,7 +150,8 @@ export function PromptProfileChip(props: PromptProfileChipProps): React.ReactEle
     else if (cwd) choice.cwd = cwd;
     try {
       await pick(choice);
-      const refreshed = await (await readyApi()).loadState();
+      const api = await readyApi();
+      const refreshed = await api.loadState();
       setState(refreshed);
     } catch (err) {
       setState(previous);
@@ -187,22 +171,16 @@ export function PromptProfileChip(props: PromptProfileChipProps): React.ReactEle
       <Menu
         open={open}
         onClose={() => setOpen(false)}
-        // Match the composer's own dropdowns (see conversation.input.permission):
-        // they open UPWARD, portaled out of the composer's clipping.
+        // The menu opens upward, portaled out of the composer's clipping.
         side="top"
         portal
-        // Button owns radius/padding/typography/colour and the hover, focus
-        // and active states; the chevron is a TRAILING child (the primitive has
-        // no trailing-icon slot), after the label, as on the neighbouring
-        // composer controls.
+        // The chevron is a trailing child: the primitive has no trailing-icon slot.
         anchor={
           <Button
             variant="ghost"
             size="sm"
             aria-label={t("menuLabel")}
-            // The complete-mode warning wins the hover text (it explains why the
-            // chosen profile will not be used); otherwise the blocked state
-            // explains itself and the accessible name stays the control's label.
+            // The complete-mode warning wins the hover text; the blocked state explains itself.
             title={modeWarning ?? (lastKey ? t("menuLabel") : t("chooseNeedsWorkspace"))}
             onClick={() => setOpen(!open)}
             // Dim the trigger in a complete mode — the profile is inert.

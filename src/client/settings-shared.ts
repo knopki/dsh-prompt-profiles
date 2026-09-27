@@ -1,18 +1,10 @@
 /** #region moduleContract
  * @modulecontract
- * @purpose The hooks the settings page shares across its tabs: load the host
- *   state document, autosave a field value after a debounce, run one mutation
- *   with the conflict re-apply, and the post-create focus/select.
- * @scope
- *  - `useProfilesState`, `useAutosave`, `runSave`, `useFocusSelect`.
- *  - NOT: the components that use them (settings-profiles/sections/preview).
+ * @purpose The hooks the settings tabs share: state loading, debounced
+ *   autosave, conflict-retry save and post-create focus.
  * @invariants
- *  - Every mutation goes through `runSave`: on a stale-revision failure the
- *    state is re-read and the write re-applied ONCE, then the failure becomes
- *    a notice and an optional inline error line.
- *  - `useAutosave` skips the first value (the mount value) and flushes on
- *    unmount, so leaving a view never drops an edit still inside the debounce.
- * @keywords settings hooks, autosave, run save, conflict retry, focus select
+ *  - Every mutation goes through `runSave` with one conflict re-apply.
+ *  - `useAutosave` skips the mount value and flushes on unmount.
  * #endregion moduleContract */
 
 import * as React from "react";
@@ -21,13 +13,11 @@ import type { Translate } from "./i18n.ts";
 import type { StateDocument } from "./model.ts";
 import { isRemoteConflict, type RemoteApi } from "./remote.ts";
 
-// #region TYPE_profilesState
-export interface ProfilesState {
+interface ProfilesState {
   state: StateDocument | null;
   setState: (value: StateDocument | null) => void;
   reload: () => Promise<void>;
 }
-// #endregion TYPE_profilesState
 
 // #region FUNC_useProfilesState
 /** @purpose Load the host state document and expose reload/set for the page. */
@@ -49,15 +39,7 @@ export function useProfilesState(api: RemoteApi, t: Translate, notify: (text: st
 // #endregion FUNC_useProfilesState
 
 // #region FUNC_useAutosave
-/**
- * @purpose Debounced (~1200 ms) autosave: whenever `value` changes (after the
- *   initial mount), schedule `save()`; a newer change cancels the pending one.
- *   The returned `flush()` saves a pending change immediately — wired to the
- *   field's blur and to the view's back/drill/tab transition, so an edit is
- *   never lost when it is still inside the debounce window. Unmount also
- *   flushes (tab switch, Esc). The skip-first rule plus the create-flow poll
- *   guarantee a freshly created item never autosaves before its row exists.
- */
+/** @purpose Debounced autosave with blur/unmount flush; skips the mount value. */
 export function useAutosave(value: unknown, save: () => void, delay = 1200): () => void {
   const latest = React.useRef(save);
   latest.current = save;
@@ -100,12 +82,7 @@ export function useAutosave(value: unknown, save: () => void, delay = 1200): () 
 // #endregion FUNC_useAutosave
 
 // #region FUNC_runSave
-/**
- * @purpose Run one mutation; on 409 re-read the state and re-apply ONCE,
- *   then reload; any remaining failure becomes a notice via `notify`
- *   (the owner's useNotifier banner — Toast itself is component-only) and,
- *   when cheap, an inline error line through `onError`.
- */
+/** @purpose Run one mutation with a single conflict re-apply; failures become notices. */
 export async function runSave(
   fn: () => Promise<unknown>,
   reload: () => Promise<unknown>,

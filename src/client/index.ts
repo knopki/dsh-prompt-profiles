@@ -1,23 +1,10 @@
 /** #region moduleContract
  * @modulecontract
- * @purpose The client plugin entry: register the three dictionaries, mount the
- *   Remote contribution, and register the two UI surfaces — the composer chip
- *   and the settings page. It is the only module of the client bundle with a
- *   side effect on the ModuleLoader handshake (`module.exports` is what the
- *   build banner's factory returns).
- * @scope
- *  - The Cordis plugin object: config `inject`, the slot registrations and
- *    `apply`, plus the test/reuse seams the shim test loads.
- *  - NOT: any component, helper or transport implementation — those live in
- *    the sibling modules this entry wires together.
+ * @purpose The client plugin entry: register dictionaries, mount Remote and
+ *   register the chip and settings surfaces.
  * @invariants
- *  - `inject` declares exactly the services `apply` touches: `slots`, `locale`
- *    and `remote` (Cordis leaves undeclared services unreachable on ctx, and
- *    web boot reports "1 entry did not activate").
- *  - The ModuleLoader id stays `@knopki/dsh-prompt-profiles` (src/client/index.ts
- *    is the build entry; build.mjs owns the banner with that id).
- *  - No component is rendered here: the slots receive the component TYPE.
- * @keywords plugin entry, cordis, slots, locale, module loader, client bundle
+ *  - `inject` declares exactly `slots`, `locale` and `remote`.
+ *  - The build banner's ModuleLoader id remains `@knopki/dsh-prompt-profiles`.
  * #endregion moduleContract */
 
 import { PromptProfileChip } from "./chip.tsx";
@@ -34,17 +21,10 @@ import { runSave } from "./settings-shared.ts";
 import { getActiveApi, mountRemote, type PluginCtx, readyApi } from "./transport.ts";
 
 module.exports = {
-  // apply() touches exactly these services at registration time:
-  // ctx.locale.register/bind, ctx.slots.inject/register and (inside a Cordis
-  // effect) ctx.remote.$mount. In Cordis a service is reachable on ctx only
-  // when declared here — with an empty list apply() threw (undefined
-  // ctx.slots/ctx.locale) and web boot reported "1 entry did not activate".
+  // apply() touches exactly these services; undeclared services stay unreachable on ctx.
   inject: ["slots", "locale", "remote"],
   helpers,
-  // Test seams (also reusable building blocks): the API facade factory,
-  // the modal-free create flow, the optimistic+poll mutation flow, the
-  // whole-object save runner, the Remote client helpers, and the tab
-  // components for shim-level render assertions.
+  // Test seams (also reusable building blocks).
   makeCreateFlow,
   makeMutationFlow,
   runSave,
@@ -54,6 +34,8 @@ module.exports = {
   getActiveApi,
   readyApi,
   components: { ProfilesTab, SectionsTab, SectionForm, ProfileOutline, PreviewTab },
+  // #region FUNC_apply
+  /** @purpose Register the plugin's locale entries, Remote mount and slot surfaces. */
   apply(ctx: PluginCtx) {
     ctx.locale.register(NS, messages);
     // The service owns per-key English fallback; the low-level request
@@ -95,3 +77,4 @@ module.exports = {
     });
   },
 };
+// #endregion FUNC_apply

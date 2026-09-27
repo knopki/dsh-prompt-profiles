@@ -2,24 +2,14 @@
  * #region moduleContract
  * @modulecontract
  * @purpose Own the authoritative in-memory view of every registered section
- *   and profile row, so the service, the editor and the prompt-injection step
- *   read one consistent, deterministically ordered dataset.
+ *   and profile row, so service, editor, and prompt injection read one dataset.
  * @scope
- *  - Registration/disposal with the duplicate-config.id policy (SPEC §5.1),
- *    sorted detached views, and the usedIn lookup. Insertion anchoring is a
- *    domain rule and lives in domain/ordering.ts (re-exported here for the
- *    modules and tests that reach it through the registry).
- *  - Pure data structure: no Cordis, no filesystem, no clock.
- *  - NOT: mounting rows (section.ts/profile.ts), serving the registry on ctx
- *    (index.ts), prompt injection.
+ *  - Registration/disposal with the duplicate-config.id policy, sorted
+ *    detached views, and the usedIn lookup.
+ *  - NOT: mounting rows or serving the registry on ctx.
  * @invariants
- *  - Views are fresh shallow copies in a stable order; mutating one never
- *    affects the registry. Volatile `.get()` fields are unwrapped at READ time
- *    so live settings edits keep flowing into views, sorting and usedIn.
- *  - A duplicate config.id resolves to the registration mounted LAST;
- *    disposing an overridden registration is a no-op, and disposing the winner
- *    reveals the still-mounted earlier one.
- * @keywords registry, sections, profiles, duplicate, usedIn
+ *  - Views are fresh shallow copies in stable order; volatile fields unwrap at
+ *    read time. The last registration wins; disposing it reveals the earlier one.
  * #endregion moduleContract
  */
 import type { ConfigId, ProfileView, RowSource, SectionView, UsedInEntry } from "../domain/model.ts";
@@ -33,29 +23,31 @@ interface RegisterRow {
     } & Record<string, unknown>;
     source?: RowSource;
 }
-/** Pure in-memory registry of section and profile rows. */
+/**
+ * Pure in-memory registry of section and profile rows.
+ *
+ * @purpose Own the authoritative dataset the service, editor, and injection read.
+ */
 export declare class PromptProfilesRegistry {
     #private;
-    /** @param options.warn duplicate-id sink (defaults to console.warn). */
+    /**
+     * @purpose Initialize empty section/profile registries with the selected duplicate warning sink.
+     */
     constructor({ warn }?: {
         warn?: (message: string, details?: unknown) => void;
     });
     /**
-     * Register one `.../section` row (SPEC §5.1).
-     * @returns disposer; a no-op when a later row with the same config.id
-     *   already overrode this registration.
+     * @purpose Register a section and return a disposer that restores any shadowed registration.
      */
     registerSection(row: RegisterRow): () => void;
-    /** Register one `.../profile` row; same disposer semantics as registerSection. */
-    registerProfile(row: RegisterRow): () => void;
-    /** Detached view of every section, sorted by `id`. */
-    sections(): SectionView[];
-    /** Detached view of every profile, sorted by `title` then `id` (SPEC decision 19). */
-    profiles(): ProfileView[];
     /**
-     * Which profiles reference a section, with per-profile scope — feeds the
-     * editor's read-only «используется в» field (SPEC §2 #26). A section
-     * referenced twice contributes one entry per reference.
+     * @purpose Register a profile and return a disposer that restores any shadowed registration.
      */
+    registerProfile(row: RegisterRow): () => void;
+    /** @purpose Return detached section views in stable id order. */
+    sections(): SectionView[];
+    /** @purpose Return detached profile views in title/id order. */
+    profiles(): ProfileView[];
+    /** @purpose Report each profile reference to the requested section with its scope. */
     usedIn(sectionId: ConfigId): UsedInEntry[];
 }

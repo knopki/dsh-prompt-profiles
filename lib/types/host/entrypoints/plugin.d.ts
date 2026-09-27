@@ -1,29 +1,16 @@
 /**
  * #region moduleContract
  * @modulecontract
- * @purpose Give a DSH profile an independent "prompt profile" axis — named sets
- *   of extra system-prompt sections — without touching agent presets.
+ * @purpose Mount the prompt-profiles service: registry, assembly listener,
+ *   Remote surface, and session snapshot storage.
  * @scope
- *  - The Cordis driver: config, the `ctx.promptProfiles` service and its lazy
- *    built-in-orders mirror, the prompt-assembly listener, the Remote mount,
- *    and the `prompt_profiles` storage domain declaration.
- *  - NOT: the operations (host/application/), the adapters (host/infra/), or
- *    the composition rows (./section.ts, ./profile.ts).
+ *  - The Cordis driver and the `prompt_profiles` storage domain declaration.
+ *  - NOT: operations (host/application/), adapters (host/infra/), rows.
  * @invariants
- *  - The row mounts even when optional services (settings, profileContext)
- *    are absent; injection waits for storageDomain and workspaceRegistry.
- *  - A snapshot write finishes before any profile section reaches rendering.
+ *  - Snapshot writes finish before profile sections reach rendering.
+ *  - Optional services degrade; injection waits for storage and workspace keys.
+ *  - The profile choice is keyed by the same workspace key `last` writes.
  *  - `builtinOrders()` never throws; the mirror degrades to the frozen copy.
- *  - The profile choice is keyed by the SAME workspace key `last` writes, so
- *    the chip reaches the prompt for both workspace-id and blank-session
- *    clients.
- * @dependencies
- *  - USES API: @deepseek-ai/cordis (Service), @deepseek-ai/schemastery
- *    (Config), zod and @deepseek-ai/dsh-storage-domain (the record schemas
- *    and the storage domain), plus the host services `settings`,
- *    `configEditor`, `workspaceRegistry` and `typert` through
- *    `ctx.inject`/`ctx.get`.
- * @keywords prompt profiles, host plugin, service, registry, mirror, cordis
  * #endregion moduleContract
  */
 import type { Context } from "@deepseek-ai/cordis";
@@ -31,24 +18,7 @@ import { Service } from "@deepseek-ai/cordis";
 import type { HostPorts } from "../application/ports.ts";
 import type { ConfigId, ProfileView, RowSource, SectionView, UsedInEntry } from "../domain/model.ts";
 import { type BuiltinOrdersMirror, PromptProfilesRegistry } from "../infra/index.ts";
-/**
- * Durable session snapshots; bad records are backed up and treated as absent.
- * `per-record` (the layout the platform's own per-session sidecar,
- * `session_projcache`, also uses) stores one document per session: a seal
- * rewrites only its own record instead of the whole unit, and the version
- * check applies per record, so a future schema change discards stale records
- * instead of failing the unit and losing every session's seal at once.
- *
- * The record carries ONLY the fields the insertion reads (`id`, `order`,
- * `text`). `title` and `profileId` were dropped because no reader ever used
- * them; an existing version-1 record still parses, because Zod objects strip
- * unknown keys, and the backend bootstraps the legacy whole-unit file into
- * per-record documents without a version bump.
- *
- * Record schemas are ZOD, not Schemastery: dsh-storage-domain reopens tables
- * through `tableSpec.valueSchema.parse(raw)` (Zod protocol), while Schemastery
- * has no `.nullable()` and is reserved for the plugin `Config`.
- */
+/** Session snapshots are isolated per session; invalid records are backed up and skipped. The Zod schema matches the storage-domain parser protocol. */
 export declare const promptProfilesDomain: {
     name: string;
     version: number;
@@ -64,17 +34,20 @@ export declare const promptProfilesDomain: {
         }>;
     };
 };
-/** A schemastery `.volatile()` config field: the service reads it through `get()`. */
 interface VolatileRef<T> {
     get(): T;
 }
-/** The resolved `prompt-profiles` row config (see the static `Config` schema). */
-export interface PromptProfilesConfig {
+/**
+ * @purpose Resolved config of the main prompt-profiles row.
+ */
+interface PromptProfilesConfig {
     default: VolatileRef<string>;
     lastByWorkspace: VolatileRef<Record<string, string> | undefined>;
 }
-/** A row handed to the service by its composition row. */
-export interface RegisterRowInput {
+/**
+ * @purpose A composition row handed to the service for registration.
+ */
+interface RegisterRowInput {
     rowId?: string | null;
     config: {
         id: string;
@@ -82,8 +55,7 @@ export interface RegisterRowInput {
     source?: RowSource;
 }
 /**
- * The `promptProfiles` service: registry of section/profile rows plus the
- * built-in orders mirror. Loader row `prompt-profiles` instantiates this.
+ * @purpose Own the section/profile registry plus the built-in orders mirror.
  */
 export declare class PromptProfilesPlugin extends Service {
     /** Mandatory injections — none: this row must mount before everything. */
@@ -101,22 +73,20 @@ export declare class PromptProfilesPlugin extends Service {
     constructor(ctx: Context, config: PromptProfilesConfig);
     /** @purpose Own one unscoped assembly listener whose snapshots outlive config edits and resumes. */
     _installAssembler(ctx: Context): void;
-    /** Register one section row (SPEC §5.1); `source` resolved via provenance when unknown. */
+    /** @purpose Register a section row; resolve unknown source through patch ownership. */
     registerSection(row: RegisterRowInput): () => void;
-    /** Register one profile row (SPEC §5.1); `source` resolved via provenance when unknown. */
+    /** @purpose Register a profile row; resolve unknown source through patch ownership. */
     registerProfile(row: RegisterRowInput): () => void;
+    /** @purpose List the registered section views. */
     sections(): SectionView[];
+    /** @purpose List the registered profile views. */
     profiles(): ProfileView[];
     /**
-     * Profiles referencing a section, with per-profile scope (editor feed).
-     *
-     * @purpose Serve the editor's read-only «используется в» field (SPEC §2 #26)
-     *   and the Remote section views from one consistent dataset.
+     * @purpose Provide one consistent read-only profile-reference view to the editor and Remote API.
      */
     usedIn(sectionId: ConfigId): UsedInEntry[];
     /**
-     * The mirror (SPEC §5.1/§5.2): SECTION_ORDERS keyed by placement key
-     * (`TOOL_BASH` → 1000). Lazy, never throws, frozen result.
+     * The mirror maps placement keys (for example, `TOOL_BASH`) to built-in orders. It is lazy, non-throwing, and frozen.
      *
      * @purpose Let the editor outline and insertionIndex reason about real
      *   built-in placement without hard-coding orders in the UI.
@@ -124,21 +94,17 @@ export declare class PromptProfilesPlugin extends Service {
     builtinOrders(): Record<string, number>;
     /**
      * Name-keyed mirror view (`tool:bash` → 1000) for insertionIndex and the
-     * editor outline. Extension beyond the SPEC §5.1 interface; the assembler
-     * relies on it because assembly sections are identified by name only.
+     * editor outline; assemblies identify sections by dotted name.
      *
      * @purpose Key the mirror the way assemblies actually identify sections (by
      *   dotted name), so insertion anchoring needs no key translation.
      */
     builtinOrdersByName(): Record<string, number>;
     /**
-     * Load the mirror once, on first use. `profileContext` is optional: read
-     * through the REFLECT reader, fall back to resolving from this module, and
-     * degrade to the frozen copy with a warning on any failure (SPEC §7).
+     * Load the mirror once, on first use; resolution and parsing problems
+     * degrade to the frozen copy instead of breaking the service.
      *
-     * @purpose Keep first mirror use cheap and crash-proof: resolution and
-     *   parsing problems degrade to the frozen copy instead of breaking the
-     *   service.
+     * @purpose Keep first mirror use cheap and crash-proof.
      */
     _loadMirror(): BuiltinOrdersMirror;
     /**

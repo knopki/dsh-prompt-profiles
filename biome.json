@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!lib", "!.spike", "!node_modules", "!.pnpm-store", "!.git"]
+    "includes": ["**", "!lib", "!node_modules", "!.pnpm-store", "!.git"]
   },
   "formatter": {
     "enabled": true,

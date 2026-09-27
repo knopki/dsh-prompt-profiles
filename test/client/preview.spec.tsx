@@ -1,8 +1,10 @@
 /**
- * The Preview tab on real React + jsdom: the profile selector, our sections in
- * final order with the collapsed built-in groups, skipped refs and reasons, the
- * explicit empty state, and the honesty flags wherever an interpolation
- * variable makes the preview illustrative rather than exact.
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Prove the Preview tab on real React + jsdom: selector, ordered
+ *   sections with collapsed built-in groups, skip reasons, the empty state,
+ *   and the honesty flags where interpolation stays illustrative.
+ * #endregion moduleContract
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
@@ -112,7 +114,7 @@ test("picking another profile re-reads the preview for it", async () => {
     />,
   );
   await waitFor(() => expect(requested).toEqual(["main"]));
-  fireEvent.click(screen.getByRole("button", { name: "defaultForNewSessions" }));
+  fireEvent.click(screen.getByRole("button", { name: "previewProfile" }));
   fireEvent.click(await screen.findByRole("menuitem", { name: "Light" }));
   await waitFor(() => expect(requested).toEqual(["main", "light"]));
 });

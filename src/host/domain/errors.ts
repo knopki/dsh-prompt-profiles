@@ -1,39 +1,27 @@
 /**
  * #region moduleContract
  * @modulecontract
- * @purpose Carry a domain failure out of the operations with a machine
- *   discriminator (`code`) and a safe human message, so every surface renders
- *   and classifies failures from ONE vocabulary instead of leaking stacks.
- * @scope
- *  - The five failure kinds the operations can report, the error base class,
- *    and the message helper used wherever a thrown value must become text.
- *  - NOT: mapping of port-specific failures onto these kinds (the settings
- *    mapping lives with the operations that call the port).
+ * @purpose Give operations stable error codes and safe messages for host surfaces.
+ * @scope Domain errors and thrown-value message normalization.
  * @invariants
- *  - Every DomainError message is a non-empty string chosen by the thrower;
- *    nothing here echoes a stack or a raw thrown value.
- *  - `status` mirrors `code` numerically for callers and harnesses that
- *    classify by number; `code` is the domain discriminator.
- * @keywords domain errors, invalid input, not found, conflict, unavailable
+ *  - `status` mirrors `code` numerically; messages are chosen by throwers.
  * #endregion moduleContract
  */
 
-// #region CONST_codes
-/** Why an operation refused: the domain discriminator every surface branches on. */
-export type DomainErrorCode = "invalid" | "not-found" | "conflict" | "unavailable" | "internal";
+type DomainErrorCode = "invalid" | "not-found" | "conflict" | "unavailable" | "internal";
 
-/** Numeric mirror of each code, for callers that classify failures by number. */
-export const DOMAIN_ERROR_STATUS: Record<DomainErrorCode, number> = {
+const DOMAIN_ERROR_STATUS: Record<DomainErrorCode, number> = {
   invalid: 400,
   "not-found": 404,
   conflict: 409,
   unavailable: 503,
   internal: 500,
 };
-// #endregion CONST_codes
 
 // #region CLASS_DomainError
-/** The base of every failure the operations raise: a code plus a safe message. */
+/**
+ * @purpose Carry a coded failure with a safe message so surfaces classify without leaking stacks.
+ */
 export class DomainError extends Error {
   readonly code: DomainErrorCode;
   readonly status: number;
@@ -47,53 +35,69 @@ export class DomainError extends Error {
 }
 // #endregion CLASS_DomainError
 
-// #region CLASS_kinds
-/** The payload, the addressed row or the request itself is malformed. */
+// #region CLASS_InvalidInputError
+/**
+ * @purpose Signal malformed payloads, addresses, or requests.
+ */
 export class InvalidInputError extends DomainError {
   constructor(message: string) {
     super("invalid", message);
     this.name = "InvalidInputError";
   }
 }
+// #endregion CLASS_InvalidInputError
 
-/** The addressed row, profile or section is not registered. */
+// #region CLASS_NotFoundError
+/**
+ * @purpose Signal an addressed row, profile, or section that is not registered.
+ */
 export class NotFoundError extends DomainError {
   constructor(message: string) {
     super("not-found", message);
     this.name = "NotFoundError";
   }
 }
+// #endregion CLASS_NotFoundError
 
-/** The expected configuration revision no longer matches the stored one. */
+// #region CLASS_ConflictError
+/**
+ * @purpose Signal a stale expected revision that no longer matches storage.
+ */
 export class ConflictError extends DomainError {
   constructor(message: string) {
     super("conflict", message);
     this.name = "ConflictError";
   }
 }
+// #endregion CLASS_ConflictError
 
-/** A service the operation requires is absent or unusable. */
+// #region CLASS_UnavailableError
+/**
+ * @purpose Signal a required service that is absent or unusable.
+ */
 export class UnavailableError extends DomainError {
   constructor(message: string) {
     super("unavailable", message);
     this.name = "UnavailableError";
   }
 }
+// #endregion CLASS_UnavailableError
 
-/** An invariant of the implementation was violated (a bug, not user input). */
+// #region CLASS_InternalError
+/**
+ * @purpose Signal a violated implementation invariant (a bug, not user input).
+ */
 export class InternalError extends DomainError {
   constructor(message: string) {
     super("internal", message);
     this.name = "InternalError";
   }
 }
-// #endregion CLASS_kinds
+// #endregion CLASS_InternalError
 
 // #region FUNC_errorMessage
 /**
- * @purpose Extract a NON-EMPTY human-readable message from any thrown value —
- *   Error (even with an empty `.message`), string, plain object, null — so
- *   every failure rendered to a user or a log carries readable text.
+ * @purpose Convert thrown values to non-empty text for user-facing errors and logs.
  */
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -103,13 +107,13 @@ export function errorMessage(error: unknown): string {
   if (typeof error === "string") return error === "" ? "unknown error" : error;
   if (typeof error === "object" && error !== null && "message" in error) {
     const message = (error as { message?: unknown }).message;
-    if (typeof message === "string" && message !== "") return message; // Error-like plain object
+    if (typeof message === "string" && message !== "") return message;
   }
   try {
     const text = String(error);
     if (text !== "") return text;
   } catch {
-    // exotic toString: fall through
+    // exotic toString throws: fall through to the default below
   }
   return "unknown error";
 }

@@ -1,11 +1,11 @@
 /**
- * The Profiles tab and its outline editor on real React + jsdom: the list with
- * its section count and no default marker, the modal-free create wired to the
- * flow with the default title, duplicate/delete through the confirmation and
- * the optimistic mutation flow (disabled while in flight), the default-profile
- * selector, and the outline editor — built-in/broken rows, the honest counter,
- * title and refs autosave with flush on leave, drag & drop and keyboard
- * reordering, scope, ref removal and the add-section picker.
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Prove the Profiles tab and its outline editor on real React +
+ *   jsdom: list, modal-free create, confirmed duplicate/delete, the
+ *   default-profile selector, and the outline editor with autosave and
+ *   reordering.
+ * #endregion moduleContract
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";

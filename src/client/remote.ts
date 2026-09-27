@@ -1,46 +1,17 @@
 /** #region moduleContract
  * @modulecontract
- * @purpose The CLIENT half of the promptProfiles Remote surface: the mirrored
- *   contribution (`{ package, descriptors }` — the exact same shape the host
- *   registers, built from the ONE shared method table) plus the typed endpoint
- *   facade the UI consumes, which unwraps the RemoteResult envelope into the
- *   error path the UI already handles.
- * @scope
- *  - clientContribution, remoteCall, the isRemoteConflict classifier, the
- *    request/response view types and makeRemoteApi.
- *  - NOT: the mount lifecycle (src/client/transport.ts owns the Cordis
- *    effect) and anything host-side.
+ * @purpose The client half of the promptProfiles Remote surface: the mirrored
+ *   contribution plus the typed endpoint facade the UI consumes.
  * @invariants
- *  - The descriptors are byte-identical in shape to the host's (same method
- *    set, same strict zod codecs, same typeSymbols) — only the reported
- *    sourceLocation file differs.
- *  - Every call passes an object argument (never `undefined` — the wire
- *    contract rejects a missing `input`).
+ *  - Descriptors are shape-identical to the host's; every call passes an object.
  *  - `{ ok: true, value }` resolves to `value`; `{ ok: false, error }`
- *    rejects with an Error carrying the envelope's message and code, so the
- *    existing errText/notify/inline-error paths keep working unchanged.
- *  - Conflict detection stays behaviour-compatible: the envelope carries no
- *    status, so the two known stale-revision messages are classified from the
- *    message text.
- * @dependencies
- *  - USES API: ctx.remote.$mount (mount, owner: src/client/transport.ts),
- *    ctx.inject(['remote.promptProfiles'], scope => ...) — the namespace
- *    service is NOT reachable bare; zod 4 (bundled, via the shared contract).
- * @rationale
- *  - Q: Why classify conflicts by message text instead of a status field?
- *    A: The gateway serializes a thrown host DomainError as
- *    `{ code: 'gateway/internal', message }` — the status does not cross the
- *    envelope. Until the host can throw a code-carrying RemoteError (deferred
- *    refactor), the two deterministic conflict messages are the only honest
- *    signal available.
- * @keywords remote, client, contribution, $mount, inject, envelope, unwrap,
- *   RemoteResult, facade, phase 2b
+ *    rejects with the envelope's message and code.
+ *  - The envelope carries no status, so conflicts classify from message text.
  * #endregion moduleContract */
 
 import { buildRemoteDescriptors, REMOTE_NAMESPACE, TYPERT_PACKAGE } from "../shared/remote-contract.ts";
 import type { CreateResponse, PreviewResponse, RenameResponse, SectionRef, StateDocument } from "./model.ts";
 
-// #region TYPE_remoteTransport
 /** One RemoteResult envelope as the gateway delivers it. */
 export interface RemoteEnvelope {
   ok?: boolean;
@@ -52,7 +23,7 @@ export interface RemoteEnvelope {
  * The namespace service `ctx.inject(['remote.promptProfiles'])` exposes: one
  * callable per method, always taking an object.
  */
-export interface RemoteNamespace {
+interface RemoteNamespace {
   [method: string]: (args: object) => Promise<RemoteEnvelope>;
 }
 
@@ -60,28 +31,26 @@ export interface RemoteNamespace {
 export interface RemoteScope {
   remote: Record<string, RemoteNamespace>;
 }
-// #endregion TYPE_remoteTransport
 
-// #region TYPE_requests
 /** What a section create/duplicate sends. */
-export interface SectionCreateRequest {
+interface SectionCreateRequest {
   id?: string;
   title?: string;
   body?: string;
 }
 /** What a whole-object section update sends as `value`. */
-export interface SectionUpdateValue {
+interface SectionUpdateValue {
   title: string;
   body: string;
 }
 /** What a profile create/duplicate sends. */
-export interface ProfileCreateRequest {
+interface ProfileCreateRequest {
   id?: string;
   title?: string;
   sections?: SectionRef[];
 }
 /** What a whole-object profile update sends as `value`. */
-export interface ProfileUpdateValue {
+interface ProfileUpdateValue {
   title: string;
   sections?: SectionRef[];
 }
@@ -106,9 +75,7 @@ export interface RemoteApi {
   setDefault(value: string): Promise<unknown>;
   last(choice: LastChoice): Promise<unknown>;
 }
-// #endregion TYPE_requests
 
-// #region CONST_clientContribution
 /**
  * The client contribution mounted through `ctx.remote.$mount(...)`: our
  * package identity plus the descriptors built from the ONE shared method
@@ -118,7 +85,6 @@ const clientContribution = {
   package: TYPERT_PACKAGE,
   descriptors: buildRemoteDescriptors("client"),
 };
-// #endregion CONST_clientContribution
 
 // #region CLASS_RemoteCallError
 /**
@@ -163,14 +129,8 @@ async function remoteCall<T>(scope: RemoteScope, method: string, args: object): 
 }
 // #endregion FUNC_remoteCall
 
-// #region CONST_conflictPattern
-/**
- * The stale-revision failures the host reports as ConflictError; the Remote
- * envelope carries no status, so the deterministic messages are the conflict
- * signal (see @rationale in the module contract).
- */
+/** The stale-revision failures the host reports as ConflictError. */
 const REMOTE_CONFLICT_PATTERN = /configuration changed since read|configuration kept changing/;
-// #endregion CONST_conflictPattern
 
 // #region FUNC_isRemoteConflict
 /**
@@ -185,13 +145,7 @@ function isRemoteConflict(err: unknown): boolean {
 // #endregion FUNC_isRemoteConflict
 
 // #region FUNC_makeRemoteApi
-/**
- * @purpose The endpoint facade over the Remote namespace: WRITES send the
- *   unqualified `patchId` in the `rowId` field, updates carry WHOLE objects in
- *   `value`, `setDefault("")` means none, `last(choice)` keys the choice by
- *   exactly one of workspaceId/cwd. Results come from the envelope unwrap;
- *   failures throw with the message preserved.
- */
+/** @purpose Adapt the injected namespace while preserving endpoint wire shapes. */
 const makeRemoteApi = (scope: RemoteScope): RemoteApi => {
   const call = <T>(method: string, args: object) => remoteCall<T>(scope, method, args);
   return {

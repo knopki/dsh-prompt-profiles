@@ -1,10 +1,10 @@
 /**
- * The installed primitives' CONTRACTS, observed while the real components
- * render: a thin recording wrapper sits in front of each platform primitive and
- * delegates to it, so the assertions below read the props the UI passes while
- * the DOM still comes from the production implementation. This is where the
- * owner-controlled Menu, the render-only Toast, the Button geometry, the
- * Tooltip anchor and the SegmentedTabs row shape are pinned down.
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Pin the installed primitives' contracts while the real components
+ *   render: a recording wrapper reads the props the UI passes while the DOM
+ *   still comes from the production implementation.
+ * #endregion moduleContract
  */
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import * as React from "react";

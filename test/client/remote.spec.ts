@@ -1,10 +1,10 @@
 /**
- * The frozen write contract of the Remote facade (`src/client/remote.ts`): the
- * unqualified patchId travels in `rowId`, updates carry the WHOLE object in
- * `value`, creates send no client-generated id, `setDefault("")` means none,
- * `last` is keyed by exactly one of workspaceId/cwd — and every call passes an
- * object argument. Envelopes unwrap to `value` and reject with the host's
- * message; the conflict classifier stays message-based.
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Prove the Remote facade's write contract: patchId in `rowId`,
+ *   whole-object `value` on updates, no client-generated ids, explicit none,
+ *   single-key `last` — with envelopes unwrapped and conflicts classified.
+ * #endregion moduleContract
  */
 import { expect, test } from "vitest";
 import { findEntry, optimisticEntry } from "../../src/client/flows.ts";

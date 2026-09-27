@@ -42,7 +42,6 @@ const profile = {
 };
 const fakeAgent = (origin, seeded) => ({ session: { header: { origin, isSeeded: seeded } } });
 
-// #region TEST_resolution
 /** @purpose Confirm explicit workspace selection, default fallback, and silent stale-id reset. */
 test("no profile resolves to null and injects nothing", () => {
   const choice = resolveProfileId({ lastByWorkspace: {}, workspaceKey: "w", defaultId: "", profileIds: [] });
@@ -89,9 +88,7 @@ test("workspace choice wins; dangling choice resets to live default then null", 
     { profileId: null, reset: true },
   );
 });
-// #endregion TEST_resolution
 
-// #region TEST_workspaceKey
 /** @purpose /last and the assembler MUST derive the same ORDERED candidates; duplicates never appear. */
 test("resolveWorkspaceKeys returns ordered unique candidates (membership, path id, cwd, workspaceId)", async () => {
   const registry = {
@@ -144,10 +141,10 @@ test("resolveWorkspaceKeys returns ordered unique candidates (membership, path i
   );
 });
 
-/** @purpose (а)/(б) A legacy path-keyed choice is visible from a UUID session; an explicit "" on the first candidate beats the path choice. */
+/** @purpose A legacy path-keyed choice is visible from a UUID session; an explicit "" on the first candidate beats the path choice. */
 test("resolveProfileId walks candidates in order: first PRESENT key decides, including explicit none", () => {
   const base = { defaultId: "", profileIds: ["light", "other"] };
-  // (а) UUID candidate absent → the path-keyed choice wins.
+  // UUID candidate absent → the path-keyed choice wins.
   assert.deepEqual(
     resolveProfileId({
       ...base,
@@ -156,7 +153,7 @@ test("resolveProfileId walks candidates in order: first PRESENT key decides, inc
     }),
     { profileId: "light", reset: false },
   );
-  // (б) explicit "" under the UUID (first candidate) beats the path choice.
+  // Explicit "" under the UUID (first candidate) beats the path choice.
   assert.deepEqual(
     resolveProfileId({
       ...base,
@@ -199,9 +196,7 @@ test("resolveProfileId walks candidates in order: first PRESENT key decides, inc
     reset: false,
   });
 });
-// #endregion TEST_workspaceKey
 
-// #region TEST_scope
 /** @purpose Lock in the four main/child/fork classifications and empty/unknown/disabled section behavior. */
 test("scope matrix: root, ordinary child, seeded child, seeded root", () => {
   for (const [agent, expected] of [
@@ -235,9 +230,7 @@ test("snapshot copies text, keeps profile order, and excludes blank, unknown and
   assert.equal(snapshot.sections[0].text, "Always");
   sections.get("inherited").body = "Always";
 });
-// #endregion TEST_scope
 
-// #region TEST_skipDiagnostics
 /** @purpose buildSnapshot reports WHY each reference was dropped, and a throwing diagnostics sink cannot break sealing. */
 test("buildSnapshot reports skip reasons without letting the sink break sealing", () => {
   const skips = [];
@@ -306,9 +299,7 @@ test("sectionSkipReason is the shared selection rule (scope first, then state)",
   assert.equal(sectionSkipReason({ id: "a" }, { ...body, body: "  " }), "empty body");
   assert.match(sectionSkipReason({ id: "a", scope: "everywhere" }, body), /unknown scope/);
 });
-// #endregion TEST_skipDiagnostics
 
-// #region TEST_insertion
 /** @purpose Pin present-built-in anchors, absent anchors, stable ties, and low-order placement (BASE indices). */
 test("two profile sections between the same built-ins retain profile order", () => {
   const assembly = [{ name: "tool:bash" }, { name: "tool:read" }];
@@ -427,9 +418,7 @@ test("two sections with the same order keep it and insert deterministically", ()
   );
   assert.deepEqual(run(), first, "planInsertion is deterministic across runs");
 });
-// #endregion TEST_insertion
 
-// #region TEST_sealing
 /** @purpose Ensure the first write is durable before rendering and no later assembly reads edited config. */
 test("fake storage seals first result and reuses it without rerunning config resolution", async () => {
   const records = new Map();
@@ -466,10 +455,8 @@ test("fake storage seals first result and reuses it without rerunning config res
   assert.equal(again.sections[0].text, "Original");
   assert.equal(builds, 1);
 });
-// #endregion TEST_sealing
 
-// #region TEST_sealInterpolation
-/** @purpose Astra finding D: interpolation is resolved and validated at SEAL time;
+/** @purpose Interpolation is resolved and validated at SEAL time;
  *  unusable bodies are skipped with a warning instead of persisted. */
 test("unknown variable skips the section with a warning; known variables are resolved into the sealed text", () => {
   const warnings = [];
@@ -572,10 +559,8 @@ test("a body with literal {{ cannot break rendering: sealed verbatim and never r
   });
   assert.equal(literal.sections[0].text, "Only literal {{ braces");
 });
-// #endregion TEST_sealInterpolation
 
-// #region TEST_pinnedDecision
-/** @purpose Astra finding G: storage failures never yield an unprofiled turn nor mid-session activation. */
+/** @purpose Storage failures never yield an unprofiled turn nor mid-session activation. */
 test("storage outage pins the decision in memory; retry persists the SAME snapshot; no mid-session activation", async () => {
   const records = new Map();
   let openFailuresRemaining = 2;
@@ -631,7 +616,7 @@ test("storage outage pins the decision in memory; retry persists the SAME snapsh
   assert.deepEqual(records.get("s"), first, "pinned snapshot persisted after recovery");
 });
 
-/** @purpose STRICT sealing (SPEC §2 decision 9): an EMPTY snapshot is a decision too — a session that started without a profile never gains one mid-session; a NEW session does. */
+/** @purpose STRICT sealing: an EMPTY snapshot is a decision too — a session that started without a profile never gains one mid-session; a NEW session does. */
 test("an empty snapshot is sealed: later config changes never activate a profile in that session", async () => {
   const records = new Map();
   const memo = new Map();
@@ -669,10 +654,8 @@ test("an empty snapshot is sealed: later config changes never activate a profile
   });
   assert.deepEqual(restarted, { profileId: null, sections: [] });
 });
-// #endregion TEST_pinnedDecision
 
-// #region TEST_retryCache
-/** @purpose Prove a rejected open is dropped from the cache so the next assembly retries (verify-step2b-glm defect 1). */
+/** @purpose A rejected open is dropped from the cache so the next assembly retries. */
 test("retryingCache drops a rejected promise and retries; a fulfilled one stays cached", async () => {
   let attempts = 0;
   const get = retryingCache(() => {
@@ -692,4 +675,3 @@ test("retryingCache drops a rejected promise and retries; a fulfilled one stays 
   assert.equal(attempts, 3);
   assert.equal(await get.cached(), first);
 });
-// #endregion TEST_retryCache

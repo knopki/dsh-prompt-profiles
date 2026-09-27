@@ -1,8 +1,12 @@
 /**
- * Shared bench for the client specs: the fake slot props/services the plugin
- * would receive from the platform, and a recording Remote namespace mounted
- * through the REAL transport facade (`ctx.remote.$mount` + `ctx.inject`), so
- * the tests exercise the production error/refresh paths instead of a stub api.
+ * Shared bench for the client specs.
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Hand the client specs the fake slot props and services the platform
+ *   would provide, plus a recording Remote namespace mounted through the REAL
+ *   transport facade — so the tests exercise the production error and refresh
+ *   paths instead of a stub api.
+ * #endregion moduleContract
  */
 import type { PromptProfileChipProps, StoreHook } from "../../src/client/chip.tsx";
 import type { Translate } from "../../src/client/i18n.ts";
@@ -83,7 +87,6 @@ export const storeHook = <T>(state: T): StoreHook<T> =>
 /** A promise that never settles — for the loading-placeholder states. */
 export const never = <T>(): Promise<T> => new Promise<T>(() => {});
 
-// #region fixtures
 export const sectionGreeting: RowEntry = {
   rowId: "prompt-section-greeting",
   patchId: "prompt-section-greeting",
@@ -140,4 +143,3 @@ export function chipProps(overrides: Partial<PromptProfileChipProps> = {}): Prom
     ...overrides,
   };
 }
-// #endregion fixtures

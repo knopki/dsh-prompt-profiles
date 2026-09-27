@@ -1,22 +1,11 @@
 /**
  * #region moduleContract
  * @modulecontract
- * @purpose Own every rule about prompt-profile row identifiers: the accepted
- *   input forms, the frozen `prompt-<kind>-<token>` scheme, row matching and
- *   create-token generation — so no two modules can disagree about what names
- *   a row.
- * @scope
- *  - Normalization (`toPatchId`, `normalizeNewRowId`), row lookup (`findRow`),
- *    token generation (`tokenSource`, `newRowId`) and the taken-id sets.
- *  - NOT: the patch file (writer.ts), registry views (registry.ts), payload
- *    schemas (src/shared/wire-schemas.ts).
+ * @purpose Centralize row-id normalization, matching, and creation rules.
+ * @scope Normalization, lookup, token generation; NOT storage or wire validation.
  * @invariants
- *  - A created row's `config.id` IS its full row id; the token part matches
- *    ID_TOKEN_PATTERN, and ids are never derived from a title.
- *  - `toPatchId` passes a non-string value through unchanged; every other
- *    normalizer returns null instead of throwing, leaving the message to the
- *    caller.
- * @keywords row id, patch id, config id, token, create id, find row
+ *  - Normalizers return null for malformed input instead of throwing.
+ *  - Ids are never derived from a title.
  * #endregion moduleContract
  */
 
@@ -30,27 +19,29 @@ import {
   SECTION_ID_PREFIX,
 } from "./model.ts";
 
-// #region CONST_token
-/** Rule for the TOKEN part of a generated or explicit row id. */
-export const ID_TOKEN_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+const ID_TOKEN_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
-/** `section` → `prompt-section-`, the prefix of every full id of that kind. */
+// #region FUNC_idPrefix
+/**
+ * @purpose Map a row kind to the prefix of every full id of that kind.
+ */
 export function idPrefix(kind: RowKind): string {
   return kind === "section" ? SECTION_ID_PREFIX : PROFILE_ID_PREFIX;
 }
+// #endregion FUNC_idPrefix
 
-/** Is `token` a well-formed id token (no prefix)? */
+// #region FUNC_isValidToken
+/**
+ * @purpose Check a bare id token (no prefix) for well-formedness.
+ */
 export function isValidToken(token: string): boolean {
   return ID_TOKEN_PATTERN.test(token);
 }
-// #endregion CONST_token
+// #endregion FUNC_isValidToken
 
 // #region FUNC_toPatchId
 /**
- * @purpose Normalize ANY row identifier to the unqualified patch row id: strip
- *   a leading `<parent>:` qualification chain (`include:group:prompt-section-1`
- *   → `prompt-section-1`) and keep the last segment. THE low-level normalizer
- *   every other module imports.
+ * @purpose Strip loader qualification so patch operations use the unqualified id.
  */
 export function toPatchId(value: string): PatchId;
 export function toPatchId(value: unknown): unknown;
@@ -58,19 +49,11 @@ export function toPatchId(value: unknown): unknown {
   if (typeof value !== "string" || value === "") return value;
   return value.slice(value.lastIndexOf(":") + 1);
 }
+// #endregion FUNC_toPatchId
 
-/** The full row id of `token` under the frozen `prompt-<kind>-<token>` scheme. */
-export function rowId(kind: RowKind, token: string): string {
-  return `${idPrefix(kind)}${token}`;
-}
-
+// #region FUNC_normalizeNewRowId
 /**
- * @purpose Normalize the NEW id of a create/rename payload to the canonical
- *   full `prompt-<kind>-<token>` form under the frozen decision «config.id ===
- *   full row id». Accepted inputs are all equivalent: a bare token, the full
- *   row id, or a qualified `include:` chain. Returns null when the input is not
- *   a string or reduces to the bare prefix — pattern checks stay with the
- *   caller, which reports a clear rejection.
+ * @purpose Normalize a create/rename id to its full kind-prefixed form; return null for non-string/empty input.
  */
 export function normalizeNewRowId(kind: RowKind, value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -79,12 +62,11 @@ export function normalizeNewRowId(kind: RowKind, value: unknown): string | null 
   const prefix = idPrefix(kind);
   return bare.startsWith(prefix) ? bare : `${prefix}${bare}`;
 }
+// #endregion FUNC_normalizeNewRowId
 
+// #region FUNC_normalizeExplicitRowId
 /**
- * @purpose Normalize an EXPLICIT (caller-supplied) create/rename id: the same
- *   full form as normalizeNewRowId, but only when the token after the prefix is
- *   well-formed. null means "not a valid row id of this kind" — the caller
- *   reports it and nothing is written.
+ * @purpose Accept only a kind-prefixed id with a valid token.
  */
 export function normalizeExplicitRowId(kind: RowKind, value: unknown): string | null {
   if (typeof value !== "string" || value.trim() === "") return null;
@@ -93,15 +75,11 @@ export function normalizeExplicitRowId(kind: RowKind, value: unknown): string | 
   const token = full.slice(idPrefix(kind).length);
   return isValidToken(token) ? full : null;
 }
-// #endregion FUNC_toPatchId
+// #endregion FUNC_normalizeExplicitRowId
 
 // #region FUNC_findRow
 /**
- * @purpose ONE place implementing the row id-matching rule. The registry
- *   stores the QUALIFIED loader entry rowId (`include:prompt-section-f01aa4a5`)
- *   while callers may send the unqualified patch row id. First hit wins:
- *   exact rowId, then `toPatchId`-normalized rowId (both directions), then the
- *   row's own `config.id` in either form.
+ * @purpose Match a registry row by qualified/unqualified row id or config id.
  */
 export function findRow<T extends { id?: ConfigId; rowId?: RowId | null }>(
   rows: readonly T[] | null | undefined,
@@ -122,22 +100,14 @@ export function findRow<T extends { id?: ConfigId; rowId?: RowId | null }>(
 }
 // #endregion FUNC_findRow
 
-// #region CONST_tokenSource
 /**
- * Injectable source of short random create tokens (8 lowercase hex chars).
- * @purpose Let tests force collisions deterministically (`tokenSource.next`)
- *   without monkey-patching crypto; production uses a crypto UUID.
+ * Injectable token source so tests force collisions without patching crypto.
  */
 export const tokenSource = { next: (): string => randomUUID().replace(/-/g, "").slice(0, 8) };
-// #endregion CONST_tokenSource
 
 // #region FUNC_newRowId
 /**
- * @purpose Mint a create id as a short random token instead of a
- *   title-derived slug: two ids derived from one title read as different rows
- *   and can collide with rows another bundle ships. Regenerates while the
- *   candidate is malformed or already in `taken` (any full id string or
- *   `config.id` a new row must not reuse).
+ * @purpose Mint a random unused id, retrying on malformed or taken candidates.
  */
 export function newRowId(kind: RowKind, taken: ReadonlySet<string>): string {
   for (;;) {
@@ -149,10 +119,7 @@ export function newRowId(kind: RowKind, taken: ReadonlySet<string>): string {
 
 // #region FUNC_takenIds
 /**
- * Every FULL id string a NEW row of this kind must not reuse: the row ids and
- * config ids of the registered rows, raw and `toPatchId`-normalized (so both
- * the qualified `include:` form and the unqualified patch id are covered), plus
- * any caller-supplied ids (e.g. rows already present in the patch file).
+ * @purpose Return every full id a new row must not reuse: row/config ids plus extras.
  */
 export function takenIds(
   rows: readonly { id?: ConfigId; rowId?: RowId | null }[],
@@ -172,9 +139,13 @@ export function takenIds(
   for (const value of extra ?? []) add(value);
   return taken;
 }
+// #endregion FUNC_takenIds
 
-/** Registered `config.id`s of `rows` — the ids an explicit new id must not duplicate. */
+// #region FUNC_configIds
+/**
+ * @purpose Return the registered config ids an explicit new id must not duplicate.
+ */
 export function configIds(rows: readonly { id?: ConfigId }[]): Set<string> {
   return new Set(rows.map((row) => row.id).filter((id): id is ConfigId => typeof id === "string"));
 }
-// #endregion FUNC_takenIds
+// #endregion FUNC_configIds

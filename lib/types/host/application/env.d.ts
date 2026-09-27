@@ -1,28 +1,21 @@
 /**
  * #region moduleContract
  * @modulecontract
- * @purpose Hold what the operation use cases share — payload helpers, row
- *   addressing, id sets, settings writes and the delete path — so each
- *   per-domain use case module stays a thin statement of what it does.
- * @scope
- *  - Shared helpers and their port wiring only; the operations themselves live
- *    in state.ts, preview.ts, sections.ts, profiles.ts and assembler.ts.
- *  - NOT: the ports (ports.ts), the adapters (infra/), or any surface.
+ * @purpose Share payload helpers, row addressing, id sets, settings writes
+ *   and the delete path across the per-domain use case modules.
+ * @scope Shared helpers and port wiring only.
+ *  - NOT: the operations themselves, the ports, the adapters, or any surface.
  * @invariants
- *  - Every payload is validated BEFORE anything is written, so a refused call
- *    leaves the patch file byte-identical.
- *  - Mutations run inside the bundle's one write lock, so operation updates
- *    never interleave with writer mutations in this process.
- *  - Optional services are resolved per call through the ports, so a
- *    late-appearing service is picked up and a missing one degrades per
- *    operation.
+ *  - Every payload is validated BEFORE anything is written.
+ *  - Mutations run inside the bundle's one write lock.
+ *  - Optional services resolve per call, so late services are picked up.
  * @keywords use cases, environment, validation, row addressing, write lock
  * #endregion moduleContract
  */
 import type { ConfigId, ProfileView, RowKind, SectionView } from "../domain/model.ts";
 import type { HostPorts, LoaderRegistryPort, PatchPort, SettingsOp, SettingsPort } from "./ports.ts";
 /** One addressed registry row plus the normalized patch id every write uses. */
-export interface AddressedRow<Row> {
+interface AddressedRow<Row> {
     row: Row;
     patchId: string;
 }
@@ -62,6 +55,8 @@ export interface UseCaseEnv {
     }): Promise<boolean>;
     deleteRow(patchId: string, name: string): Promise<DeleteResult>;
     mapDuplicate(error: unknown): never;
+    /** Guarded settings revision (`undefined` when missing or unreadable). */
+    revision(): number | undefined;
 }
 /** Title with a DEFAULT allowed (frozen contract): missing or blank uses the fallback. */
 export declare function titleOrDefault(value: string | undefined, fallback: string): string;
@@ -77,3 +72,4 @@ export declare function explicitRowId(label: string, kind: RowKind, value: unkno
  *   still read per call, so a late-appearing service is honoured.
  */
 export declare function createUseCaseEnv(ports: HostPorts): UseCaseEnv;
+export {};

@@ -1,8 +1,10 @@
 /**
- * The composer chip rendered on real React + jsdom: the visibility gates, the
- * three host-resolved states (absent key → default, explicit "" → none, a valid
- * id → that profile), the blocked choice without any workspace key, the
- * complete-mode marker, and the debounced re-read after a settings mutation.
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Prove the composer chip on real React + jsdom: visibility gates,
+ *   host-resolved states, the blocked keyless choice, the complete-mode
+ *   marker, and the debounced re-read after a settings mutation.
+ * #endregion moduleContract
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";

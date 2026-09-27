@@ -1,24 +1,15 @@
 /**
  * #region moduleContract
  * @modulecontract
- * @purpose Turn the configured profiles into a session's FINAL prompt text:
- *   pick the profile, seal its sections once per session, and splice them into
- *   the live assembly.
- * @scope
- *  - Profile selection, seal-time interpolation, the snapshot builder, and the
- *    sealing use case that owns the whole assembly step.
- *  - Selection and insertion RULES live in domain/ordering.ts and are
- *    re-exported here for the consumers that reach them through this module.
- *  - NOT: durable storage (infra/session-snapshots.ts), workspace key
- *    resolution (infra/workspace-adapter.ts), plugin lifecycle
- *    (entrypoints/plugin.ts).
+ * @purpose Seal each session's selected profile once, interpolate it, and
+ *   splice its sections into the live assembly.
+ * @scope Profile selection, seal-time interpolation, the snapshot builder,
+ *   and the sealing use case.
+ *  - NOT: durable storage, workspace key resolution, or plugin lifecycle.
  * @invariants
- *  - Sealed text is FINAL: interpolation is resolved at seal time and inserted
+ *  - Sealed text is FINAL: interpolation resolves at seal time and inserts
  *    with `interpolate: false`.
- *  - A session's decision is made once and survives a storage outage.
- *  - Diagnostics go through a GUARDED sink: broken logging can never fail an
- *    assembly.
- * @keywords profile selection, sealing, interpolation, snapshot, assembler
+ *  - Diagnostics go through a GUARDED sink: broken logging never fails an assembly.
  * #endregion moduleContract
  */
 
@@ -35,9 +26,8 @@ import type {
 
 export { planInsertion, sectionSkipReason };
 
-// #region TYPE_agent
 /** The part of a Cordis agent the subagent classification and key lookup read. */
-export interface AssemblyAgent {
+interface AssemblyAgent {
   session?: {
     id?: string;
     header?: { cwd?: string | null; origin?: string; isSeeded?: boolean };
@@ -48,11 +38,9 @@ export interface AssemblyAgent {
 export interface AssemblyContext {
   agent?: AssemblyAgent | null;
 }
-// #endregion TYPE_agent
 
-// #region TYPE_assembly
 /** One engine assembly entry; sections are identified by `name` only. */
-export interface AssemblyEntry {
+interface AssemblyEntry {
   name: string;
   [key: string]: unknown;
 }
@@ -62,18 +50,12 @@ export interface PromptAssembly {
   sections: AssemblyEntry[];
   variables?: Record<string, unknown>;
 }
-// #endregion TYPE_assembly
 
 // #region FUNC_resolveProfileId
 /**
- * @purpose Select a live profile by workspace override then default, rejecting
- *   stale ids without changing settings. Reads an ORDERED list of workspace
- *   candidates: the FIRST candidate PRESENT in `lastByWorkspace` decides — an
- *   explicit "" (none) beats the default, a valid id wins, and a
- *   present-but-stale id falls back to the default with `reset: true`. Only
- *   when NO candidate is present does `default` apply, so a choice stored
- *   under the UUID key and one stored under the cwd key for the same workspace
- *   are both reachable.
+ * @purpose Select a live profile from the first present workspace candidate,
+ *   with explicit-none beating the default and stale ids falling back
+ *   without writes.
  */
 export function resolveProfileId({
   lastByWorkspace = {},
@@ -102,32 +84,31 @@ export function resolveProfileId({
 }
 // #endregion FUNC_resolveProfileId
 
-// #region FUNC_classify
+// #region FUNC_isSubagent
 /** @purpose Classify a delegated child from its durable session header, tolerating absent agent data. */
 export function isSubagent(agent: AssemblyAgent | null | undefined): boolean {
   return agent?.session?.header?.origin === "subagent";
 }
+// #endregion FUNC_isSubagent
 
+// #region FUNC_isFork
 /** @purpose Identify a seeded delegated child rather than an unrelated seeded root session. */
 export function isFork(agent: AssemblyAgent | null | undefined): boolean {
   return isSubagent(agent) && agent?.session?.header?.isSeeded === true;
 }
-// #endregion FUNC_classify
+// #endregion FUNC_isFork
+
+const GROUP_AT = /^\{\{([^{}]*)\}\}/;
+const VARIABLE_NAME = /^[a-z][a-z0-9_]*$/;
 
 // #region FUNC_interpolateSealedText
 /**
- * Seal-time interpolation, byte-compatible with the engine
- * (dsh-system-prompt `interpolate`): strict `{{name}}` groups, `{{` without a
- * later `}}` is literal prose, and any malformed reference, unknown variable
- * or missing value THROWS.
- *
  * @purpose Freeze interpolation into the sealed text so the engine never
- *   re-interpolates it (insertion carries `interpolate: false`). Throwing here
- *   lets the sealer skip the section before unusable text is persisted.
+ *   re-interpolates it. Strict `{{name}}` groups only: malformed, unknown, or
+ *   missing values throw (letting the sealer skip the section), while a `{{`
+ *   with no later `}}` stays literal prose.
  * @throws Error on unknown or malformed variable references.
  */
-const GROUP_AT = /^\{\{([^{}]*)\}\}/;
-const VARIABLE_NAME = /^[a-z][a-z0-9_]*$/;
 export function interpolateSealedText(sectionId: string, text: string, variables?: Record<string, unknown>): string {
   const known = variables ?? {};
   let result = "";
@@ -168,13 +149,10 @@ export function interpolateSealedText(sectionId: string, text: string, variables
 
 // #region FUNC_buildSnapshot
 /**
- * @purpose Freeze the chosen sections' FINAL text (interpolation resolved and
- *   validated at seal time) and order at the first assembly, filtering scopes
- *   and absent/empty/uninterpolatable sections. A section whose body cannot be
- *   interpolated against this assembly's variables is SKIPPED with a warning
- *   instead of persisting text the engine would throw on forever.
- * @param options.onSkip diagnostics hook called for EVERY skipped reference
- *   with a short reason; a throwing sink is swallowed here.
+ * @purpose Freeze the chosen sections' FINAL text and order at the first
+ *   assembly, filtering scopes and absent/empty/uninterpolatable sections.
+ * @param options.onSkip diagnostics hook called for EVERY skipped reference;
+ *   a throwing sink is swallowed here.
  */
 export function buildSnapshot({
   profile,
@@ -227,9 +205,8 @@ export function buildSnapshot({
 }
 // #endregion FUNC_buildSnapshot
 
-// #region TYPE_assembler
 /** Everything the sealing use case reads from the host. */
-export interface AssemblerPorts {
+interface AssemblerPorts {
   registry: LoaderRegistryPort;
   orders: BuiltinOrdersPort;
   workspaces: WorkspaceKeysPort;
@@ -238,17 +215,15 @@ export interface AssemblerPorts {
 }
 
 /** One request of the sealing step: the agent behind it and the live assembly. */
-export interface SealRequest {
+interface SealRequest {
   agent?: AssemblyAgent | null;
   assembly: PromptAssembly;
 }
-// #endregion TYPE_assembler
 
 // #region FUNC_createPromptAssembler
 /**
  * @purpose Own the whole assembly step — workspace keys, profile selection,
- *   the once-per-session seal, and the ordered splice — so the Cordis
- *   entrypoint only reads the event arguments and calls one method.
+ *   the once-per-session seal, and the ordered splice — behind one method.
  */
 export function createPromptAssembler(ports: AssemblerPorts) {
   const log = (level: keyof LogPort, message: string, details?: unknown): void => {
@@ -260,17 +235,28 @@ export function createPromptAssembler(ports: AssemblerPorts) {
   };
 
   return {
+    // #region METHOD_apply
+    /** @purpose Seal the session's profile once and splice its sections into the live assembly. */
     async apply({ agent, assembly }: SealRequest): Promise<void> {
       const session = agent?.session;
-      if (!session?.id || !Array.isArray(assembly?.sections)) return;
+      // #region BLOCK_validateRequest
+      if (!session?.id || !Array.isArray(assembly?.sections)) {
+        log("debug", "prompt-profiles assembly skipped: no session id or live sections", {
+          sessionId: session?.id ?? null,
+          hasSections: Array.isArray(assembly?.sections),
+        });
+        return;
+      }
+      // #endregion BLOCK_validateRequest
       try {
-        // The workspace key candidates MUST include the one `/last` wrote (see
-        // infra/workspace-adapter.ts): registry membership first, then the
-        // ASYNC resolveByPath(cwd) id, then the raw cwd. Reading walks them in
-        // order, so a legacy path-keyed choice is still found.
+        // #region BLOCK_resolveWorkspace
+        // Key candidates MUST include the one `/last` wrote (registry id,
+        // then resolveByPath(cwd), then raw cwd); reading walks them in order.
         const cwd = session.header?.cwd ?? null;
         const workspaceKeys = await ports.workspaces.keys({ session, cwd });
         const workspaceKey = workspaceKeys[0] ?? "";
+        // #endregion BLOCK_resolveWorkspace
+        // #region BLOCK_sealSnapshot
         const snapshot = await ports.snapshots.seal(session.id, () => {
           const skips: Array<{ id: string; reason: string }> = [];
           const profiles = ports.registry.profiles();
@@ -281,29 +267,23 @@ export function createPromptAssembler(ports: AssemblerPorts) {
             profileIds: profiles.map((profile) => profile.id),
           });
           if (reset) {
-            log("debug", "prompt-profiles stale workspace choice reset", {
+            log("debug", "prompt-profiles stale workspace choice fell back", {
               sessionId: session.id,
               workspaceKey,
             });
           }
           const profile = profiles.find((row) => row.id === profileId);
           const sections = new Map(ports.registry.sections().map((row) => [row.id, row]));
-          for (const ref of profile?.sections ?? []) {
-            if (!sections.has(ref.id)) log("warn", "prompt-profiles missing section", { profileId, sectionId: ref.id });
-          }
           const sealed = buildSnapshot({
             profile,
             sectionsById: sections,
             isSubagent: isSubagent(agent),
             isFork: isFork(agent),
-            // Seal-time interpolation: variables of THIS assembly, final text
-            // stored, never re-interpolated.
             variables: assembly.variables ?? {},
             warn: (message, details) => log("warn", message, details),
             onSkip: (skip) => skips.push(skip),
           });
-          // Kept deliberately: the user can send these lines when a chip choice
-          // does not reach the prompt.
+          // Seal diagnostics include selected and skipped sections for troubleshooting.
           log("info", "prompt-profiles seal", {
             sessionId: session.id,
             workspaceKey,
@@ -315,20 +295,23 @@ export function createPromptAssembler(ports: AssemblerPorts) {
           });
           return sealed;
         });
+        // #endregion BLOCK_sealSnapshot
+        // #region BLOCK_planInsertion
         if (snapshot.sections.length) {
-          // planInsertion returns BASE indices into the original array; splicing
-          // from LAST to FIRST keeps earlier indices valid and preserves
-          // ascending order. The profile's order reaches the assembly
-          // UNCHANGED — equal orders are never shifted.
           const planned = planInsertion({
             snapshot,
             assemblySections: assembly.sections,
             builtinOrdersByName: ports.orders.ordersByName(),
           });
+          // #endregion BLOCK_planInsertion
+          // #region BLOCK_spliceSections
+          // Descending splice keeps earlier base indices valid.
           for (let i = planned.length - 1; i >= 0; i--) {
             const { index, ...entry } = planned[i];
             assembly.sections.splice(index, 0, entry);
           }
+          // #endregion BLOCK_spliceSections
+          // #region BLOCK_reportAssembly
           log("debug", "prompt-profiles inserted", {
             sessionId: session.id,
             workspaceKey,
@@ -345,7 +328,9 @@ export function createPromptAssembler(ports: AssemblerPorts) {
       } catch (error) {
         log("warn", "prompt-profiles snapshot unavailable; prompt unchanged", { sessionId: session.id, error });
       }
+      // #endregion BLOCK_reportAssembly
     },
+    // #endregion METHOD_apply
   };
 }
 // #endregion FUNC_createPromptAssembler

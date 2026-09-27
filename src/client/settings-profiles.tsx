@@ -1,21 +1,10 @@
 /** #region moduleContract
  * @modulecontract
- * @purpose The Profiles tab of the settings page: the profile list with
- *   drill-down, modal-free creation (write a default title → poll → open the
- *   outline with the title focused), duplicate/delete through the optimistic
- *   mutation flow, and the composed outline editor (title, refs, scope,
- *   drag/keyboard reorder) that IS the profile editor.
- * @scope
- *  - `ProfilesTab`, `ProfileOutline` and `AddSectionPicker`.
- *  - NOT: the Sections/Preview tabs, the api facade or the host rules.
+ * @purpose The Profiles tab: profile list with drill-down, modal-free
+ *   creation and the composed outline editor.
  * @invariants
- *  - A ref is identified by its OCCURRENCE (its index in `refs`, carried as
- *    `row.seq`), never by its section id: one profile may reference the same
- *    section twice and those refs must move/scope/remove independently.
- *  - Dragging never writes a half-step: the new order is the integer rule in
- *    `insertionOrders`, and the ref also MOVES in the array, because equal
- *    orders are broken by position.
- * @keywords settings, profiles tab, outline, drag reorder, add section picker
+ *  - A ref is addressed by occurrence (`row.seq`), never by section id.
+ *  - Reorders write integer orders from `insertionOrders` and move the ref too.
  * #endregion moduleContract */
 
 import {
@@ -56,7 +45,6 @@ import {
   DefaultMenu,
   type DragEventLike,
   fieldStyle,
-  flexFill,
   iconControl,
   inlineError,
   type KeyboardEventLike,
@@ -65,7 +53,6 @@ import {
   type ValueChangeEvent,
 } from "./ui.tsx";
 
-// #region TYPE_profilesTab
 export interface ProfilesTabProps {
   state: StateDocument;
   api: RemoteApi;
@@ -79,7 +66,7 @@ export interface ProfilesTabProps {
   createFlow?: CreateFlow;
 }
 
-export interface AddSectionPickerProps {
+interface AddSectionPickerProps {
   sections: RowEntry[];
   alreadyIn: Set<string>;
   onAdd: (ids: string[]) => void;
@@ -87,7 +74,7 @@ export interface AddSectionPickerProps {
   t: Translate;
 }
 
-export interface ProfileOutlineProps {
+interface ProfileOutlineProps {
   profile: RowEntry;
   state: StateDocument;
   api: RemoteApi;
@@ -98,13 +85,9 @@ export interface ProfileOutlineProps {
   onOpenSection: (id: string) => void;
   autoFocusTitle: boolean;
 }
-// #endregion TYPE_profilesTab
 
 // #region COMPONENT_AddSectionPicker
-/**
- * @purpose Picker with search and multi-select that adds existing sections
- *   to a profile (the ONLY add path — cross-tab drag is impossible).
- */
+/** @purpose Searchable multi-select picker that adds existing sections to a profile. */
 export function AddSectionPicker({
   sections,
   alreadyIn,
@@ -165,12 +148,7 @@ export function AddSectionPicker({
 // #endregion COMPONENT_AddSectionPicker
 
 // #region COMPONENT_ProfileOutline
-/**
- * @purpose The profile composition form: editable title (whole-object
- *   autosave), outline of built-ins (read-only) and our rows with scope
- *   selector, ↑↓ reorder, numeric order field, add-section picker, and
- *   the complete-mode warning.
- */
+/** @purpose The profile composition editor: title autosave, outline rows, add picker. */
 export function ProfileOutline({
   profile,
   state,
@@ -188,7 +166,7 @@ export function ProfileOutline({
   const [scopeOpen, setScopeOpen] = React.useState<number | null>(null);
   const [error, setError] = React.useState("");
   const titleRef = React.useRef<HTMLInputElement | null>(null);
-  useFocusSelect(titleRef, autoFocusTitle === true);
+  useFocusSelect(titleRef, autoFocusTitle);
   const sectionsById = new Map((state.sections ?? []).map((s) => [refIdOf(s) ?? "", s]));
   const builtinOrders = state.builtinOrders ?? {};
   // Our rows in profile order (broken refs are not reorderable).
@@ -214,14 +192,9 @@ export function ProfileOutline({
     onBack();
   };
   const writeRefs = (next: SectionRef[]) => setRefs(next);
-  // #region BLOCK_dragReorder HTML5 drag & drop between INSERTION BOUNDARIES.
-  // Every gap between the rendered rows is a target — including the gaps
-  // above the first and below the last and the gaps around built-in rows
-  // (built-ins are never dragged, only aimed at). The new order is the
-  // integer rule in `insertionOrders`. A ref is identified by its OCCURRENCE
-  // (its index in `refs`, carried as `row.seq`), never by its section id:
-  // one profile may legitimately reference the same section twice, and those
-  // two refs must move/scope/remove independently.
+  // #region BLOCK_dragReorder Reorder by dragging a row onto an insertion gap.
+  // Gaps include the ends and the neighbours of built-in rows; refs are
+  // addressed by occurrence (`row.seq`) so duplicate refs stay independent.
   const [dragId, setDragId] = React.useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = React.useState<number | null>(null);
   // Remove-from-profile confirmation.
@@ -319,17 +292,24 @@ export function ProfileOutline({
     const ownIndex = rows.findIndex((row) => row.kind === "ours" && row.seq === fromSeq);
     if (ownIndex < 0 || ownIndex === index || ownIndex === index - 1) return;
     const withOrder = refs.map((ref, i) => (i === fromSeq ? { ...ref, order } : ref));
-    // Also MOVE the ref in the profile array to the drop position. The order
-    // may tie with the next row (legal), and the ties are broken by the ref's
-    // position in the profile — so that position has to match the drop.
-    const movedSeqs = rows
-      .filter((row): row is OursOutlineRow => row.kind === "ours")
-      .map((row) => row.seq)
-      .filter((seq) => seq !== fromSeq);
-    const aboveCount = rows.slice(0, index).filter((row) => row.kind === "ours" && row.seq !== fromSeq).length;
-    movedSeqs.splice(aboveCount, 0, fromSeq);
-    const rest = withOrder.map((_, i) => i).filter((i) => !movedSeqs.includes(i));
-    writeRefs([...movedSeqs, ...rest].map((i) => withOrder[i]));
+    const moved = withOrder[fromSeq];
+    const remaining = withOrder.filter((_, i) => i !== fromSeq);
+    // Insert before the first ref at or below the drop gap, so every other
+    // (especially broken) ref keeps its position; duplicates stay separate
+    // because both sides are addressed by occurrence index.
+    let insertAt = remaining.length;
+    for (let r = index; r < rows.length; r++) {
+      const row = rows[r];
+      if ((row.kind === "ours" || row.kind === "broken") && row.seq !== fromSeq) {
+        const pos = remaining.indexOf(withOrder[row.seq]);
+        if (pos >= 0) {
+          insertAt = pos;
+          break;
+        }
+      }
+    }
+    remaining.splice(insertAt, 0, moved);
+    writeRefs(remaining);
   };
   // Keyboard path for the drag grip: ↑/↓ move the row one rendered position,
   // reusing the same boundary/order math as a drop (gap above the previous
@@ -368,7 +348,7 @@ export function ProfileOutline({
       return (
         <div key={row.key} style={{ ...rowStyle, opacity: 0.55 }}>
           <span style={{ width: "64px", fontVariantNumeric: "tabular-nums" }}>{String(row.order)}</span>
-          <span {...flexFill}>{row.name}</span>
+          <span>{row.name}</span>
           <Tag>{t("builtIn")}</Tag>
         </div>
       );
@@ -377,7 +357,7 @@ export function ProfileOutline({
       return (
         <div key={row.key} style={{ ...rowStyle, color: "var(--dsw-alias-state-warning-primary, orange)" }}>
           <span style={{ width: "64px", fontVariantNumeric: "tabular-nums" }}>{String(row.ref.order)}</span>
-          <span {...flexFill}>
+          <span>
             {row.ref.id}
             {" — "}
             {t("missingSection")}
@@ -455,6 +435,7 @@ export function ProfileOutline({
           ref={titleRef}
           value={title}
           onChange={(e: ValueChangeEvent) => setTitle(e.target.value)}
+          onBlur={flushTitle}
           style={{ ...fieldStyle, width: "100%", boxSizing: "border-box", marginTop: "4px" }}
         />
       </label>
@@ -505,11 +486,7 @@ export function ProfileOutline({
 // #endregion COMPONENT_ProfileOutline
 
 // #region COMPONENT_ProfilesTab
-/**
- * @purpose Profile list, modal-free new-profile creation (POST a default
- *   title → poll → drill into the outline with the title focused and
- *   selected), default selector, drill-down.
- */
+/** @purpose Profile list with modal-free creation, default selector and drill-down. */
 export function ProfilesTab({
   state,
   api,
@@ -527,54 +504,64 @@ export function ProfilesTab({
   const [justCreated, setJustCreated] = React.useState<string | null>(null);
   const [mutating, setMutating] = React.useState(false);
   const profiles = [...(state.profiles ?? [])].sort((a, b) => a.title.localeCompare(b.title));
-  const flow =
-    createFlow ??
-    makeCreateFlow({
-      api,
-      t,
-      notify,
-      reload,
-      getState: () => state,
-      onState: setState,
-      onPending: setCreating,
-      onDrill: (id) => {
-        setJustCreated(id);
-        setDrill(id);
-      },
-    });
+  // Memoized on the current values so the flow never runs against stale
+  // state, while the instance (and its busy guard) survives ordinary renders.
+  const flow = React.useMemo(
+    () =>
+      createFlow ??
+      makeCreateFlow({
+        api,
+        t,
+        notify,
+        reload,
+        getState: () => state,
+        onState: setState,
+        onPending: setCreating,
+        onDrill: (id) => {
+          setJustCreated(id);
+          setDrill(id);
+        },
+      }),
+    [createFlow, api, t, notify, reload, state, setState, setDrill],
+  );
   // Duplicate/delete create/remove rows: they only become visible after the
   // host recomposes and mounts them (HMR), so both go through the
   // optimistic-update-and-poll mutation flow.
-  const mutation = makeMutationFlow({
-    api,
-    t,
-    notify,
-    reload,
-    getState: () => state,
-    onState: setState,
-    onPending: setMutating,
-  });
-  if (drill) {
-    const profile = profiles.find((p) => idOf(p) === drill);
-    if (profile) {
-      return (
-        <ProfileOutline
-          profile={profile}
-          state={state}
-          api={api}
-          reload={reload}
-          t={t}
-          notify={notify}
-          autoFocusTitle={justCreated === drill}
-          onBack={() => {
-            setJustCreated(null);
-            setDrill(null);
-          }}
-          onOpenSection={onOpenSection}
-        />
-      );
-    }
-    setDrill(null);
+  const mutation = React.useMemo(
+    () =>
+      makeMutationFlow({
+        api,
+        t,
+        notify,
+        reload,
+        getState: () => state,
+        onState: setState,
+        onPending: setMutating,
+      }),
+    [api, t, notify, reload, state, setState],
+  );
+  const drilledProfile = drill ? (profiles.find((p) => idOf(p) === drill) ?? null) : null;
+  React.useEffect(() => {
+    if (drill && !drilledProfile) setDrill(null);
+  }, [drill, drilledProfile, setDrill]);
+  if (drilledProfile) {
+    const profile = drilledProfile;
+    return (
+      <ProfileOutline
+        profile={profile}
+        state={state}
+        api={api}
+        reload={reload}
+        t={t}
+        notify={notify}
+        autoFocusTitle={justCreated === drill}
+        onBack={() => {
+          setJustCreated(null);
+          setDrill(null);
+        }}
+        onOpenSection={onOpenSection}
+      />
+    );
   }
   const duplicateProfile = (profile: RowEntry) =>
     mutation.run({
@@ -604,9 +591,9 @@ export function ProfilesTab({
       {profiles.length === 0 && <p style={mutedStyle}>{t("noProfiles")}</p>}
       {profiles.map((profile) => (
         <div key={idOf(profile)} style={{ ...rowStyle, cursor: "pointer" }} onClick={() => setDrill(idOf(profile))}>
-          <span {...flexFill}>{profile.title}</span>
+          <span>{profile.title}</span>
           <span style={mutedStyle}>{`${(profile.sections ?? []).length} ${t("sectionsWord")}`}</span>
-          {iconControl("edit", IconEditOutlineRegular, () => setDrill(idOf(profile)))}
+          {iconControl(t("editProfile"), IconEditOutlineRegular, () => setDrill(idOf(profile)))}
           {iconControl(
             t("duplicate"),
             IconCopyOutlineRegular,

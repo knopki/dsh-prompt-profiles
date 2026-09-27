@@ -5,8 +5,9 @@
  * @purpose Verify the SECTION_ORDERS mirror: pure parse without eval,
  *   descriptive failures on garbage, warn-and-fallback loading, and the
  *   name-keyed view used for assembly anchoring.
- * @scope lib/mirror.js and lib/builtin-orders.js (PLAN step 2). The
- *   real-file test skips gracefully when dsh-system-prompt is unresolvable.
+ * @scope The mirror parse plus the name-keyed view for assembly anchoring.
+ *   The real-file test skips gracefully when the system-prompt package is
+ *   unresolvable.
  * @rationale
  *  - Q: Why inject deps (resolveFile/readFile) instead of real fs in the
  *    fallback tests?
@@ -39,7 +40,6 @@ const SECTION_ORDERS = {
 const AFTER = 1;
 `;
 
-// #region SECTION_parse
 test("parseBuiltinOrders extracts the table without eval", () => {
   const orders = parseBuiltinOrders(SAMPLE);
   assert.deepEqual(orders, {
@@ -58,7 +58,7 @@ test("parseBuiltinOrders throws descriptively on garbage input", () => {
   assert.throws(() => parseBuiltinOrders("const SECTION_ORDERS = { /* empty */ };"), /not a plain key: number pair/);
 });
 
-test("parseBuiltinOrders refuses a PARTIALLY parseable table (M5)", () => {
+test("parseBuiltinOrders refuses a PARTIALLY parseable table", () => {
   // One changed upstream line must fail the whole parse, not silently drop it.
   assert.throws(
     () =>
@@ -73,9 +73,7 @@ test("parseBuiltinOrders refuses a PARTIALLY parseable table (M5)", () => {
     /line 1 is not a plain key: number pair/,
   );
 });
-// #endregion SECTION_parse
 
-// #region SECTION_realFile
 test("loadBuiltinOrders parses the real installed dsh-system-prompt", {
   skip: (() => {
     try {
@@ -96,9 +94,7 @@ test("loadBuiltinOrders parses the real installed dsh-system-prompt", {
   assert.deepEqual(result.orders, BUILTIN_ORDERS, "runtime table matches the frozen copy");
   assert.deepEqual(warnings, [], "no fallback and no divergence warning");
 });
-// #endregion SECTION_realFile
 
-// #region SECTION_fallback
 test("loadBuiltinOrders falls back on garbage input and warns", () => {
   const warnings = [];
   const result = loadBuiltinOrders({
@@ -144,10 +140,8 @@ test("loadBuiltinOrders warns when the runtime table diverges from the copy", ()
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /differs/);
 });
-// #endregion SECTION_fallback
 
-// #region SECTION_nameView
-test("loadBuiltinOrders reports built-in keys with no assembled-name mapping (M5)", () => {
+test("loadBuiltinOrders reports built-in keys with no assembled-name mapping", () => {
   const warnings = [];
   const upgraded = SAMPLE.replace("TOOL_BASH: 1e3,", "TOOL_BASH: 1e3,\n\tTOOL_FRESH: 1111,");
   const result = loadBuiltinOrders({
@@ -170,10 +164,8 @@ test("builtinOrdersByName maps verified keys to dotted section names", () => {
   assert.equal(byName["deployment:persona-suffix"], 10200);
   assert.ok(Object.isFrozen(byName));
 });
-// #endregion SECTION_nameView
 
-// #region SECTION_nameFreeze
-/** @purpose M5: pin the name mapping and the total built-in set so a DSH upgrade breaks a test instead of silently losing anchors. */
+/** @purpose Pin the name mapping and the total built-in set so a platform upgrade breaks a test instead of silently losing anchors. */
 test("builtin name mapping is frozen against the installed built-in set", () => {
   const EXPECTED_NAMES = [
     "app:web-surface",
@@ -215,4 +207,3 @@ test("builtin name mapping is frozen against the installed built-in set", () => 
   assert.deepEqual(unmappedBuiltinKeys({ ...BUILTIN_ORDERS, TOOL_FRESH: 1 }), ["TOOL_FRESH"]);
   assert.equal(builtinOrdersByName({ ...BUILTIN_ORDERS, TOOL_FRESH: 1 })["tool:fresh"], undefined);
 });
-// #endregion SECTION_nameFreeze

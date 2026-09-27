@@ -1,5 +1,10 @@
-// jsdom has no ResizeObserver; the primitives' Tooltip (and the observed slot
-// outlet) only need it to exist — nothing in these tests measures a viewport.
+/**
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Cover the jsdom gap the client specs need: a ResizeObserver the
+ *   primitives' Tooltip only needs to exist — nothing measures a viewport.
+ * #endregion moduleContract
+ */
 class ResizeObserverStub {
   observe(): void {}
   unobserve(): void {}

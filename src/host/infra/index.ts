@@ -1,18 +1,14 @@
 /**
  * #region moduleContract
  * @modulecontract
- * @purpose Offer every driven adapter of the prompt-profiles host from one
- *   import, plus the composition helper that turns the raw Cordis services
- *   into the `HostPorts` bag the operation set consumes.
+ * @purpose Offer every driven adapter from one import, plus the helper turning
+ *   raw services into the `HostPorts` bag the operation set consumes.
  * @scope
  *  - Re-exports of the adapters in this directory and `createHostPorts`.
- *  - NOT: use cases (host/application/) or the port interfaces themselves
- *    (host/application/ports.ts).
+ *  - NOT: use cases or the application port interfaces themselves.
  * @invariants
- *  - Optional services are read at CALL time, so a late-appearing service is
- *    picked up and an absent/throwing one degrades per operation.
- *  - Every adapter shares the module-level patch mutex exported as `writeLock`.
- * @keywords infra, adapters, barrel, composition, ports
+ *  - Optional services are read at call time; every adapter shares the
+ *    module-level patch mutex exported as `writeLock`.
  * #endregion moduleContract
  */
 
@@ -23,12 +19,11 @@ import type {
   LoaderRegistryPort,
   LogPort,
   WarnFn,
-  WorkspaceRegistryPort,
 } from "../application/ports.ts";
 import type { ConfigId, ProfileView, SectionView, UsedInEntry } from "../domain/model.ts";
 import { createPatchPort, type PatchEditor, writeLock } from "./patch-writer.ts";
 import { createSettingsPort, type RawSettingsService } from "./settings-adapter.ts";
-import { createWorkspaceKeys } from "./workspace-adapter.ts";
+import { createWorkspaceKeys, type WorkspaceRegistryPort } from "./workspace-adapter.ts";
 
 export type { BuiltinOrdersMirror, BuiltinOrdersSeams, LoadBuiltinOrdersOptions } from "./builtin-orders.ts";
 export {
@@ -39,7 +34,7 @@ export {
   unmappedBuiltinKeys,
 } from "./builtin-orders.ts";
 export { insertionIndex, PromptProfilesRegistry } from "./loader-registry.ts";
-export type { PatchDocument, PatchEditor } from "./patch-writer.ts";
+export type { PatchEditor } from "./patch-writer.ts";
 export {
   createPatchPort,
   disableRow,
@@ -59,10 +54,14 @@ export type { RetryingCache, SessionSnapshotsOptions, StorageDomainHandle } from
 export { createSessionSnapshots, retryingCache, sealSnapshot } from "./session-snapshots.ts";
 export type { RawSettingsService } from "./settings-adapter.ts";
 export { createSettingsPort } from "./settings-adapter.ts";
+export type { WorkspaceRegistryPort } from "./workspace-adapter.ts";
 export { createWorkspaceKeys, resolveWorkspaceKeys } from "./workspace-adapter.ts";
 
-// #region TYPE_service
-/** The `promptProfiles` service surface the composition helper reads. */
+/**
+ * The `promptProfiles` service surface the composition helper reads.
+ *
+ * @purpose Describe the registry service `createHostPorts` adapts.
+ */
 export interface RegistryService {
   sections(): SectionView[];
   profiles(): ProfileView[];
@@ -75,23 +74,19 @@ export interface RegistryService {
   builtinOrdersByName?(): Record<string, number>;
 }
 
-export interface HostPortsOptions {
+/**
+ * @purpose Options for composing the `HostPorts` bag.
+ */
+interface HostPortsOptions {
   service: RegistryService;
   /** Cordis REFLECT reader for the optional driven services. */
   getService?: (name: string) => unknown;
   warn?: WarnFn;
   log?: LogPort;
 }
-// #endregion TYPE_service
 
 // #region FUNC_createHostPorts
-/**
- * @purpose Compose the `HostPorts` bag for one operation set from the
- *   registry service and a REFLECT reader. The registry and orders ports are
- *   thin views; settings, patch, presets and workspaces are wrapped in their
- *   adapters on EVERY read, which is what keeps late service appearance and
- *   per-call degradation intact.
- */
+/** @purpose Compose the `HostPorts` bag from the registry service and a REFLECT reader. */
 export function createHostPorts({ service, getService, warn, log }: HostPortsOptions): HostPorts {
   const read = (name: string): unknown => {
     try {

@@ -1,21 +1,17 @@
-// #region MODULE_CONTRACT
-// PURPOSE: Prove the phase-2b CLIENT Remote half on real machinery: the
-//   built lib/client.js contribution mounts through the REAL Client Remote
-//   service (@deepseek-ai/dsh-api-gateway client face) on a REAL Cordis
-//   Context with the REAL dsh-typert-registry, with only the Connection
-//   carrier replaced by @deepseek-ai/dsh-remote-mock (the exact seam the
-//   platform's whole-client tier binds as `{ rpc: mock.rpc }`).
-// SCOPE: Mount, exact wire args at the mock, failure-envelope surfacing into
-//   the UI error path (runSave notify), and disposal removing the namespace.
-//   NOT covered here (honest limits, see migration log): DOM rendering of the
-//   chip/settings page (the published test-runtime ships neither the jsdom
-//   slot bench's React doubles for our primitives nor the whole-client
-//   `createClientTest`/`webApp` assembly — its published lib/ has only the
-//   slot tier and a TestRemote whose $mount rejects by design).
-// INVARIANTS: The plugin under test is the BUILT lib/client.js artifact (the
-//   same bytes the profile serves), loaded through the ModuleLoader handshake
-//   exactly like the browser; assertions are on real gateway-validated calls.
-// #endregion MODULE_CONTRACT
+/**
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Prove the client Remote half on real machinery: the built
+ *   lib/client.js contribution mounts through the real Client Remote service
+ *   on a real Cordis Context with the real typert registry, with only the
+ *   Connection carrier replaced by the mock gateway client.
+ * @scope Mount, the exact wire arguments at the mock, failure-envelope
+ *   surfacing into the UI error path, and disposal of the namespace.
+ *   NOT: DOM rendering of the chip and settings page (test/client/**).
+ * @invariants The plugin under test is the BUILT lib/client.js artifact,
+ *   loaded through the ModuleLoader handshake exactly like the browser.
+ * #endregion moduleContract
+ */
 
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -60,7 +56,6 @@ function loadClientBundle(sourcePath, requireTable) {
 }
 // #endregion FUNC_loadClientBundle
 
-// #region FUNC_makeBench
 /**
  * @purpose Assemble the bench: real Context + real TypertRegistry + the REAL
  *   Client Remote service (api-gateway client face) over a stub Connection
@@ -143,9 +138,7 @@ async function waitFor(predicate, label, timeoutMs = 2000) {
   }
   throw new Error(`waitFor timed out on ${label}`);
 }
-// #endregion FUNC_makeBench
 
-// #region SECTION_specs
 test("the built client contribution mounts: namespace service reachable via inject only", async () => {
   const bench = await makeBench();
   try {
@@ -313,4 +306,3 @@ test("disposing the plugin removes the namespace", async () => {
   expect(bench.ctx.get("remote.promptProfiles")).toBeUndefined();
   await bench.mock.assertNoUnmatched();
 });
-// #endregion SECTION_specs

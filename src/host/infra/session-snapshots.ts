@@ -2,52 +2,55 @@
  * #region moduleContract
  * @modulecontract
  * @purpose Persist each session's sealed prompt-profile decision durably,
- *   exactly once per process, behind the `SessionSnapshotsPort` the assembler
- *   consumes.
+ *   exactly once per process, behind the `SessionSnapshotsPort`.
  * @scope
  *  - The retrying storage open, the decide-once/persist-durable-first sealing
- *    policy, and the in-memory pin that survives a storage outage.
- *  - NOT: what a snapshot contains (domain + host/application/assembler.ts) or
- *    the record schema (host/entrypoints/plugin.ts owns the prompt_profiles
- *    domain definition).
+ *    policy, and the in-memory pin surviving a storage outage.
+ *  - NOT: snapshot contents or the record schema.
  * @invariants
- *  - A persisted record is NEVER rebuilt from live configuration — an EMPTY
- *    one included, so a session that started without a profile stays
- *    unprofiled (SPEC §2 decision 9).
- *  - A rejected open is not cached: the next call starts a fresh attempt.
- *  - Storage failures degrade to the in-memory decision, retried on the next
- *    assembly.
- * @keywords session snapshot, sealing, storage domain, retry, durable
+ *  - A persisted record is never rebuilt from live configuration; a rejected
+ *    open is not cached. Storage failures degrade to the in-memory decision.
  * #endregion moduleContract
  */
 
-import type { SessionSnapshotsPort, SnapshotTable } from "../application/ports.ts";
+import type { SessionSnapshotsPort } from "../application/ports.ts";
 import type { Snapshot } from "../domain/model.ts";
 
-// #region TYPE_storage
-/** The open storage-domain handle as sealing uses it. */
+/** The `prompt_profiles.sessions` table as sealing uses it. */
+interface SnapshotTable {
+  get(key: string): Snapshot | undefined;
+  put(key: string, value: Snapshot): unknown;
+}
+
+/**
+ * The open storage-domain handle as sealing uses it.
+ *
+ * @purpose Open the snapshot table sealing reads and writes.
+ */
 export interface StorageDomainHandle {
   table(name: string): SnapshotTable;
   close(): Promise<unknown> | unknown;
 }
 
+/**
+ * @purpose Options for binding the sealing policy to one storage scope.
+ */
 export interface SessionSnapshotsOptions {
   /** Open the `prompt_profiles` domain; failures must reject, not throw synchronously. */
   openDomain(): Promise<StorageDomainHandle>;
   warn?(message: string, details?: unknown): void;
 }
-// #endregion TYPE_storage
-
-// #region TYPE_retryingCache
-/** A cached async getter that also exposes the pending promise without starting one. */
-export type RetryingCache<T> = (() => Promise<T>) & { cached: () => Promise<T> | null };
 
 /**
- * @purpose Cache a pending asynchronous open (storage domain) but DROP the
- *   cache on rejection, so a transient failure disables nothing permanently —
- *   the next call starts a fresh attempt.
- * @invariants A fulfilled promise stays cached forever; a rejected one is
- *   removed synchronously before the rejection propagates.
+ * A cached async getter that also exposes the pending promise without starting one.
+ *
+ * @purpose Share one in-flight open while allowing a fresh attempt after failure.
+ */
+export type RetryingCache<T> = (() => Promise<T>) & { cached: () => Promise<T> | null };
+
+// #region FUNC_retryingCache
+/**
+ * @purpose Cache a pending asynchronous open but drop the cache on rejection.
  */
 export function retryingCache<T>(create: () => Promise<T>): RetryingCache<T> {
   let cached: Promise<T> | null = null;
@@ -65,16 +68,13 @@ export function retryingCache<T>(create: () => Promise<T>): RetryingCache<T> {
   };
   return Object.assign(get, { cached: () => cached });
 }
-// #endregion TYPE_retryingCache
+// #endregion FUNC_retryingCache
 
 // #region FUNC_sealSnapshot
 /**
- * @purpose Decide a session's snapshot EXACTLY ONCE and keep it stable: an
- *   already-persisted record — EMPTY INCLUDED — is the session's final
- *   decision, so a session that started without a profile never receives one
- *   mid-session. A fresh decision is memoized and written durable-first (an
- *   explicit empty record for "no profile"); storage failures degrade to the
- *   in-memory decision and are retried on the next assembly.
+ * @purpose Decide a session's snapshot exactly once and keep it stable: an
+ *   already-persisted record, empty included, is final. Fresh decisions are
+ *   memoized and written durable-first; storage failures degrade to memory.
  */
 export async function sealSnapshot<T>({
   sessionId,
@@ -126,11 +126,7 @@ export async function sealSnapshot<T>({
 // #endregion FUNC_sealSnapshot
 
 // #region FUNC_createSessionSnapshots
-/**
- * @purpose Bind the sealing policy to one storage scope: one cached open per
- *   owner, one in-flight seal per session, and one memo of decided snapshots,
- *   all released together by `close()`.
- */
+/** @purpose Bind the sealing policy to one storage scope, all released by `close()`. */
 export function createSessionSnapshots({ openDomain, warn }: SessionSnapshotsOptions): SessionSnapshotsPort {
   const open = retryingCache(openDomain);
   const pending = new Map<string, Promise<Snapshot>>();

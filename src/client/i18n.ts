@@ -1,16 +1,8 @@
 /** #region moduleContract
  * @modulecontract
- * @purpose The client's three dictionaries and the translation entry point:
- *   `en` is the fallback every key must exist in, `ru`/`zh` are registered
- *   beside it, and `boundT` translates through the locale service the plugin
- *   entry binds once `apply` runs.
- * @scope
- *  - The dictionaries, the registered `messages` bundle and the binder.
- *  - NOT: any rendering (components receive `t` as a prop from the slot).
+ * @purpose The three client dictionaries and the translation entry point.
  * @invariants
- *  - `ru` and `zh` are key-for-key identical to `en`; a missing key is a
- *    compile error and, at runtime, the lookup falls back to the key itself.
- * @keywords i18n, dictionaries, locale, prompt profiles strings
+ *  - `ru` and `zh` carry exactly the keys of `en`; lookup falls back to the key.
  * #endregion moduleContract */
 
 export const NS = "promptProfiles";
@@ -41,6 +33,8 @@ export const en = {
   createError: "Could not create:",
   createTimeout: "the new item did not appear in time — retry or reload the page.",
   defaultForNewSessions: "Default for new sessions",
+  previewProfile: "Preview",
+  editProfile: "Edit",
   builtIn: "built-in",
   builtInNote: "Some built-in sections may be absent in a given mode.",
   scopeLabel: "Scope",
@@ -92,7 +86,7 @@ export const en = {
 };
 
 /** The locale key set `en` defines; `ru`/`zh` must carry exactly these keys. */
-export type MessageKey = keyof typeof en;
+type MessageKey = keyof typeof en;
 
 export const ru: Record<MessageKey, string> = {
   // chip
@@ -120,6 +114,8 @@ export const ru: Record<MessageKey, string> = {
   createError: "Не удалось создать:",
   createTimeout: "новый элемент не появился вовремя — повторите или перезагрузите страницу.",
   defaultForNewSessions: "По умолчанию для новых сессий",
+  previewProfile: "Предпросмотр",
+  editProfile: "Изменить",
   builtIn: "встроенная",
   builtInNote: "Часть встроенных секций может отсутствовать в конкретном режиме.",
   scopeLabel: "Область",
@@ -195,6 +191,8 @@ export const zh: Record<MessageKey, string> = {
   createError: "创建失败：",
   createTimeout: "新条目未能及时出现——请重试或刷新页面。",
   defaultForNewSessions: "新会话默认",
+  previewProfile: "预览",
+  editProfile: "编辑",
   builtIn: "内置",
   builtInNote: "部分内置片段在特定模式下可能不存在。",
   scopeLabel: "作用范围",
@@ -253,12 +251,16 @@ export type Translate = (key: string) => string;
 // Until `apply` binds the service, English is the only content that exists.
 let bound: Translate = (key) => en[key as MessageKey] ?? key;
 
+// #region FUNC_boundT
 /** @purpose Translate through the bound locale service, else through `en`. */
 export function boundT(key: string): string {
   return bound(key);
 }
+// #endregion FUNC_boundT
 
+// #region FUNC_bindT
 /** @purpose Install the locale service's per-key binder (called once by the plugin entry). */
 export function bindT(translate: Translate): void {
   bound = translate;
 }
+// #endregion FUNC_bindT

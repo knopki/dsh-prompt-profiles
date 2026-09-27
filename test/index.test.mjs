@@ -6,10 +6,9 @@
  *   dsh-storage-domain reopens through valueSchema.parse), the plugin
  *   constructs against stubbed DSH services, and the assembler wiring seals
  *   final text with interpolate:false while pinning the per-session decision
- *   in memory (astra findings A, D, G).
+ *   in memory.
  * @scope node:test with a stubbed Cordis context and fake storageDomain;
- *   NOT: the real loader lifecycle (spike R1/R2 proved that against a live
- *   host) or client behavior (lib/client.js has its own suite).
+ *   NOT: the real loader lifecycle or client behavior.
  * #endregion moduleContract
  */
 
@@ -41,12 +40,10 @@ function stubContext() {
 }
 // #endregion FUNC_stubContext
 
-// #region TEST_zodDomainSpec
-/** @purpose Astra finding A: Schemastery has no `.nullable()` — building this
- *  spec used to throw a TypeError at module evaluation, before mount. The
- *  import above already proves evaluation succeeds; here we additionally
- *  verify the spec satisfies the dsh-storage-domain protocol (Zod record
- *  schemas reopened via `valueSchema.parse`). */
+/** @purpose Schemastery has no `.nullable()` — the spec must build at module
+ *  evaluation (the import above already proves it) and satisfy the
+ *  storage-domain protocol (Zod record schemas reopened via
+ *  `valueSchema.parse`). */
 test("module evaluates; the domain spec is the Zod protocol dsh-storage-domain parses", () => {
   const table = promptProfilesDomain.tables.sessions;
   assert.equal(typeof table.valueSchema.parse, "function", "records reopen through valueSchema.parse (Zod)");
@@ -64,9 +61,7 @@ test("module evaluates; the domain spec is the Zod protocol dsh-storage-domain p
   assert.throws(() => table.valueSchema.parse({ sections: [{ id: "x", order: "many", text: "t" }] }));
   assert.throws(() => table.valueSchema.parse({ sections: [{ id: "x", order: 1 }] }));
 });
-// #endregion TEST_zodDomainSpec
 
-// #region TEST_construction
 /** @purpose The service constructs and degrades with every DSH service stubbed. */
 test("plugin constructs against stubbed DSH services", () => {
   const ctx = stubContext();
@@ -84,7 +79,6 @@ test("plugin constructs against stubbed DSH services", () => {
   );
   dispose();
 });
-// #endregion TEST_construction
 
 // #region FUNC_reloadContext
 /** @purpose Reload stand: effect disposers are COLLECTED (like cordis), the injected typert registry throws on a duplicate endpoint (like the real TypertRegistry), and info/warn logs are captured. */
@@ -143,7 +137,6 @@ function reloadContext() {
 }
 // #endregion FUNC_reloadContext
 
-// #region TEST_reload
 /** @purpose HMR reload: mount → dispose the effects (as the loader does) → mount the SAME inject callback again; the Remote contribution must leave and come back without a duplicate-endpoint failure. */
 test("plugin mounts, disposes and remounts without duplicate-endpoint failures", async () => {
   const lc = reloadContext();
@@ -167,9 +160,7 @@ test("plugin mounts, disposes and remounts without duplicate-endpoint failures",
     "mount logged at info",
   );
 });
-// #endregion TEST_reload
 
-// #region TEST_assemblerWiring
 /** @purpose End-to-end smoke over the real listener: fake volatile config,
  *  fake storageDomain table, one profile section — the workspace key resolves
  *  to the SAME id the chip writes, the sealed text is interpolated once,
@@ -436,4 +427,3 @@ test("registerSection resolves source through ctx.get('configEditor') without in
     await rm(dir, { recursive: true, force: true });
   }
 });
-// #endregion TEST_assemblerWiring

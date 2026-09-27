@@ -4,22 +4,13 @@
  * @purpose Own the section row life cycle — create, whole-object update,
  *   delete/disable and the batch rename — as the one implementation every
  *   surface calls.
- * @scope
- *  - The four section operations and their payload rules (validation first).
- *  - Writes to EXISTING rows replace the WHOLE volatile config via
- *    settings.replace; creation/removal/disable go through the patch port;
- *    rename is the documented batch that touches the SECTION ONLY and returns
- *    `affectedProfiles` for the user to fix by hand.
- *  - NOT: pure id/reference/ordering rules (domain/) or the settings and patch
- *    mechanics themselves (infra/).
+ * @scope The four section operations and their payload rules (validation first).
+ *  - NOT: pure id/reference/ordering rules or the settings and patch mechanics.
  * @invariants
  *  - Every payload is validated BEFORE any write happens.
- *  - A section body may be empty/whitespace (SPEC §7).
- *  - FROZEN ID SCHEME: a created row's `config.id` IS its full row id
- *    (`prompt-section-<token>`) and the returned `configId`; existing rows with
- *    old bare config ids are never rewritten.
+ *  - An empty section body is valid and non-emitting.
+ *  - A created row's `config.id` IS its full row id; old bare config ids are never rewritten.
  *  - PROFILES ARE NEVER TOUCHED by rename.
- * @keywords sections, create, update, delete, rename, use cases
  * #endregion moduleContract
  */
 import { type UseCaseEnv } from "./env.ts";
@@ -48,12 +39,12 @@ export interface SectionRenameResult {
 }
 /** @purpose Build the four section operations over the shared environment. */
 export declare function createSectionCases(env: UseCaseEnv): {
-    /** Create a section row (SPEC §7: empty body allowed). */
+    /** @purpose Create a section row; an empty body is valid and non-emitting. */
     sectionCreate: (body?: unknown) => Promise<SectionCreateResult>;
-    /** Whole-object update of a section's volatile fields. */
+    /** @purpose Whole-object update of a section's volatile fields. */
     sectionUpdate: (body?: unknown) => Promise<SectionUpdateResult>;
-    /** Delete (or disable) a section row. */
+    /** @purpose Delete (or disable) a section row. */
     sectionDelete: (body?: unknown) => Promise<import("./env.ts").DeleteResult>;
-    /** Rename a section row; profiles are never rewritten. */
+    /** @purpose Rename a section row; profiles are never rewritten. */
     sectionRename: (body?: unknown) => Promise<SectionRenameResult>;
 };

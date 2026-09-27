@@ -1,17 +1,8 @@
 /** #region moduleContract
  * @modulecontract
- * @purpose The client's view of the promptProfiles documents it renders: the
- *   `/state` and `preview` responses plus the row/title/reference shapes the
- *   chip and the settings page read.
- * @scope
- *  - View interfaces only — no logic, no I/O.
- *  - NOT: the wire schemas themselves (src/shared/wire-schemas.ts) or the api
- *    facade (src/client/remote.ts).
+ * @purpose The client's view of the promptProfiles documents it renders.
  * @invariants
- *  - A row always carries its `title` (every host view has one); every other
- *    field is optional, and a missing value renders a fallback rather than
- *    throwing.
- * @keywords client model, state document, preview, profile row, section row
+ *  - A row always carries its `title`; other fields fall back, never throw.
  * #endregion moduleContract */
 /** The id surfaces of one row — `idOf` reads them in this order. */
 export interface RowIdentity {
@@ -31,11 +22,7 @@ export interface UsedInEntry {
     profileId: string;
     scope: string;
 }
-/**
- * One `/state` row. The wire declares open-shaped record views (jsonRow in
- * wire-schemas), so this is the union of the fields the UI reads; only
- * `title` is guaranteed, because every host view carries one.
- */
+/** One `/state` row: only `title` is guaranteed; the rest is optional. */
 export interface RowEntry extends RowIdentity {
     title: string;
     /** The unqualified patch id every write addresses; always present on a mounted row. */
@@ -48,7 +35,7 @@ export interface RowEntry extends RowIdentity {
     sections?: SectionRef[];
 }
 /** One agent-preset mode from `/state`, with the complete-mode flag. */
-export interface ModeEntry {
+interface ModeEntry {
     id: string;
     title?: string;
     complete?: boolean;
@@ -63,7 +50,7 @@ export interface StateDocument {
     revision?: number | null;
 }
 /** One section as the host preview reports it (ours or a collapsed built-in). */
-export interface PreviewSectionEntry {
+interface PreviewSectionEntry {
     id?: string;
     title?: string;
     name?: string;
@@ -74,7 +61,7 @@ export interface PreviewSectionEntry {
     kind?: string;
     ours?: boolean;
 }
-export interface PreviewSkippedEntry {
+interface PreviewSkippedEntry {
     id?: string;
     title?: string;
     reason?: string;
@@ -99,3 +86,4 @@ export interface RenameResponse {
         title?: string;
     }>;
 }
+export {};

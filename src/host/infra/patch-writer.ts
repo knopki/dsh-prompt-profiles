@@ -2,40 +2,16 @@
  * #region moduleContract
  * @modulecontract
  * @purpose Create, remove, disable, and prove ownership of composition rows in
- *   the user's cordis.patch.yml — operations config-editor cannot do, as it
- *   only overrides existing rows (SPEC §5.6, decision 18) — behind the
- *   `PatchPort` the operation set consumes.
+ *   the profile patch, behind the `PatchPort` the operation set consumes.
  * @scope
- *  - Parse/serialize with eemeli `yaml` using the same `!!js` customTag as
- *    config-editor, so comments and tag expressions survive round-trips.
- *  - `insertRow` / `removeRow` / `disableRow` / `provenance` plus the
- *    backup-and-rollback batch helper `withPatchBatch`, and the read-only
- *    `listRowIds` / `readPatchRows` queries (the authoritative patch view the
- *    API uses for pending-ref and profile-validity checks).
- *  - Atomic write (temp file + rename, mode 0o600) under ONE in-process mutex,
- *    exported as the shared `writeLock` port.
- *  - NOT: updating configs of existing rows (ctx.settings.mutate /
- *    configEditor.edit — SPEC §2 #19).
+ *  - Parse/serialize with the `!!js` yaml dialect so comments and tag
+ *    expressions survive round-trips; atomic writes plus backup-and-rollback batches.
+ *  - NOT: editing configs of existing rows (settings/config-editor own those).
  * @invariants
- *  - Every mutation by THIS bundle (writer ops and the API's settings.mutate
- *    via `writeLock`) passes through one module-level mutex; a validation
- *    or parse failure leaves the file byte-identical. When the host gate is
- *    installed (`setWriteGate`, dsh-hmr runExclusive) it wraps the ENTIRE
- *    read-modify-write — the whole batch, backup and rollback included — so
- *    raw writes serialize against config-editor/settings edits in this process
- *    (astra finding C). HMR transactions CANNOT be nested: nothing that takes
- *    hmr exclusivity itself (settings.mutate, configEditor.edit) may run
- *    inside the gate. RESIDUAL: other plugins' direct configEditor writes when
- *    hmr is absent, and any second DSH process (no cross-process lock).
- *  - `insert:` entries NEVER carry a patch-level `id`: insert-with-id means
- *    "append into that group" (spike R2), a different operation.
- *  - A bare override for an id no lower layer provides is skipped by the
- *    loader ("patch: entry %C not found"); disableRow only makes sense for ids
- *    a bundle actually provides.
- * @dependencies READS/WRITES the profile patch (configEditor.documentPath,
- *   read at call time); node:fs, node:crypto, eemeli `yaml`.
- * @keywords writer, patch port, insert row, remove row, disable row,
- *   provenance, mutex, rollback
+ *  - Every mutation passes through one module-level mutex; the optional host
+ *    gate wraps the whole read-modify-write. A parse or validation failure
+ *    leaves the file byte-identical.
+ *  - `insert:` entries never carry a patch-level `id`.
  * #endregion moduleContract
  */
 
@@ -56,23 +32,21 @@ import { toPatchId } from "../domain/ids.ts";
 export { toPatchId };
 
 /** A parsed patch document whose root is known to be a sequence. */
-export type PatchDocument = Omit<Document.Parsed, "contents"> & { contents: YAMLSeq<Node> };
+type PatchDocument = Omit<Document.Parsed, "contents"> & { contents: YAMLSeq<Node> };
 
 /** One document mutation: a throw aborts the write, `false` means "unchanged". */
 type PatchMutation = (document: PatchDocument) => unknown;
 
-// #region CONST_parseOptions
 /** The Loader's `!!js` dialect: tagged scalars round-trip verbatim. */
 const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value: string) => value }] };
-// #endregion CONST_parseOptions
+
+let mutexTail: Promise<unknown> = Promise.resolve();
 
 // #region FUNC_withMutex
 /**
- * @purpose The ONE in-process serializer for every file-mutating path of this
- *   bundle, so concurrent API calls cannot interleave read-modify-write
- *   cycles. Errors propagate without poisoning later entries.
+ * @purpose The one in-process serializer for every file-mutating path, so
+ *   concurrent calls cannot interleave read-modify-write cycles.
  */
-let mutexTail: Promise<unknown> = Promise.resolve();
 function withMutex<T>(fn: () => Promise<T>): Promise<T> {
   const run = mutexTail.then(fn, fn);
   mutexTail = run.then(
@@ -81,6 +55,7 @@ function withMutex<T>(fn: () => Promise<T>): Promise<T> {
   );
   return run;
 }
+// #endregion FUNC_withMutex
 
 /**
  * Public alias shared with the operations' settings.mutate writes.
@@ -90,30 +65,18 @@ export const withWriteLock = withMutex;
 
 /** The write serializer as the `HostPorts.lock` port. */
 export const writeLock: WriteLockPort = { run: (fn) => withMutex(fn) };
-// #endregion FUNC_withMutex
 
-// #region FUNC_setWriteGate
-/**
- * Install an optional host write gate (dsh-hmr `runExclusive`) around every
- * raw write, serializing against config-editor/settings edits in this process.
- * The module mutex still serializes this bundle's own writes when it is absent;
- * cross-process interleaving stays possible by design.
- */
 type WriteGate = <T>(section: () => Promise<T>) => Promise<T>;
 let writeGate: WriteGate | null = null;
+// #region FUNC_setWriteGate
+/** @purpose Install an optional host write gate around every raw write. */
 export function setWriteGate(gate: WriteGate | null): void {
   writeGate = gate;
 }
 // #endregion FUNC_setWriteGate
 
 // #region FUNC_runGated
-/**
- * Run a WHOLE critical section through the optional host gate: holding it only
- * for the final write would let a queued call commit a stale document over an
- * edit that landed after our read (astra finding C). HMR transactions cannot
- * be nested, so nothing that takes hmr exclusivity itself
- * (settings.mutate / configEditor.edit) may run inside.
- */
+/** @purpose Run a whole critical section through the optional host gate. */
 function runGated<T>(section: () => Promise<T>): Promise<T> {
   return writeGate ? writeGate(section) : section();
 }
@@ -121,9 +84,9 @@ function runGated<T>(section: () => Promise<T>): Promise<T> {
 
 // #region FUNC_loadDocument
 /**
- * Parse the profile patch (missing file = empty list). A parse failure or a
- * non-sequence root throws BEFORE anything is written: the writer only edits a
- * document it fully understood.
+ * @purpose Parse the profile patch (missing file = empty list). A leading BOM
+ *   is stripped before parsing and never written back, so the first mutation
+ *   repairs a BOM-prefixed file.
  */
 function loadDocument(patchPath: string): { document: PatchDocument; text: string } {
   let text: string;
@@ -133,6 +96,7 @@ function loadDocument(patchPath: string): { document: PatchDocument; text: strin
     if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
     text = "[]\n";
   }
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   const document = parseDocument(text, parseOptions) as PatchDocument;
   if (document.errors.length > 0) throw document.errors[0];
   if (!isSeq(document.contents)) throw new Error("prompt-profiles writer: profile patch must be a YAML sequence");
@@ -142,7 +106,7 @@ function loadDocument(patchPath: string): { document: PatchDocument; text: strin
 // #endregion FUNC_loadDocument
 
 // #region FUNC_writeAtomic
-/** Temp file + rename so readers never observe a partial patch (SPEC §5.6). */
+/** @purpose Temp file + rename so readers never observe a partial patch. */
 async function writeAtomic(patchPath: string, text: string): Promise<void> {
   const directory = dirname(patchPath);
   const temp = join(directory, `.${basename(patchPath)}.${randomBytes(6).toString("hex")}.tmp`);
@@ -197,18 +161,15 @@ function findBareRow(document: PatchDocument, rowId: string, name?: string): num
 }
 // #endregion FUNC_findBareRow
 
-// #region FUNC_validateRow
-/**
- * Reject malformed/unsafe rows BEFORE the file is touched: ids must be slugs
- * (no `/`, `\`, `..`, no absolute paths) or the loader/UI could not address
- * the row.
- */
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+// #region FUNC_validateRow
+/** @purpose Reject malformed/unsafe rows before the file is touched. */
 function validateRow(row: PatchRowInput): void {
   if (!row || typeof row !== "object") throw new TypeError("writer: row must be an object");
   if (typeof row.id !== "string" || row.id === "") throw new TypeError("writer: row.id must be a non-empty string");
   if (!SAFE_ID.test(row.id) || row.id.includes("..")) {
-    throw new TypeError(`writer: row.id must be a slug without '/', '' or '..' segments (got "${row.id}")`);
+    throw new TypeError(`writer: row.id must be a slug without '/', '\\' or '..' segments (got "${row.id}")`);
   }
   if (typeof row.name !== "string" || row.name === "")
     throw new TypeError("writer: row.name must be a non-empty string");
@@ -240,16 +201,17 @@ function findExistingRowId(document: PatchDocument, rowId: string): { kind: "bar
 
 // #region FUNC_editUnlocked
 /**
- * Ungated RMW core (caller already holds the mutex and, for config-editor
- * exclusivity, the gate): parse → mutate → serialize → atomic write. A throw
- * from `mutate` skips the write; `mutate` returning false means "unchanged".
- * Read and write stay in one critical section (astra finding C).
+ * @purpose Ungated read-modify-write core (caller holds the mutex and the
+ *   gate). A throw from `mutate` skips the write; `false` means "unchanged".
+ *   A uniformly CRLF source stays CRLF; output is always BOM-free.
  * @returns whether the file was written.
  */
 async function editUnlocked(patchPath: string, mutate: PatchMutation): Promise<boolean> {
-  const { document } = loadDocument(patchPath);
+  const { document, text } = loadDocument(patchPath);
   if (mutate(document) === false) return false;
-  await writeAtomic(patchPath, String(document));
+  let out = String(document);
+  if (text.includes("\r\n")) out = out.replace(/\r?\n/g, "\r\n");
+  await writeAtomic(patchPath, out);
   return true;
 }
 // #endregion FUNC_editUnlocked
@@ -324,7 +286,7 @@ function disableMutation(rowId: string, name: string): PatchMutation {
       return;
     }
     const item = document.contents.items[index];
-    if (!isMap(item)) return;
+    if (!isMap(item)) return false;
     if (item.get("disabled") === true) return false;
     item.set("name", name);
     item.set("disabled", true);
@@ -334,10 +296,8 @@ function disableMutation(rowId: string, name: string): PatchMutation {
 
 // #region FUNC_insertRow
 /**
- * Append a NEW `{ insert: [row] }` entry the Loader can mount (config-editor
- * cannot create rows — SPEC §5.6). Deliberately NO patch-level id:
- * insert-with-id means "append into that group" (spike R2).
- * @throws on an unparseable file or ANY existing row with the same id.
+ * @purpose Append a new `{ insert: [row] }` entry the loader can mount.
+ * @throws on an unparseable file or any existing row with the same id.
  */
 export function insertRow({ patchPath, row }: { patchPath: string; row: PatchRowInput }): Promise<boolean> {
   return withMutex(() => runGated(() => editUnlocked(patchPath, insertMutation(row))));
@@ -358,10 +318,8 @@ export function removeRow({ patchPath, rowId }: { patchPath: string; rowId: stri
 
 // #region FUNC_disableRow
 /**
- * "Delete" a bundle-provided row by upserting a bare
- * `{ id, name, disabled: true }` override in the profile layer (what
- * plugin-manager does); the loader then skips the row (SPEC §2 #17). A bare
- * row whose id no lower layer provides is skipped by the loader — by design.
+ * @purpose Delete a bundle-provided row by upserting a bare
+ *   `{ id, name, disabled: true }` override the loader then skips.
  * @returns whether the file was written.
  */
 export function disableRow({
@@ -377,12 +335,9 @@ export function disableRow({
 }
 // #endregion FUNC_disableRow
 
-// #region FUNC_provenance
+// #region FUNC_rowNamesId
 /**
- * Does one patch row name the queried row? A row is named by its loader `id`
- * OR its `config.id`, compared raw and `toPatchId`-normalized — so callers
- * may pass the qualified loader id (`include:prompt-section-x`), the row id,
- * or the config id (old slug scheme).
+ * @purpose Whether one patch row names the queried row, raw or normalized.
  */
 function rowNamesId(node: unknown, candidates: Set<string>): boolean {
   if (!isMap(node)) return false;
@@ -395,14 +350,11 @@ function rowNamesId(node: unknown, candidates: Set<string>): boolean {
   }
   return false;
 }
+// #endregion FUNC_rowNamesId
 
+// #region FUNC_provenance
 /**
- * Prove row ownership from this patch (sync). An id inside ANY `insert` entry
- * is USER-owned; a row present only as a bare override is BUNDLE-provided; a
- * row this file says nothing about is UNKNOWN. `configEditor.configuration()`
- * cannot prove layer ownership — insert ownership can.
- * @param options.rowId in any accepted form (qualified row id, unqualified row
- *   id, or config.id).
+ * @purpose Prove row ownership from this patch (sync): user, bundle, or unknown.
  * @throws on an unparseable file (caller decides how to degrade).
  */
 export function provenance({ patchPath, rowId }: { patchPath: string; rowId: string }): RowOwnership {
@@ -461,11 +413,9 @@ export function listRowIds({ patchPath }: { patchPath: string }): Set<string> {
 
 // #region FUNC_readPatchRows
 /**
- * Read-only detail view of every row the patch claims (bare overrides plus
- * `insert` rows): id, plugin `name`, `disabled`, and whether/which `config.id`
- * it carries. Lets the API decide whether a pending row is really one of OUR
- * rows (H5) and whether a profile still exists in the AUTHORITATIVE file rather
- * than in the HMR-lagged registry. Never writes, never takes the mutex.
+ * @purpose Read-only detail view of every row the patch claims. Never writes,
+ *   never takes the mutex.
+ * @throws on an unparseable file or a non-sequence root.
  */
 export function readPatchRows({ patchPath }: { patchPath: string }): PatchRowRecord[] {
   const { document } = loadDocument(patchPath);
@@ -497,13 +447,8 @@ export function readPatchRows({ patchPath }: { patchPath: string }): PatchRowRec
 
 // #region FUNC_renameSectionRow
 /**
- * Single-commit section rename: insert the new row and remove (or disable,
- * when bundle-owned) the old one — ONE document, ONE atomic write, ONE gated
- * critical section; any failure restores the backup. settings.mutate is
- * deliberately not involved (hmr transactions cannot nest, the mutex is not
- * reentrant). PROFILE REFERENCES ARE NOT TOUCHED (frozen decision): rewriting
- * bundle profiles is impossible anyway, so the API reports the affected
- * profiles instead.
+ * @purpose Single-commit section rename: insert the new row and remove (or
+ *   disable, when bundle-owned) the old one. Profile references are left unchanged.
  * @returns whether the file was written.
  */
 export function renameSectionRow({
@@ -525,18 +470,9 @@ export function renameSectionRow({
 
 // #region FUNC_withPatchBatch
 /**
- * Run a multi-step mutation as one unit: the module mutex AND the optional host
- * gate are held around the ENTIRE batch — backup, every step, and the rollback
- * — so no config-editor/settings edit can interleave and a rollback can never
- * restore a backup over a concurrent commit (astra finding C). HMR transactions
- * cannot be nested: batch steps must NOT call settings.mutate/configEditor.edit
- * and must compose all file changes through the single `edit` callback.
- *
- * The backup is restored ONLY when an edit actually WROTE the file (M1): a
- * validation error before the first write leaves the bytes untouched, so there
- * is no needless rewrite/HMR (and no risk of clobbering a foreign commit in the
- * cross-process case).
- * @throws the original error, after the backup was restored when a write happened.
+ * @purpose Run a multi-step mutation as one unit under the mutex and the host
+ *   gate. The backup is restored only when an edit actually wrote the file.
+ * @throws the original error, after restoring the backup when a write happened.
  */
 export async function withPatchBatch<T>(
   { patchPath }: { patchPath: string },
@@ -567,16 +503,15 @@ export async function withPatchBatch<T>(
 }
 // #endregion FUNC_withPatchBatch
 
-// #region TYPE_patchEditor
 /**
- * The part of `ctx.configEditor` the patch port reads: the document path and
- * the loader entry list used to canonicalize a row id.
+ * The part of `ctx.configEditor` the patch port reads.
+ *
+ * @purpose Adapt the raw config-editor service to the patch port.
  */
 export interface PatchEditor {
   documentPath?: string;
   entries?(): Array<{ options?: { id?: string } } | null | undefined>;
 }
-// #endregion TYPE_patchEditor
 
 // #region FUNC_createPatchPort
 /**
@@ -604,10 +539,16 @@ export function createPatchPort(editor: PatchEditor): PatchPort {
       }
       return toPatchId(rowId) as string;
     },
-    insert: (row) => insertRow({ patchPath: path() as string, row }),
+    insert: async (row) => {
+      await insertRow({ patchPath: path() as string, row });
+    },
     remove: (rowId) => removeRow({ patchPath: path() as string, rowId }),
-    disable: (rowId, name) => disableRow({ patchPath: path() as string, rowId, name }),
-    renameSection: (request) => renameSectionRow({ patchPath: path() as string, ...request }),
+    disable: async (rowId, name) => {
+      await disableRow({ patchPath: path() as string, rowId, name });
+    },
+    renameSection: async (request) => {
+      await renameSectionRow({ patchPath: path() as string, ...request });
+    },
   };
 }
 // #endregion FUNC_createPatchPort

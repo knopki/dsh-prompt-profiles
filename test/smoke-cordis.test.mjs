@@ -61,7 +61,6 @@ try {
 const missingCordis =
   cordisError === null ? false : `@deepseek-ai/cordis not resolvable from the bundle: ${cordisError.message}`;
 
-// #region FUNC_stubHost
 /** @purpose One real Cordis root context plus stub service instances provided by a real plugin fiber (like the host's own rows). Omitting a name emulates a surface without that service. */
 function stubHost(names, { patchPath = "/nonexistent-cordis-smoke/cordis.patch.yml" } = {}) {
   const logs = [];
@@ -112,7 +111,7 @@ async function mountPlugin(ctx) {
 
 /** @purpose The operation set of a mounted plugin, read the way a surface reads it (guarded REFLECT per call). */
 function operationsOf(ctx) {
-  const { ops } = createOperations(
+  const ops = createOperations(
     createHostPorts({
       service: ctx.get("promptProfiles"),
       getService: (name) => {
@@ -126,10 +125,8 @@ function operationsOf(ctx) {
   );
   return ops;
 }
-// #endregion FUNC_stubHost
 
-// #region TEST_mount
-/** @purpose (б) every optional service present: the plugin mounts, its operations read and write for real, and disposal removes the service. */
+/** @purpose With every optional service present: the plugin mounts, its operations read and write for real, and disposal removes the service. */
 test("real Cordis: with every service the shared operations read and write for real", {
   skip: missingCordis,
 }, async () => {
@@ -151,7 +148,7 @@ test("real Cordis: with every service the shared operations read and write for r
   await patch.cleanup();
 });
 
-/** @purpose (а) NO optional service: the plugin must still mount (the loader-level failure this test exists for). */
+/** @purpose With NO optional service: the plugin must still mount (the loader-level failure this test exists for). */
 test("real Cordis: the plugin mounts with no optional service at all", { skip: missingCordis }, async () => {
   const host = stubHost([]);
   await host.stubs.await();
@@ -207,9 +204,7 @@ test("real Cordis: section and profile rows mount against the live service", { s
   await profile.dispose();
   await main.dispose();
 });
-// #endregion TEST_mount
 
-// #region TEST_ctxGet
 /** @purpose Requirement check: on the real runtime `ctx.get(name)` returns undefined for an absent service (it does NOT throw in cordis 4.0.4), and every optional read in our code is guarded. */
 test("real Cordis: ctx.get for absent services, and every optional read is guarded", {
   skip: missingCordis,
@@ -231,9 +226,7 @@ test("real Cordis: ctx.get for absent services, and every optional read is guard
   assert.ok(host.ctx.get("promptProfiles"), "the plugin mounts with every optional read absent");
   await fiber.dispose();
 });
-// #endregion TEST_ctxGet
 
-// #region TEST_typertRemote
 /** @purpose Await an async mount side effect (typert inject callback, contribution commit) with a timeout instead of a fixed sleep. */
 async function waitFor(predicate, { timeoutMs = 2000, label = "condition" } = {}) {
   const deadline = Date.now() + timeoutMs;
@@ -277,7 +270,7 @@ test("real typert registry: contribution registers, 11 strict endpoints visible,
       "promptProfiles/sectionUpdate",
       "promptProfiles/state",
     ],
-    "exactly the 11 phase-2b endpoints are registered",
+    "exactly the eleven endpoints are registered",
   );
   assert.ok(
     host.logs.some(
@@ -394,4 +387,3 @@ test("real gateway: strict rejection leaves the patch untouched; a valid Remote 
   await patchA.cleanup();
   await patchB.cleanup();
 });
-// #endregion TEST_typertRemote

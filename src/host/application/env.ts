@@ -1,21 +1,14 @@
 /**
  * #region moduleContract
  * @modulecontract
- * @purpose Hold what the operation use cases share — payload helpers, row
- *   addressing, id sets, settings writes and the delete path — so each
- *   per-domain use case module stays a thin statement of what it does.
- * @scope
- *  - Shared helpers and their port wiring only; the operations themselves live
- *    in state.ts, preview.ts, sections.ts, profiles.ts and assembler.ts.
- *  - NOT: the ports (ports.ts), the adapters (infra/), or any surface.
+ * @purpose Share payload helpers, row addressing, id sets, settings writes
+ *   and the delete path across the per-domain use case modules.
+ * @scope Shared helpers and port wiring only.
+ *  - NOT: the operations themselves, the ports, the adapters, or any surface.
  * @invariants
- *  - Every payload is validated BEFORE anything is written, so a refused call
- *    leaves the patch file byte-identical.
- *  - Mutations run inside the bundle's one write lock, so operation updates
- *    never interleave with writer mutations in this process.
- *  - Optional services are resolved per call through the ports, so a
- *    late-appearing service is picked up and a missing one degrades per
- *    operation.
+ *  - Every payload is validated BEFORE anything is written.
+ *  - Mutations run inside the bundle's one write lock.
+ *  - Optional services resolve per call, so late services are picked up.
  * @keywords use cases, environment, validation, row addressing, write lock
  * #endregion moduleContract
  */
@@ -40,9 +33,8 @@ import {
 import type { ConfigId, ProfileView, RowKind, SectionView } from "../domain/model.ts";
 import type { HostPorts, LoaderRegistryPort, PatchPort, PatchRowRecord, SettingsOp, SettingsPort } from "./ports.ts";
 
-// #region TYPE_env
 /** One addressed registry row plus the normalized patch id every write uses. */
-export interface AddressedRow<Row> {
+interface AddressedRow<Row> {
   row: Row;
   patchId: string;
 }
@@ -80,8 +72,9 @@ export interface UseCaseEnv {
   ): Promise<boolean>;
   deleteRow(patchId: string, name: string): Promise<DeleteResult>;
   mapDuplicate(error: unknown): never;
+  /** Guarded settings revision (`undefined` when missing or unreadable). */
+  revision(): number | undefined;
 }
-// #endregion TYPE_env
 
 // #region FUNC_titleOrDefault
 /** Title with a DEFAULT allowed (frozen contract): missing or blank uses the fallback. */
@@ -135,12 +128,9 @@ export function createUseCaseEnv(ports: HostPorts): UseCaseEnv {
 
   /**
    * Section row ids already written to the profile patch but not yet
-   * registered (HMR lag). A pending id counts ONLY when the row really is one
-   * of OUR sections — plugin `name` matches, `config` is present, and the row
-   * is not disabled. A bare override, a foreign plugin row, a disabled row or
-   * a row without `config` is NOT a valid reference target, so a typo that
-   * collides with such an id is still rejected. Read-only snapshot; an
-   * unreadable patch degrades to registered-only.
+   * registered (HMR lag). Counts ONLY rows that really are OUR sections
+   * (matching plugin `name`, present `config`, not disabled); an unreadable
+   * patch degrades to registered-only.
    */
   const pendingSectionIds = (): Set<string> => {
     try {
@@ -164,11 +154,8 @@ export function createUseCaseEnv(ports: HostPorts): UseCaseEnv {
 
   /**
    * Can this profile still be chosen, per the AUTHORITATIVE patch rather than
-   * the HMR-lagged registry? A row for the profile's rowId that is present but
-   * foreign/disabled, or a source-"user" row that has VANISHED from the patch,
-   * means the deletion already committed. A row absent from this patch but
-   * registered from an inherited/bundle layer stays valid (it legitimately
-   * lives outside this file). An unreadable patch falls back to the registry.
+   * the HMR-lagged registry? A row absent from this patch but registered from
+   * an inherited/bundle layer stays valid; an unreadable patch trusts the registry.
    */
   const profileSelectable = (profileId: string): boolean => {
     const entry = registry.profiles().find((row) => row.id === profileId);
@@ -253,7 +240,6 @@ export function createUseCaseEnv(ports: HostPorts): UseCaseEnv {
     }
   };
 
-  // #region FUNC_mutateWithRetry
   /** Bounded attempts before a /last or cleanup gives up. */
   const MAX_MUTATE_ATTEMPTS = 5;
   /** The current `prompt-profiles` settings revision (undefined when unknown). */
@@ -264,19 +250,12 @@ export function createUseCaseEnv(ports: HostPorts): UseCaseEnv {
       return undefined;
     }
   };
+  // #region FUNC_mutateWithRetry
   /**
    * @purpose Atomic read-modify-write of the `prompt-profiles` config, correct
-   *   WITH or WITHOUT a settings revision:
-   *  - `buildOps` runs inside the bundle write lock and emits PER-KEY ops
-   *    (`set`/`unset` on `lastByWorkspace.<key>`, or `default`), which
-   *    `settings.mutate` applies to the value it reads at write time. A
-   *    whole-dict write is never sent, so a concurrent writer's keys cannot be
-   *    clobbered by a stale read.
-   *  - When a revision IS available it is also passed as `expectedRevision`;
-   *    SETTINGS_CONFLICT re-reads and retries, and the cap yields a clean 409 —
-   *    never a silent unchecked write.
-   * Never nests the non-reentrant lock: `ports.lock` is taken ONCE around the
-   * whole attempt loop and `settings.mutate` is called directly.
+   *   WITH or WITHOUT a settings revision. Per-key ops never clobber a
+   *   concurrent writer's keys; SETTINGS_CONFLICT re-reads and retries, and the
+   *   cap yields a clean 409. Never nests the non-reentrant lock.
    */
   const mutateWithRetry = async (
     buildOps: (state: { revisionAvailable: boolean }) => SettingsOp[],
@@ -324,11 +303,9 @@ export function createUseCaseEnv(ports: HostPorts): UseCaseEnv {
 
   // #region FUNC_deleteRow
   /**
-   * @purpose Implement delete for both kinds: user-owned rows are physically
-   *   removed, bundle-provided rows get a bare `{id, name, disabled: true}`
-   *   override; provenance comes from the writer, not from `configuration()`
-   *   which cannot prove layer ownership. `patchId` must already be NORMALIZED
-   *   (the patch file addresses unqualified row ids).
+   * @purpose Delete for both kinds: user-owned rows are removed,
+   *   bundle-provided rows get a bare disabled override. `patchId` must
+   *   already be NORMALIZED.
    */
   const deleteRow = async (patchId: string, name: string): Promise<DeleteResult> => {
     const patch = ports.patch();
@@ -368,6 +345,7 @@ export function createUseCaseEnv(ports: HostPorts): UseCaseEnv {
     mutateWithRetry,
     deleteRow,
     mapDuplicate,
+    revision: currentRevision,
   };
 }
 // #endregion FUNC_createUseCaseEnv

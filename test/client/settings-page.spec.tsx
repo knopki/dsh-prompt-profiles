@@ -1,8 +1,10 @@
 /**
- * The settings page shell on real React + jsdom: the placeholder until the
- * first state read, the scroll container contract (our root is the scroller with
- * a stable gutter), the three tabs, the per-tab drill-down with back/Esc/
- * repeated-tab dismissal, and the failed-load notice.
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Prove the settings page shell on real React + jsdom: the loading
+ *   placeholder, the scroll container contract, the three tabs with
+ *   drill-down dismissal, and the failed-load notice.
+ * #endregion moduleContract
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";

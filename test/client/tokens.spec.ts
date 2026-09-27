@@ -1,7 +1,9 @@
 /**
- * Theme-token hygiene of the SHIPPED bundle: every `--dsw-alias-*` custom
- * property the client references must be a token the platform actually ships
- * (an unknown name renders as the fallback forever).
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Prove theme-token hygiene of the SHIPPED bundle: every custom
+ *   property the client references is a token the platform actually ships.
+ * #endregion moduleContract
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";

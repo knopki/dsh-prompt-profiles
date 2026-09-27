@@ -1,61 +1,39 @@
 /**
  * #region moduleContract
  * @modulecontract
- * @purpose Own the rules about which ids a profile reference may name and
- *   which profiles use a section, so ref resolution, the rename report and the
- *   registry's usedIn feed agree.
- * @scope
- *  - Reference targets of the registered sections, the alias set of one
- *    section, one-reference resolution to the id that must be STORED, and the
- *    usedIn computation.
- *  - NOT: reading the patch file (the caller supplies the pending ids), wire
- *    schemas (src/shared/wire-schemas.ts), ordering (ordering.ts).
+ * @purpose Centralize section-reference aliases, resolution, and usage reporting.
+ * @scope Target construction, one-reference resolution, row alias matching, used-in feed;
+ *   NOT patch-file reads or wire validation.
  * @invariants
- *  - A stored reference is ALWAYS the registered `config.id`, because runtime
- *    lookups key on it; an id that names no registered section is accepted
- *    only from the caller-supplied pending set.
- *  - An exact registered `config.id` wins over the convenience aliases.
- * @keywords section reference, alias, targets, usedIn, pending registration
+ *  - Stored refs resolve to registered config ids; pending ids are the create-before-registration exception.
  * #endregion moduleContract
  */
 import { type ConfigId, type Profile, type RowId, type Section, type SectionRef, type UsedInEntry } from "./model.ts";
 /**
- * Map every id a profile may use to name a registered section to the
- * `config.id` that must be STORED for the ref to resolve at runtime: the
- * config.id itself (old rows keep bare slug ids), its normalized and qualified
- * row-id forms, and the bare token of a full `prompt-section-<token>` config
- * id — plus the reverse mapping so an old bare config id stays addressable by
- * its full row-id form. Exact config ids always win over aliases.
+ * @purpose Map every usable alias (config/row/token forms) to the config id to store; exact ids win.
  */
 export declare function sectionRefTargets(rows: readonly (Pick<Section, "id"> & {
     rowId?: RowId | null;
 })[]): Map<string, ConfigId>;
 /**
- * @purpose Resolve one `sections[].id` to the id STORED in the profile: a
- *   registered section's config.id (verbatim — old rows keep bare slug ids),
- *   its full/qualified row id, or the bare token of a full
- *   `prompt-section-<token>` config id. A section HMR has not registered yet
- *   is accepted only when its row is already in the profile patch
- *   (`pending`) — the create-then-add flow. null rejects a typo or a foreign
- *   id on create and update alike.
+ * @purpose Resolve one sections[].id to the id to store: registered or pending, else null on invalid/foreign id.
  */
 export declare function resolveSectionRefId(raw: unknown, { targets, pending }: {
     targets: ReadonlyMap<string, ConfigId>;
     pending?: ReadonlySet<string>;
 }): ConfigId | null;
 /**
- * Every id that names ONE row: its `config.id` (a new-scheme row's is already
- * the full id; old rows keep bare slugs), its patch row id, and — for a
- * section — the bare token of a full config.id.
+ * @purpose List every id that names one row: config id, patch row id, and bare token for full section ids.
  */
 export declare function rowAliases(row: Pick<Section, "id"> & {
     rowId?: RowId | null;
 }): Set<string>;
-/** Does `value` name the row identified by `aliases`, raw or normalized? */
+/**
+ * @purpose Check whether a value names the row identified by an alias set, raw or normalized.
+ */
 export declare function refNamesRow(value: string, aliases: ReadonlySet<string>): boolean;
 /**
- * Profiles referencing a section, with the scope of each reference. A section
- * referenced twice by one profile contributes one entry per reference.
+ * @purpose Return one entry per matching reference, sorted by profile id.
  */
 export declare function usedIn(profiles: readonly (Pick<Profile, "id"> & {
     sections?: SectionRef[];

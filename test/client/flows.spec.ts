@@ -1,9 +1,10 @@
 /**
- * The two write flows and the save runner: a modal-free create (one POST under
- * a double submit, optimistic insert, poll until the row mounts, drill), an
- * optimistic-update-and-poll mutation (duplicate/delete/rename) with restore on
- * failure, and `runSave`'s single 409 re-apply with the server message reaching
- * both the toast and the inline error line.
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Prove the two write flows and the save runner: modal-free create,
+ *   optimistic-update-and-poll mutation with restore on failure, and runSave's
+ *   single 409 re-apply with the server message on the toast and inline error.
+ * #endregion moduleContract
  */
 import { expect, test } from "vitest";
 import { makeCreateFlow, makeMutationFlow, optimisticEntry, PollTimeoutError } from "../../src/client/flows.ts";

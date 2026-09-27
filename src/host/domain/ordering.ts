@@ -1,31 +1,17 @@
 /**
  * #region moduleContract
  * @modulecontract
- * @purpose Own the pure ordering rules — which reference contributes nothing
- *   to an assembly and where the contributing text is spliced in — so the
- *   runtime sealer and the host preview can never disagree about selection or
- *   placement.
- * @scope
- *  - The section skip predicate and its reason vocabulary, order-preserving
- *    sorting, and built-in-anchored insertion planning (BASE indices).
- *  - NOT: interpolation itself (the sealer and the preview interpolate by
- *    their own strictness rule), the assembly, storage, or the plugin.
+ * @purpose Keep preview and sealing consistent about section eligibility and insertion.
+ * @scope Selection, ordering, insertion; NOT interpolation or storage.
  * @invariants
- *  - Scope is evaluated BEFORE existence and state, so a scope-filtered
- *    reference is skipped for the same reason the runtime would give.
- *  - A reference's order is used EXACTLY as stated: an order equal to a
- *    built-in or to a peer is never shifted or normalized.
- *  - planInsertion returns BASE indices into the ORIGINAL assembly array;
- *    consumers splice from LAST to FIRST.
- * @keywords skip reason, scope, insertion index, order, planning
+ *  - Scope is evaluated before existence and state.
+ *  - Planned indices address the original assembly array; consumers splice last to first.
  * #endregion moduleContract
  */
 
 import { errorMessage } from "./errors.ts";
 import type { AssemblySection, PlannedInsertion, Section, SectionRef, SnapshotSection } from "./model.ts";
 
-// #region CONST_skipReasons
-/** The exact reason strings a skipped reference carries. */
 export const SKIP_REASONS = {
   mainOnlyInSubagent: "scope main-only in a subagent",
   subagentsOnlyOutsidePlainSubagent: "scope subagents-only outside a plain subagent",
@@ -35,26 +21,27 @@ export const SKIP_REASONS = {
   emptyAfterInterpolation: "empty after interpolation",
 } as const;
 
-// #endregion CONST_skipReasons
-
-// #region FUNC_skipReasonText
-/** Reason for a scope value outside the domain vocabulary. */
-export function unknownScopeReason(scope: string): string {
-  return `unknown scope "${scope}"`;
-}
-
-/** Reason for a body that could not be interpolated against this assembly. */
+// #region FUNC_interpolationSkipReason
+/**
+ * @purpose Explain a body that could not be interpolated against this assembly.
+ */
 export function interpolationSkipReason(error: unknown): string {
   return `interpolation failed: ${errorMessage(error)}`;
 }
-// #endregion FUNC_skipReasonText
+// #endregion FUNC_interpolationSkipReason
+
+// #region FUNC_sectionEmits
+/**
+ * @purpose Decide whether a section contributes text: true only for a string body with non-whitespace content.
+ */
+export function sectionEmits(section: Pick<Section, "body"> | null | undefined): boolean {
+  return typeof section?.body === "string" && section.body.trim() !== "";
+}
+// #endregion FUNC_sectionEmits
 
 // #region FUNC_sectionSkipReason
 /**
- * THE shared selection rule: why a profile reference contributes NOTHING to an
- * assembly, or null when it does contribute. Interpolation is NOT part of this
- * predicate — the sealer resolves it against live variables and skips on
- * failure while the preview interpolates leniently.
+ * @purpose Explain why a profile reference contributes nothing: scope/state eligibility, never interpolation.
  */
 export function sectionSkipReason(
   ref: Pick<SectionRef, "id" | "scope"> | undefined,
@@ -64,16 +51,18 @@ export function sectionSkipReason(
   const scope = ref?.scope ?? "inherit";
   if (scope === "main-only" && subagent) return SKIP_REASONS.mainOnlyInSubagent;
   if (scope === "subagents-only" && (!subagent || fork)) return SKIP_REASONS.subagentsOnlyOutsidePlainSubagent;
-  if (scope !== "inherit" && scope !== "main-only" && scope !== "subagents-only") return unknownScopeReason(scope);
+  if (scope !== "inherit" && scope !== "main-only" && scope !== "subagents-only") return `unknown scope "${scope}"`;
   if (!section) return SKIP_REASONS.sectionNotFound;
   if (section.disabled) return SKIP_REASONS.sectionDisabled;
-  if (typeof section.body !== "string" || !section.body.trim()) return SKIP_REASONS.emptyBody;
+  if (!sectionEmits(section)) return SKIP_REASONS.emptyBody;
   return null;
 }
 // #endregion FUNC_sectionSkipReason
 
 // #region FUNC_sortByOrder
-/** Detached copy in ascending `order`, ties keeping the input order. */
+/**
+ * @purpose Return a detached copy in ascending order, keeping input order on ties.
+ */
 export function sortByOrder<T extends { order: number }>(rows: readonly T[]): T[] {
   return [...rows].sort((a, b) => a.order - b.order);
 }
@@ -81,17 +70,7 @@ export function sortByOrder<T extends { order: number }>(rows: readonly T[]): T[
 
 // #region FUNC_insertionIndex
 /**
- * Where our sections must be spliced into an already-sorted
- * `assembly.sections` array. Assembly entries carry no `order` — only a
- * built-in NAME present in that assembly can anchor, so a mirror entry absent
- * from the assembly and foreign names never count.
- *
- * Rule: order `o` goes immediately AFTER the last element whose built-in order
- * is known and `< o` (0 when none); an order EQUAL to a present built-in lands
- * just before it.
- *
- * @returns rows aligned with `sectionOrders`, each `index` a position in the
- *   ORIGINAL array — splice from LAST to FIRST.
+ * @purpose Map orders to base indices in the original assembly: after the last known built-in order below each.
  */
 export function insertionIndex(
   sectionOrders: readonly number[],
@@ -117,9 +96,7 @@ export function insertionIndex(
 
 // #region FUNC_planInsertion
 /**
- * @purpose Place sealed sections against the built-ins actually present,
- *   preserving profile order on equal orders. Unknown/foreign entries never
- *   anchor; without an earlier known built-in, insertion starts at index zero.
+ * @purpose Place sealed sections against the built-ins actually present, preserving profile order on ties.
  */
 export function planInsertion({
   snapshot,
@@ -140,8 +117,7 @@ export function planInsertion({
   return sorted.map(({ section }, position) => ({
     name: `prompt-profile:${section.id}`,
     text: section.text,
-    // Sealed text is final: the engine must not interpolate it again, so a
-    // literal `{{` in the body can never break rendering.
+    // Sealed text is final: the engine must not interpolate it again.
     interpolate: false as const,
     index: anchors[position].index,
   }));

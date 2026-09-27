@@ -1,21 +1,10 @@
 /** #region moduleContract
  * @modulecontract
- * @purpose Own the client's Remote transport: mount the mirrored contribution
- *   through `ctx.remote.$mount` inside a Cordis effect, then swap the active
- *   api facade to the Remote one via
- *   `ctx.inject(['remote', 'remote.promptProfiles'])` — the namespace service
- *   is NOT reachable bare.
- * @scope
- *  - The active-api holder, the mount lifecycle and the plugin-context shape
- *    this bundle declares in `inject`.
- *  - NOT: the descriptors and the facade itself (src/client/remote.ts).
+ * @purpose Own the client's Remote transport: mount the contribution in a
+ *   Cordis effect, then swap the active api facade to the Remote one.
  * @invariants
- *  - Until the mount settles, every data path awaits `remoteSettled`, so a
- *    call issued before mount WAITS rather than racing.
- *  - A failed mount is loud (logger.error/console.error with the stage) and
- *    leaves `unavailableApi` in force: the UI reports it through its normal
- *    error path, never a silent second transport.
- * @keywords remote mount, cordis effect, inject, unavailable api, plugin ctx
+ *  - Until the mount settles, data paths await `remoteSettled` rather than racing.
+ *  - A failed mount leaves `unavailableApi` in force, reported via the UI error path.
  * #endregion moduleContract */
 import type { Translate } from "./i18n.ts";
 import { type RemoteApi, type RemoteScope } from "./remote.ts";

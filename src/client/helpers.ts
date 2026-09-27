@@ -1,19 +1,12 @@
 /** #region moduleContract
  * @modulecontract
- * @purpose The client's pure view helpers: row identity and reference
- *   normalisation, outline ordering, preview planning and the small
- *   cross-surface signals the chip and the settings page share. Everything
- *   here is render-free, so the shim test can assert it directly.
+ * @purpose Pure view helpers shared by the chip and the settings page: row
+ *   identity, outline ordering, preview planning and the profile-changed signal.
  * @scope
- *  - Ids and refs, the outline (built-ins + ours + broken refs), the preview
- *    plan and the profile-changed signal.
- *  - NOT: api calls (src/client/remote.ts), flows (src/client/flows.ts) or any
- *    component.
+ *  - Ids and refs, the outline, the preview plan and the changed signal.
+ *  - NOT: api calls, flows or components.
  * @invariants
- *  - `idOf` prefers the unqualified `configId`; a ref always carries the
- *    configId VERBATIM, and `dedupeRowPrefix` only collapses a doubled prefix.
- *  - Orders are the persisted integers: no half-step is ever computed.
- * @keywords helpers, ids, outline, preview, signal
+ *  - `idOf` reads `configId → patchId → rowId → id`; orders stay integers.
  * #endregion moduleContract */
 
 import type { Translate } from "./i18n.ts";
@@ -22,30 +15,19 @@ import type { PreviewResponse, RowEntry, RowIdentity, SectionRef, StateDocument 
 // #region FUNC_idOf
 /** @purpose Stable display/key id of a /state entry: configId first. */
 export function idOf(entry: RowIdentity | null | undefined): string | null {
-  return entry?.configId ?? entry?.patchId ?? entry?.id ?? null;
+  return entry?.configId ?? entry?.patchId ?? entry?.rowId ?? entry?.id ?? null;
 }
 // #endregion FUNC_idOf
 
 // #region FUNC_refIdOf
-/**
- * @purpose The domain id of a /state entry for use in section refs: the
- *   configId VERBATIM (in this bundle configId IS the full row-id string,
- *   prefix included). The client must never prepend or strip a prefix —
- *   the historical bug was the client doubling the prefix
- *   ("prompt-section-prompt-section-…"), which the host rejects.
- */
+/** @purpose The domain id for section refs: the configId verbatim, never re-prefixed. */
 export function refIdOf(entry: RowIdentity | null | undefined): string | null {
   return idOf(entry);
 }
 // #endregion FUNC_refIdOf
 
 // #region FUNC_dedupeRowPrefix
-/**
- * @purpose Collapse an accidentally DOUBLED row-id prefix to a single one
- *   ("prompt-section-prompt-section-x" → "prompt-section-x"). A single
- *   prefix and a bare id pass through untouched — refs carry configId
- *   verbatim, so this is a guard, not a transformation.
- */
+/** @purpose Collapse a doubled row-id prefix to a single one; single prefixes pass through. */
 export function dedupeRowPrefix(id: unknown): string {
   return String(id ?? "").replace(/^(prompt-(?:section|profile)-)(?:prompt-(?:section|profile)-)+/, "$1");
 }
@@ -98,17 +80,16 @@ export function profileLabel(profile: (RowIdentity & { title?: string }) | null 
 }
 // #endregion FUNC_profileLabel
 
-// #region TYPE_keyboard
-/** The keyboard-event surface the Escape guard reads (a plain object in tests). */
+/** The key-event surface the Escape guard and the drag grip read (a plain object in tests). */
 export interface KeyEventLike {
   key?: string;
   target?: unknown;
+  preventDefault?: () => void;
 }
 /** The window-like root the Escape guard asks for an open overlay. */
-export interface DrillRootLike {
+interface DrillRootLike {
   document?: { querySelector?: (selector: string) => unknown } | null;
 }
-// #endregion TYPE_keyboard
 
 // #region FUNC_escapesDrillDown
 /**
@@ -133,15 +114,14 @@ export function escapesDrillDown(event: KeyEventLike | null | undefined, root?: 
 }
 // #endregion FUNC_escapesDrillDown
 
-// #region TYPE_outline
 /** The part of an outline row the boundary rule reads. */
-export interface BoundaryRow {
+interface BoundaryRow {
   kind: string;
   order?: number;
 }
 
 /** One built-in row from the mirror: rendered grey and read-only. */
-export interface BuiltinOutlineRow {
+interface BuiltinOutlineRow {
   kind: "builtin";
   key: string;
   name: string;
@@ -159,7 +139,7 @@ export interface OursOutlineRow {
 }
 
 /** A ref that names no registered section. */
-export interface BrokenOutlineRow {
+interface BrokenOutlineRow {
   kind: "broken";
   key: string;
   ref: SectionRef;
@@ -171,33 +151,25 @@ export interface BrokenOutlineRow {
 export type OutlineRow = BuiltinOutlineRow | OursOutlineRow | BrokenOutlineRow;
 
 /** A row lookup the guard accepts: a Map (any realm) or a plain record. */
-export type SectionsLookup = Map<string, RowEntry> | Record<string, RowEntry> | null | undefined;
+type SectionsLookup = Map<string, RowEntry> | Record<string, RowEntry> | null | undefined;
 
 interface MapLike<T> {
   get(key: string): T | undefined;
   has(key: string): boolean;
 }
-// #endregion TYPE_outline
 
-// #region FUNC_isMapLike
-/** @purpose Duck-typed Map detection: `instanceof Map` is false across a vm realm. */
+/** Duck-typed Map detection: `instanceof Map` is false across a vm realm. */
 function isMapLike<T>(value: unknown): value is MapLike<T> {
   const candidate = value as MapLike<T> | null | undefined;
   return !!candidate && typeof candidate.get === "function" && typeof candidate.has === "function";
 }
-// #endregion FUNC_isMapLike
 
 // #region FUNC_insertionOrders
 /**
- * @purpose Orders for the drag-and-drop INSERTION BOUNDARIES of an outline:
- *   entry i is the gap before `rows[i]`, and the last entry is the gap after
- *   the final row — so built-in rows are valid neighbours/targets too.
- * @invariants Integers only — never a midpoint/`.5`. Copying a built-in's
- *   order would let the host's "our section before the built-in at equal
- *   order" rule hoist it above that built-in, so dropping BELOW a built-in
- *   yields its order + 1. A result equal to the NEXT row's order is fine:
- *   equal orders are legal and `dropAt` also moves the ref in the profile,
- *   so the tie-break resolves to the dropped position.
+ * @purpose Orders for the drag-and-drop insertion gaps: entry i is the gap
+ *   before `rows[i]`, the last entry the gap after the final row.
+ * @invariants Integers only, never a midpoint. Dropping below a built-in
+ *   yields its order + 1 so the host rule cannot hoist the row above it.
  */
 export function insertionOrders(rows: ReadonlyArray<BoundaryRow> | null | undefined): number[] {
   const orderOf = (row: BoundaryRow | undefined) =>
@@ -234,12 +206,7 @@ export function insertionOrders(rows: ReadonlyArray<BoundaryRow> | null | undefi
 // #endregion FUNC_insertionOrders
 
 // #region FUNC_canSaveSection
-/**
- * @purpose Gate for the section autosave: only a row CONFIRMED in /state and
- *   carrying a NON-EMPTY (trimmed) title may be written. The empty-title
- *   request (`value.title must be a non-empty string`) and the pre-poll
- *   write are both blocked here.
- */
+/** @purpose Autosave gate: only a confirmed row with a non-empty title may be written. */
 export function canSaveSection(title: unknown, confirmed: unknown): boolean {
   return confirmed === true && String(title ?? "").trim() !== "";
 }
@@ -277,13 +244,7 @@ export function scopeKeyOf(scope: string | null | undefined): "scopeMainOnly" | 
 // #endregion FUNC_scopeKeyOf
 
 // #region FUNC_renameNotice
-/**
- * @purpose Build the post-rename notice. The host no longer rewrites profile
- *   references, so a successful rename reports any profile that still points
- *   at the old id (title, id fallback). An empty, non-array or ABSENT
- *   `affectedProfiles` (older host response) means there is nothing to flag:
- *   the rename itself is the confirmation and no notice is shown.
- */
+/** @purpose Post-rename notice listing profiles still pointing at the old id, if any. */
 export function renameNotice(
   result: { affectedProfiles?: ReadonlyArray<{ profileId?: string; title?: string }> } | null | undefined,
   t: Translate,
@@ -298,10 +259,8 @@ export function renameNotice(
 
 // #region FUNC_outlineRows
 /**
- * @purpose Merge a profile's section refs with the built-in mirror into an
- *   ordered outline: builtin rows (grey, read-only), ours rows, broken refs
- *   (missing/disabled). Orders are the PERSISTED ones — no +0.5 half-step is
- *   computed or displayed; an order equal to a built-in is normal.
+ * @purpose Merge a profile's refs with the built-in mirror into an ordered
+ *   outline. Orders are the persisted ones; equal-to-built-in is normal.
  */
 export function outlineRows(
   profile: { sections?: ReadonlyArray<SectionRef> } | null | undefined,
@@ -316,7 +275,8 @@ export function outlineRows(
     rows.push({ kind: "builtin", name, order, key: `builtin:${name}` });
   }
   for (const [seq, rawRef] of (profile?.sections ?? []).entries()) {
-    const ref = rawRef ? { ...rawRef, id: dedupeRowPrefix(rawRef.id) } : rawRef;
+    if (!rawRef) continue;
+    const ref = { ...rawRef, id: dedupeRowPrefix(rawRef.id) };
     const section = byId.get(ref.id);
     if (!section) {
       rows.push({ kind: "broken", ref, order: ref.order, seq, key: `broken:${seq}:${ref.id}` });
@@ -369,15 +329,14 @@ export function filterSections(sections: ReadonlyArray<RowEntry>, query: unknown
 }
 // #endregion FUNC_filterSections
 
-// #region TYPE_previewPlan
 /** A collapsed run of built-in entries. */
-export interface BuiltinsPreviewPlanItem {
+interface BuiltinsPreviewPlanItem {
   kind: "builtins";
   names: string[];
 }
 
 /** One of our sections, in final order. */
-export interface OursPreviewPlanItem {
+interface OursPreviewPlanItem {
   kind: "ours";
   id?: string;
   title?: string;
@@ -386,15 +345,13 @@ export interface OursPreviewPlanItem {
 }
 
 /** One render-plan entry: a collapsed run of built-ins or one of our sections. */
-export type PreviewPlanItem = BuiltinsPreviewPlanItem | OursPreviewPlanItem;
+type PreviewPlanItem = BuiltinsPreviewPlanItem | OursPreviewPlanItem;
 
 export interface PreviewPlan {
   plan: PreviewPlanItem[];
   skipped: Array<{ id?: string; title: string; reason: string }>;
   variables: Record<string, string | null> | null;
 }
-// #endregion TYPE_previewPlan
-
 // #region FUNC_previewPlan
 /**
  * @purpose Map the host preview response into a render plan: consecutive
@@ -439,22 +396,21 @@ export function previewPlan(response: PreviewResponse | null | undefined): Previ
 }
 // #endregion FUNC_previewPlan
 
-// #region FUNC_previewVariableNotice
+// #region FUNC_previewVariableNames
 /** @purpose The `{{name}}` variables a piece of text references (unique, ordered). */
-export function previewVariableNames(text: unknown): string[] {
+function previewVariableNames(text: unknown): string[] {
   const names: string[] = [];
   for (const match of String(text ?? "").matchAll(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g)) {
     if (!names.includes(match[1])) names.push(match[1]);
   }
   return names;
 }
+// #endregion FUNC_previewVariableNames
+
+// #region FUNC_previewVariableNotice
 /**
- * @purpose Which interpolation variables make this preview item
- *   ILLUSTRATIVE rather than exact. A preview is assembled without the
- *   session, so the host substitutes its OWN cwd and leaves `{{model}}`
- *   literal: the value it used cannot be proven equal to the session's (and
- *   `null`/absent means unknown). Returns the names to flag, or `null` when
- *   the item uses no variables — never a made-up value.
+ * @purpose Names that make a preview item illustrative rather than exact:
+ *   sessionless assembly means a used value cannot be proven exact.
  */
 export function previewVariableNotice(
   text: unknown,
@@ -474,18 +430,15 @@ export function previewVariableNotice(
 }
 // #endregion FUNC_previewVariableNotice
 
-// #region FUNC_profileStateSignal
-/**
- * @purpose One module-level "profiles/sections changed" signal. The settings
- *   page fires it after every SUCCESSFUL profile or section mutation; the
- *   composer chip subscribes and re-reads /state, debounced, so a burst of
- *   edits cannot cause a request storm.
- */
+// The chip re-reads /state on this signal, debounced, so a burst of edits
+// cannot cause a request storm.
 const profileStateListeners = new Set<(seq: number) => void>();
 let profileStateSeq = 0;
 /** How long a burst of mutations is coalesced before the chip re-reads /state. */
 export const PROFILES_REFRESH_DEBOUNCE_MS = 150;
 
+// #region FUNC_notifyProfilesChanged
+/** @purpose Fire the profiles-changed signal after a successful mutation. */
 export function notifyProfilesChanged(): void {
   profileStateSeq += 1;
   // One failing listener must not starve the others.
@@ -497,14 +450,17 @@ export function notifyProfilesChanged(): void {
     }
   }
 }
+// #endregion FUNC_notifyProfilesChanged
 
+// #region FUNC_subscribeProfilesChanged
+/** @purpose Subscribe to the profiles-changed signal; returns the unsubscribe. */
 export function subscribeProfilesChanged(listener: (seq: number) => void): () => void {
   profileStateListeners.add(listener);
   return () => {
     profileStateListeners.delete(listener);
   };
 }
-// #endregion FUNC_profileStateSignal
+// #endregion FUNC_subscribeProfilesChanged
 
 // #region FUNC_errText
 /** @purpose Duck-typed error message (cross-realm-safe, unlike instanceof). */
@@ -514,7 +470,6 @@ export function errText(err: unknown): string {
 }
 // #endregion FUNC_errText
 
-/** The pure helpers, exported on the module object for the shim test. */
 export const helpers = {
   insertionOrders,
   outlineRows,

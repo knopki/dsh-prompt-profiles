@@ -1,14 +1,12 @@
 /**
  * #region moduleContract
  * @modulecontract
- * @purpose Pin the shared prompt-profile operations (frozen live-bugfix
- *   contract: rowId OR patchId addressing, whole-object writes via
- *   settings.replace) against fake settings/configEditor services and a temp
- *   profile patch: validation-first writes, correct dispatch of each
- *   operation, clean domain error codes, and failure diagnostics.
- * @scope node:test with in-memory fakes; NOT: the platform transport (the
- *   Remote surface has its own suites: test/smoke-cordis.test.mjs and
- *   test/remote/client-remote.spec.mjs).
+ * @purpose Pin the shared prompt-profile operations (rowId OR patchId
+ *   addressing, whole-object writes via settings.replace) against fake
+ *   settings/configEditor services and a temp profile patch: validation-first
+ *   writes, correct dispatch of each operation, clean domain error codes, and
+ *   failure diagnostics.
+ * @scope node:test with in-memory fakes; NOT: the platform transport.
  * #endregion moduleContract
  */
 
@@ -27,12 +25,8 @@ import { createHostPorts } from "../lib/infra/index.js";
 
 const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value) => value }] };
 
-// #region CONST_operations
-/**
- * @purpose Path → operation map of the test's own driver. The bundle publishes
- *   one operation set; this table is only how the tests address it, so every
- *   assertion below is about operation behaviour, not about a transport.
- */
+// Path → operation map of the test's own driver: the bundle publishes one
+// operation set, and this table is only how the tests address it.
 const OPERATIONS = {
   "/state": { method: "GET", op: "state" },
   "/preview": { method: "GET", op: "preview" },
@@ -46,7 +40,6 @@ const OPERATIONS = {
   "/default": { method: "POST", op: "defaultSet" },
   "/last": { method: "POST", op: "last" },
 };
-// #endregion CONST_operations
 
 // #region FUNC_harness
 /**
@@ -169,7 +162,7 @@ async function harness({
       return undefined;
     }
   };
-  const { ops } = createOperations(createHostPorts({ service, getService, warn, log: { warn } }));
+  const ops = createOperations(createHostPorts({ service, getService, warn, log: { warn } }));
   return {
     patchPath,
     mutations,
@@ -210,8 +203,7 @@ const userProfile = {
 };
 // #endregion FUNC_harness
 
-// #region TEST_state
-/** @purpose GET /state serves every field SPEC §5.5 lists PLUS patchId on every row (frozen contract). */
+/** @purpose GET /state serves profiles, sections with patchId, usedIn, builtinOrders, default, last and revision. */
 test("state returns profiles, sections with patchId, usedIn, builtinOrders, default, last, revision", async () => {
   const api = await harness({
     sections: [userSection],
@@ -254,10 +246,32 @@ test("state normalizes patchId for qualified loader entry rowIds", async () => {
     await api.cleanup();
   }
 });
-// #endregion TEST_state
 
-// #region TEST_validation
-/** @purpose Bad payloads fail with a clean error object, no file write, no settings call — the patch stays byte-identical (task d). */
+/** @purpose /state degrades when settings.describe() throws: revision null, everything else served. */
+test("state resolves with revision null when settings.describe() throws", async () => {
+  const api = await harness({
+    sections: [userSection],
+    profiles: [userProfile],
+    settings: {
+      describe: () => {
+        throw new Error("settings down");
+      },
+      mutate: async () => {},
+      replace: async () => {},
+    },
+  });
+  try {
+    const { status, body } = await api.call("GET", "/state");
+    assert.equal(status, 200);
+    assert.equal(body.revision, null);
+    assert.equal(body.sections.length, 1);
+    assert.equal(body.profiles.length, 1);
+  } finally {
+    await api.cleanup();
+  }
+});
+
+/** @purpose Bad payloads fail with a clean error object, no file write, no settings call — the patch stays byte-identical. */
 test("whole-object validation rejects bad values without writing (patch byte-identical)", async () => {
   const api = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
@@ -305,10 +319,8 @@ test("whole-object validation rejects bad values without writing (patch byte-ide
     await api.cleanup();
   }
 });
-// #endregion TEST_validation
 
-// #region TEST_create
-/** @purpose section/profile create write insert rows through the writer and answer the full frozen-contract payload INCLUDING patchId (task e). */
+/** @purpose section/profile create write insert rows through the writer and answer the full payload INCLUDING patchId. */
 test("section and profile create append insert rows and return rowId + patchId + configId", async () => {
   const api = await harness();
   try {
@@ -347,8 +359,7 @@ test("section and profile create append insert rows and return rowId + patchId +
   }
 });
 
-// #region TEST_refConsistency
-/** @purpose H5: CREATE and UPDATE accept the same refs — registered, or pending in the patch — and both reject typos; no CREATE-only allowance. */
+/** @purpose CREATE and UPDATE accept the same refs — registered, or pending in the patch — and both reject typos; no CREATE-only allowance. */
 test("profile create and update reject unknown section refs symmetrically", async () => {
   const api = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
@@ -379,9 +390,8 @@ test("profile create and update reject unknown section refs symmetrically", asyn
     await api.cleanup();
   }
 });
-// #endregion TEST_refConsistency
 
-/** @purpose H5: a pending ref counts ONLY for a real, live, config-bearing SECTION row; profile/foreign/disabled/config-less ids are 400. */
+/** @purpose A pending ref counts ONLY for a real, live, config-bearing SECTION row; profile/foreign/disabled/config-less ids are 400. */
 test("pending section refs require a real live section row in the patch", async () => {
   const api = await harness({ profiles: [], sections: [] });
   try {
@@ -424,7 +434,7 @@ test("pending section refs require a real live section row in the patch", async 
   }
 });
 
-/** @purpose Create ids are short random tokens (SPEC §3/§5.5) carried IDENTICALLY by rowId and configId (full prefixed form), with no dependence on the title. */
+/** @purpose Create ids are short random tokens carried IDENTICALLY by rowId and configId (full prefixed form), with no dependence on the title. */
 test("create mints one full id used as rowId and configId, unique across creates", async () => {
   const api = await harness();
   try {
@@ -486,9 +496,7 @@ test("create regenerates the token on collision with an existing row id or confi
     await api.cleanup();
   }
 });
-// #endregion TEST_create
 
-// #region TEST_idScheme
 /** @purpose Explicit create ids accept the bare token, the full `prompt-<kind>-<token>` form, and a qualified `include:` form — all stored FULL. */
 test("explicit create ids accept bare, full and qualified forms and store the full form", async () => {
   const api = await harness();
@@ -573,9 +581,7 @@ test("profile section refs accept every id form and store the registered config.
     await api.cleanup();
   }
 });
-// #endregion TEST_idScheme
 
-// #region TEST_createDuplicate
 /** @purpose Creating a section or profile whose id already exists maps the writer's duplicate guard to a clean 400 — never a 500. */
 test("section and profile create with an existing id answer a clean 400", async () => {
   const api = await harness();
@@ -594,10 +600,8 @@ test("section and profile create with an existing id answer a clean 400", async 
     await api.cleanup();
   }
 });
-// #endregion TEST_createDuplicate
 
-// #region TEST_update
-/** @purpose Updates replace the WHOLE config through settings.replace with the sent revision (task c). */
+/** @purpose Updates replace the WHOLE config through settings.replace with the sent revision. */
 test("section update replaces the whole config through settings.replace", async () => {
   const api = await harness({ sections: [userSection] });
   try {
@@ -621,7 +625,7 @@ test("section update replaces the whole config through settings.replace", async 
   }
 });
 
-/** @purpose The QUALIFIED loader entry rowId works on update (task a) in both registry directions. */
+/** @purpose The QUALIFIED loader entry rowId works on update in both registry directions. */
 test("qualified include:… rowId works on section and profile update", async () => {
   const api = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
@@ -667,7 +671,7 @@ test("update normalizes the settings ns when the registry rowId is qualified", a
   }
 });
 
-/** @purpose An unknown rowId answers a clear 404 envelope, never a bare 500 (task b). */
+/** @purpose An unknown rowId answers a clear 404 envelope, never a bare 500. */
 test("unknown rowIds answer 404 with a readable message, not 500", async () => {
   const api = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
@@ -692,19 +696,13 @@ test("unknown rowIds answer 404 with a readable message, not 500", async () => {
     await api.cleanup();
   }
 });
-// #endregion TEST_update
 
-// #region TEST_liveBugEmpty400
 /**
- * @purpose Live bug (empty 400 on every update): reproduce against a
- *   settings stub that enforces the REAL dsh-settings@0.1.7-rc.1 rules —
- *   `SettingsForms.write()` runs `validatePaths(next, volatileForm(schema))`
- *   and throws `Config field "<key>" is not volatile` for every replace()
- *   payload key that the row Config does not mark `.volatile()`. The
- *   section/profile row Configs (lib/section.js, lib/profile.js) mark only
- *   title/body and title/sections volatile; `id` is inherited. The stub also
- *   COMPOSES the accepted write onto the insert row's config exactly like
- *   `mergeLayers(base, input)` so the persisted result can be asserted.
+ * @purpose Updates succeed only with volatile fields: the stub enforces the
+ *   real settings-layer rule (`SettingsForms.write()` rejects every replace()
+ *   payload key the row Config does not mark volatile) and composes the
+ *   accepted write onto the insert row's config, so the persisted result keeps
+ *   the inherited id.
  */
 function realRulesSettings({ patchPath, composed }) {
   const VOLATILE = new Set(["title", "body", "sections", "default", "lastByWorkspace"]);
@@ -791,7 +789,7 @@ test("live payloads succeed under real dsh-settings volatile rules and keep the 
   }
 });
 
-/** @purpose A settings layer refusing a non-volatile key now answers a readable 400 (previously an opaque 500/empty body). */
+/** @purpose A settings layer refusing a non-volatile key answers a readable 400. */
 test("a non-volatile write attempt from the settings layer maps to a readable 400", async () => {
   const api = await harness({
     sections: [userSection],
@@ -861,10 +859,8 @@ test("a thrown non-Error string produces a readable 500 with a non-empty message
     await api2.cleanup();
   }
 });
-// #endregion TEST_liveBugEmpty400
 
-// #region TEST_delete
-/** @purpose Delete removes user rows physically and disables bundle rows; the QUALIFIED rowId works (task a). */
+/** @purpose Delete removes user rows physically and disables bundle rows; the QUALIFIED rowId works. */
 test("delete removes a user insert row (qualified rowId); a bundle row gets a bare disabled override", async () => {
   const api = await harness({ sections: [userSection] });
   try {
@@ -890,9 +886,7 @@ test("delete removes a user insert row (qualified rowId); a bundle row gets a ba
     await api.cleanup();
   }
 });
-// #endregion TEST_delete
 
-// #region TEST_rename
 /** @purpose Rename is ONE writer commit that changes the SECTION only: the new row lands, the old row goes, and every profile reference stays OLD — the response reports the affected profiles. */
 test("rename creates the new row, leaves profile refs untouched, removes the old row, and reports affectedProfiles", async () => {
   const api = await harness({ sections: [userSection], profiles: [userProfile] });
@@ -948,7 +942,7 @@ test("rename creates the new row, leaves profile refs untouched, removes the old
   }
 });
 
-/** @purpose The QUALIFIED rowId works on rename too (task a). */
+/** @purpose The QUALIFIED rowId works on rename too. */
 test("rename accepts the qualified include:… rowId", async () => {
   const api = await harness({ sections: [userSection], profiles: [userProfile] });
   try {
@@ -1041,9 +1035,7 @@ test("rename rejects a repeat/duplicate id with 400 and rolls the patch back byt
     await api2.cleanup();
   }
 });
-// #endregion TEST_rename
 
-// #region TEST_defaults
 /** @purpose default and last write volatile fields through settings.mutate; an explicit "none" is STORED (own-property ""). */
 test("default and last write through settings.mutate on the main row", async () => {
   const api = await harness({ profiles: [userProfile], defaultId: "light", lastByWorkspace: { ws1: "light" } });
@@ -1070,7 +1062,7 @@ test("default and last write through settings.mutate on the main row", async () 
   }
 });
 
-/** @purpose (в) /last writes under the FIRST candidate: the UUID when the workspace resolves, the raw cwd when it does not. */
+/** @purpose /last writes under the FIRST candidate: the UUID when the workspace resolves, the raw cwd when it does not. */
 test("/last writes under the UUID when resolvable and under the cwd otherwise", async () => {
   const api = await harness({
     profiles: [userProfile],
@@ -1347,7 +1339,7 @@ test("/last prunes dangling profile values and stale workspace-id keys", async (
     await api2.cleanup();
   }
 });
-/** @purpose B1-remaining: the prune decision is re-derived inside the mutation; a key that became valid between the scan and the write survives (CAS retry rescans). */
+/** @purpose The prune decision is re-derived inside the mutation; a key that became valid between the scan and the write survives (CAS retry rescans). */
 test("a lastByWorkspace key that becomes valid before the write is NOT pruned", async () => {
   let injected = false;
   const api = await harness({
@@ -1376,7 +1368,7 @@ test("a lastByWorkspace key that becomes valid before the write is NOT pruned", 
   }
 });
 
-/** @purpose B1-remaining: without a revision the stale-key prune is skipped (safe), while the caller's own key is still written. */
+/** @purpose Without a revision the stale-key prune is skipped (safe), while the caller's own key is still written. */
 test("without a settings revision /last skips the prune but still writes its own key", async () => {
   const api = await harness({
     profiles: [userProfile],
@@ -1397,7 +1389,7 @@ test("without a settings revision /last skips the prune but still writes its own
   }
 });
 
-/** @purpose B2 race: a profile deleted while the request awaits its workspace key must yield 404 and write nothing. */
+/** @purpose A profile deleted while the request awaits its workspace key yields 404 and writes nothing. */
 test("a profile deleted during /last key resolution is not resurrected", async () => {
   const profiles = [{ ...userProfile }];
   const api = await harness({
@@ -1421,7 +1413,7 @@ test("a profile deleted during /last key resolution is not resurrected", async (
     await api.cleanup();
   }
 });
-/** @purpose B2 residual: a profile whose patch row is already gone must 404 even while the registry still lists it (HMR lag). */
+/** @purpose A profile whose patch row is already gone 404s even while the registry still lists it (HMR lag). */
 test("a profile removed from the patch but still in the registry cannot be chosen", async () => {
   const stale = { ...userProfile, source: "user" }; // a patch-backed row that was removed
   const api = await harness({ profiles: [stale] });
@@ -1437,7 +1429,7 @@ test("a profile removed from the patch but still in the registry cannot be chose
   }
 });
 
-/** @purpose B2: the patch row's state wins — a live user row is selectable, a disabled row and a foreign row are not. */
+/** @purpose The patch row's state wins — a live user row is selectable, a disabled row and a foreign row are not. */
 test("patch rows decide profile validity (live row / disabled row / foreign row)", async () => {
   const profiles = [
     { id: "live", title: "Live", sections: [], rowId: "prompt-profile-live", source: "user" },
@@ -1470,10 +1462,8 @@ test("patch rows decide profile validity (live row / disabled row / foreign row)
     await api.cleanup();
   }
 });
-// #endregion TEST_defaults
 
-// #region TEST_emptyBody
-/** @purpose Empty/whitespace section bodies are legal (SPEC §7) and marked emits:false on create AND whole-object update. */
+/** @purpose Empty/whitespace section bodies are legal and marked emits:false on create AND whole-object update. */
 test("empty body is accepted on create and update and reported as non-emitting", async () => {
   const api = await harness();
   try {
@@ -1502,10 +1492,8 @@ test("empty body is accepted on create and update and reported as non-emitting",
     await api2.cleanup();
   }
 });
-// #endregion TEST_emptyBody
 
-// #region TEST_modes
-/** @purpose state.modes derives complete flags from agentPresets documents (SPEC decision 21); absent service degrades to []. */
+/** @purpose state.modes derives complete flags from agentPresets documents; an absent service degrades to []. */
 test("state modes mark complete presets and degrade without agentPresets", async () => {
   const completeYaml = ['- name: "@deepseek-ai/dsh-persona"', "  config:", "    complete: true"].join("\n");
   const agentPresets = {
@@ -1529,11 +1517,9 @@ test("state modes mark complete presets and degrade without agentPresets", async
 });
 
 /**
- * @purpose LIVE BUG: `complete` was missed for the shipped minimal preset
- *   because the persona row sits DEEP (`insert[].config.plugins[]`) while the
- *   scan only unwrapped `insert`. The fixture below is the real
- *   `@deepseek-ai/dsh-web-app/presets/minimal.patch.yml` shape (with its `!!js`
- *   tags), so a shallow scan fails and the recursive one must pass.
+ * @purpose A persona row nested deep (`insert[].config.plugins[]`, the shipped
+ *   minimal-preset shape with its `!!js` tags) is still found by the complete
+ *   scan — a shallow scan would miss it.
  */
 const REAL_MINIMAL_PRESET = [
   "# Agent preset minimal: one `@deepseek-ai/dsh-agent-preset` declaration inserted",
@@ -1603,7 +1589,7 @@ test("state modes find a persona-complete row at any depth, including the real m
     await api.cleanup();
   }
 });
-/** @purpose (а) REFLECT: a service reachable ONLY through ctx.get('agentPresets') still fills modes (the harness sets no ctx.agentPresets property). */
+/** @purpose REFLECT: a service reachable ONLY through ctx.get('agentPresets') still fills modes (the harness sets no ctx.agentPresets property). */
 test("modes resolve agentPresets through ctx.get, not as a ctx property", async () => {
   const agentPresets = {
     list: async () => [{ id: "minimal" }],
@@ -1619,7 +1605,7 @@ test("modes resolve agentPresets through ctx.get, not as a ctx property", async 
   }
 });
 
-/** @purpose (в) a throwing ctx.get must not take /state down. */
+/** @purpose A throwing ctx.get must not take /state down. */
 test("a throwing ctx.get leaves modes empty instead of failing /state", async () => {
   const api = await harness({ agentPresets: { list: async () => [] }, agentPresetsGetThrows: true });
   try {
@@ -1630,9 +1616,7 @@ test("a throwing ctx.get leaves modes empty instead of failing /state", async ()
     await api.cleanup();
   }
 });
-// #endregion TEST_modes
 
-// #region TEST_preview
 /** @purpose preview orders our sections, interpolates {{cwd}}, reports the profile's order verbatim (no +0.5), places built-in placeholders, and reports skipped refs with reasons. */
 test("preview renders ordered sections with interpolation and skip reasons", async () => {
   const blank = { id: "blank", title: "Blank", body: " ", rowId: "prompt-section-blank", source: "user" };
@@ -1660,7 +1644,7 @@ test("preview renders ordered sections with interpolation and skip reasons", asy
   try {
     assert.equal((await api.call("GET", "/preview")).status, 400);
     assert.equal((await api.call("GET", "/preview?profileId=ghost")).status, 404);
-    const { status, body } = await api.call("GET", "/preview?profileId=light");
+    const { status, body } = await api.call("GET", "/preview?profileId=light&cwd=%2Fwork");
     assert.equal(status, 200);
     assert.equal(body.title, "Light");
     assert.deepEqual(
@@ -1671,7 +1655,7 @@ test("preview renders ordered sections with interpolation and skip reasons", asy
           title: "Cwd",
           order: 1000,
           scope: "inherit",
-          text: `Work in ${process.cwd()} with {{model}}.`,
+          text: "Work in /work with {{model}}.",
           emits: true,
         },
         { kind: "builtin", name: "tool:bash", title: "tool:bash", order: 1000 },
@@ -1682,8 +1666,12 @@ test("preview renders ordered sections with interpolation and skip reasons", asy
       { id: "missing", title: "missing", reason: "section not found" },
       { id: "blank", title: "Blank", reason: "empty body" },
     ]);
-    assert.equal(body.variables.cwd, process.cwd());
+    assert.equal(body.variables.cwd, "/work");
     assert.equal(body.variables.model, null);
+    // Without a cwd query nothing is substituted: the reference stays literal.
+    const bare = await api.call("GET", "/preview?profileId=light");
+    assert.equal(bare.body.sections[0].text, "Work in {{cwd}} with {{model}}.");
+    assert.equal(bare.body.variables.cwd, null);
   } finally {
     await api.cleanup();
   }
@@ -1691,10 +1679,9 @@ test("preview renders ordered sections with interpolation and skip reasons", asy
 
 /**
  * @purpose Preview applies the RUNTIME selection rule and the real built-in
- *   order. M6: the expected sequence below is written BY HAND against the REAL
- *   annotated built-in table (validated against the installed package in
- *   mirror.test.mjs), NOT computed with planInsertion — so a wrong/degraded
- *   built-in set fails here instead of agreeing with itself.
+ *   order. The expected sequence below is written BY HAND against the REAL
+ *   annotated built-in table, NOT computed with the planner under test — so a
+ *   wrong/degraded built-in set fails here instead of agreeing with itself.
  */
 test("preview merges the REAL built-in placeholders in an independently expected order", async () => {
   const realBuiltinOrders = nameBuiltinOrders(BUILTIN_ORDERS);
@@ -1778,12 +1765,12 @@ test("preview merges the REAL built-in placeholders in an independently expected
   }
 });
 
-/** @purpose H6: the preview reports which variables it used and the value it substituted; unknown ones are null, and a session cwd supplied in the query wins. */
+/** @purpose The preview reports which variables it used and the value it substituted; unknown ones are null, and a session cwd supplied in the query wins. */
 test("preview reports used variables honestly and prefers the session cwd", async () => {
   const section = {
     id: "vars",
     title: "Vars",
-    body: "cwd={{cwd}} model={{model}} user={{username}} broken={{not a var}} upper={{userName}}",
+    body: "cwd={{cwd}} model={{model}} user={{username}}",
     rowId: "prompt-section-vars",
     source: "user",
   };
@@ -1799,16 +1786,16 @@ test("preview reports used variables honestly and prefers the session cwd", asyn
     const { body } = await api.call("GET", "/preview?profileId=light&cwd=%2Fsession%2Fdir");
     assert.equal(
       body.sections[0].text,
-      "cwd=/session/dir model={{model}} user={{username}} broken={{not a var}} upper={{userName}}",
-      "only cwd is substituted; unknown, malformed and non-lowercase groups stay literal",
+      "cwd=/session/dir model={{model}} user={{username}}",
+      "only cwd is substituted; unknown groups stay literal",
     );
     assert.deepEqual(
       body.variables,
       { cwd: "/session/dir", model: null, username: null },
-      "used variables are reported; unknown ones are null (malformed names are not variables)",
+      "used variables are reported; unknown ones are null",
     );
     const fallback = (await api.call("GET", "/preview?profileId=light")).body;
-    assert.equal(fallback.variables.cwd, process.cwd(), "without a cwd query the host cwd is used");
+    assert.equal(fallback.variables.cwd, null, "without a cwd query nothing is substituted");
   } finally {
     await api.cleanup();
   }
@@ -1839,9 +1826,39 @@ test("preview reports disabled and empty sections with the runtime reasons", asy
     await api.cleanup();
   }
 });
-// #endregion TEST_preview
 
-// #region TEST_surfaceShape
+/** @purpose A section whose body holds a malformed {{9bad}} reference is a skip with a reason, never an emitting section. */
+test("preview reports a malformed variable reference as a skip, not an emitting section", async () => {
+  const broken = {
+    id: "broken",
+    title: "Broken",
+    body: "a {{9bad}} b",
+    rowId: "prompt-section-broken",
+    source: "user",
+  };
+  const profile = {
+    id: "light",
+    title: "Light",
+    sections: [{ id: "broken", order: 100 }],
+    rowId: "prompt-profile-light",
+    source: "user",
+  };
+  const api = await harness({ sections: [broken], profiles: [profile], builtinOrdersByName: {} });
+  try {
+    const { status, body } = await api.call("GET", "/preview?profileId=light");
+    assert.equal(status, 200);
+    assert.ok(
+      body.sections.every((entry) => entry.id !== "broken"),
+      "the malformed section emits nothing",
+    );
+    assert.equal(body.skipped.length, 1);
+    assert.equal(body.skipped[0].id, "broken");
+    assert.match(body.skipped[0].reason, /malformed/);
+  } finally {
+    await api.cleanup();
+  }
+});
+
 /** @purpose The operation set is the ONLY surface the bundle publishes: no route table, and every method callable by name. */
 test("createOperations returns the operation set and no transport table", async () => {
   const api = await harness();
@@ -1868,9 +1885,7 @@ test("createOperations returns the operation set and no transport table", async 
     await api.cleanup();
   }
 });
-// #endregion TEST_surfaceShape
 
-// #region TEST_writeSerialization
 /** @purpose Every mutating operation shares one serializer: concurrent writes never overlap. */
 test("concurrent writes through the operations execute serially", async () => {
   const dir = await mkdtemp(join(tmpdir(), "dsh-pp-api-"));
@@ -1904,7 +1919,7 @@ test("concurrent writes through the operations execute serially", async () => {
     // Real cordis REFLECT: the operations read optional services through ctx.get.
     get: (name) => (name === "settings" ? settings : name === "configEditor" ? ctx.configEditor : undefined),
   };
-  const { ops } = createOperations(createHostPorts({ service, getService: (name) => ctx.get(name) }));
+  const ops = createOperations(createHostPorts({ service, getService: (name) => ctx.get(name) }));
   try {
     await Promise.all([
       ops.defaultSet({ default: "light" }),
@@ -1920,4 +1935,3 @@ test("concurrent writes through the operations execute serially", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
-// #endregion TEST_writeSerialization

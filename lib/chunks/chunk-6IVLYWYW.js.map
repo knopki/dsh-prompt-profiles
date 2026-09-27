@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["../../src/host/entrypoints/row-support.ts"],
+  "sourcesContent": ["/**\n * #region moduleContract\n * @modulecontract\n * @purpose Share the row lifecycle helpers all composition entrypoints repeat.\n * @scope\n *  - Reading the optional settings service, the loader fiber entry id, and\n *    suppressing the auto settings page for a row fiber.\n *  - NOT: registration itself (plugin.ts) or row Config schemas.\n * #endregion moduleContract\n */\n\nimport type { Context, Fiber } from \"@deepseek-ai/cordis\";\n\ninterface SettingsServiceLike {\n  configure(config: unknown, fiber: unknown): () => void;\n}\n\nfunction settingsOf(ctx: Context): SettingsServiceLike {\n  return (ctx as Context & { settings: SettingsServiceLike }).settings;\n}\n\nexport function fiberEntryId(ctx: Context): string | null {\n  return (ctx.fiber as Fiber & { entry?: { id?: string } | null })?.entry?.id ?? null;\n}\n\nexport function suppressAutoSettings(ctx: Context, fiber: Fiber): void {\n  ctx.inject([\"settings\"], (child) => child.effect(() => settingsOf(child).configure({ auto: false }, fiber)));\n}\n"],
+  "mappings": ";;;AAiBA,SAAS,WAAW,KAAmC;AACrD,SAAQ,IAAoD;AAC9D;AAEO,SAAS,aAAa,KAA6B;AACxD,SAAQ,IAAI,OAAsD,OAAO,MAAM;AACjF;AAEO,SAAS,qBAAqB,KAAc,OAAoB;AACrE,MAAI,OAAO,CAAC,UAAU,GAAG,CAAC,UAAU,MAAM,OAAO,MAAM,WAAW,KAAK,EAAE,UAAU,EAAE,MAAM,MAAM,GAAG,KAAK,CAAC,CAAC;AAC7G;",
+  "names": []
+}

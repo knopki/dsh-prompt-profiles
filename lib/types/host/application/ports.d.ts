@@ -1,26 +1,14 @@
 /**
  * #region moduleContract
  * @modulecontract
- * @purpose Name the driven concerns of the operation set as interfaces, so the
- *   use cases describe WHAT they need from the host and the adapters in
- *   src/host/infra/ decide HOW each need is satisfied.
- * @scope
- *  - Interfaces and plain data shapes only: patch rows, loader-registry rows,
- *    built-in orders, session snapshots, settings, workspace keys, agent
- *    presets, logging and the write serializer.
- *  - NOT: implementations, `node:fs`, Cordis, or any service; a port may
- *    reference domain types and nothing else.
+ * @purpose Name the driven concerns of the operation set as interfaces.
+ * @scope Interfaces and plain data shapes only. NOT implementations or services.
  * @invariants
- *  - A resolver method (`settings()`, `patch()`, `presets()`) is read at CALL
- *    time, so a service that appears after mount is picked up and a missing one
- *    degrades per operation.
- *  - Port methods perform no cross-cutting ordering: locking, validation and
- *    error mapping stay with the caller.
- * @keywords ports, hexagonal, driven adapter, operations
+ *  - Optional services resolve per call, so late services are picked up.
  * #endregion moduleContract
  */
 import type { ConfigId, ProfileView, SectionView, Snapshot, UsedInEntry } from "../domain/model.ts";
-/** The registry rows and live volatile config of the `promptProfiles` service. */
+/** Registry rows and live volatile config of the `promptProfiles` service. */
 export interface LoaderRegistryPort {
     sections(): SectionView[];
     profiles(): ProfileView[];
@@ -64,8 +52,7 @@ export interface SectionRenameRequest {
 }
 /**
  * The user's profile patch file: read-only authority queries plus the row
- * mutations config-editor cannot perform. Every method addresses the file the
- * adapter was built for; mutating calls serialize on the shared write lock.
+ * mutations config-editor cannot perform. Mutating calls serialize on the shared write lock.
  */
 export interface PatchPort {
     /** Absolute patch path, or `undefined` when the editor has none. */
@@ -75,10 +62,10 @@ export interface PatchPort {
     ownership(rowId: string): RowOwnership;
     /** Canonical patch row id for a registry rowId (editor entries first). */
     patchIdOf(rowId: string): string;
-    insert(row: PatchRowInput): Promise<boolean>;
+    insert(row: PatchRowInput): Promise<void>;
     remove(rowId: string): Promise<boolean>;
-    disable(rowId: string, name: string): Promise<boolean>;
-    renameSection(request: SectionRenameRequest): Promise<boolean>;
+    disable(rowId: string, name: string): Promise<void>;
+    renameSection(request: SectionRenameRequest): Promise<void>;
 }
 /** One per-key settings mutation (`mutate`), applied against the value read at write time. */
 export interface SettingsOp {
@@ -98,12 +85,6 @@ export interface WorkspaceOwner {
     id?: string;
     sessionIds?: readonly string[];
 }
-/** The optional workspace registry behind key resolution and pruning. */
-export interface WorkspaceRegistryPort {
-    get?(id: string): unknown;
-    list?(): WorkspaceOwner[];
-    resolveByPath?(path: string): WorkspaceOwner | null | undefined | Promise<WorkspaceOwner | null | undefined>;
-}
 /** How a session's workspace is named at write and read time. */
 export interface WorkspaceKeyRequest {
     session?: {
@@ -117,11 +98,6 @@ export interface WorkspaceKeysPort {
     keys(request: WorkspaceKeyRequest): Promise<string[]>;
     /** Whether the registry vouches for an id; `undefined` when it cannot answer. */
     knows(id: string): boolean | undefined;
-}
-/** The `prompt_profiles.sessions` table as sealing uses it. */
-export interface SnapshotTable {
-    get(key: string): Snapshot | undefined;
-    put(key: string, value: Snapshot): unknown;
 }
 /** Durable per-session snapshot decisions for the process. */
 export interface SessionSnapshotsPort {

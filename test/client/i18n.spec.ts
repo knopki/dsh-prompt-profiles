@@ -1,7 +1,9 @@
 /**
- * The dictionaries are the single content source: `ru`/`zh` must be key-for-key
- * identical to `en` (a drifting key silently falls back) and no entry may be
- * blank. Keys with no remaining call site stay deleted from all three.
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Prove the dictionaries are the single content source: `ru`/`zh`
+ *   key-for-key identical to `en`, no blank entry, no retired key left behind.
+ * #endregion moduleContract
  */
 import { expect, test } from "vitest";
 import { en, messages, NS, ru, zh } from "../../src/client/i18n.ts";

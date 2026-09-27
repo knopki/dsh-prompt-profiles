@@ -1,19 +1,13 @@
 /**
- * Inert stand-in for the eager imports of the primitives barrel that the atoms
- * under test never touch: the markdown pipeline, the syntax highlighter, the
- * diff/ansi renderers and the brand-icon set. The barrel imports them at module
- * scope (and builds its highlighter there), so the ids must resolve and the
- * module-scope calls must return something; nothing in the tests ever reads a
- * real value out of them.
- *
- * The atoms the client UI actually uses (Button, Menu, Tooltip, Modal, Toast,
- * Input, Tag, SegmentedTabs, Checkbox and the icons) are the REAL installed
- * primitives, and `clsx`, `@deepseek-ai/dsh-client-store` and
- * `@deepseek-ai/dsh-util-workspace-path` are installed for real.
- *
- * The named exports below mirror the barrel's own import list one-for-one; a
- * new import there shows up here as an undefined named export and a loud
- * TypeError, never as a silent stub.
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Stand in for the eager barrel imports the atoms under test never
+ *   touch (markdown, highlighter, diff/ansi, brand icons): the ids must
+ *   resolve and module-scope calls must return something, while the atoms the
+ *   UI actually uses stay the REAL installed primitives.
+ * @invariants The named exports mirror the barrel's own import list
+ *   one-for-one; a new import there fails loud here, never silent.
+ * #endregion moduleContract
  */
 // biome-ignore lint/suspicious/noExplicitAny: the stub answers any property and must stay callable/constructible.
 const inert: any = new Proxy(function inertStub() {}, {

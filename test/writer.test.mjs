@@ -5,7 +5,6 @@
  *   insert/remove/disable round-trips, provenance, atomicity, and batch
  *   rollback — all on temp files, never on a real profile.
  * @scope node:test with os.tmpdir workspaces; NOT: loader/HMR behavior
- *   (spike R2 proved those against the real loader).
  * #endregion moduleContract
  */
 
@@ -29,8 +28,7 @@ import {
 const parseOptions = { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: (value) => value }] };
 const SECTION_NAME = "@knopki/dsh-prompt-profiles/section";
 
-// #region FUNC_toPatchId_unit
-/** @purpose Unit-pin the shared normalizer: strip `<parent>:` chains, keep the last segment, pass unqualified/non-string values through. */
+/** Unit-pin the shared normalizer: strip `<parent>:` chains, keep the last segment, pass unqualified/non-string values through. */
 test("toPatchId strips qualified prefix chains and passes unqualified ids through", () => {
   assert.equal(toPatchId("include:prompt-section-1"), "prompt-section-1");
   assert.equal(toPatchId("include:group:prompt-section-1"), "prompt-section-1");
@@ -38,7 +36,6 @@ test("toPatchId strips qualified prefix chains and passes unqualified ids throug
   assert.equal(toPatchId(""), "");
   assert.equal(toPatchId(null), null);
 });
-// #endregion FUNC_toPatchId_unit
 
 const samplePatch = `# Your patch layer for this dsh profile, applied after every bundle layer:
 # a top-level YAML array of loader patch entries (id-targeted config
@@ -70,7 +67,6 @@ const sectionRow = (id) => ({
   config: { id, title: `Title ${id}`, body: "Line one\nLine two" },
 });
 
-// #region TEST_preservation
 /** @purpose Comments and !!js expressions must survive every writer round-trip. */
 test("insertRow preserves comments and !!js expressions", async () => {
   const { dir, patchPath } = await workspace();
@@ -88,9 +84,7 @@ test("insertRow preserves comments and !!js expressions", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
-// #endregion TEST_preservation
 
-// #region TEST_roundtrip
 /** @purpose insert → remove restores the file; disable leaves a bare override row. */
 test("insert, remove, disable round-trip", async () => {
   const { dir, patchPath } = await workspace();
@@ -115,10 +109,7 @@ test("insert, remove, disable round-trip", async () => {
   }
 });
 
-// #endregion TEST_roundtrip
-
-// #region TEST_guards
-/** @purpose Duplicate and unsafe id guards reject before the file is touched (verify-step4-sol defects 2 and 4). */
+/** @purpose Duplicate and unsafe id guards reject before the file is touched. */
 test("insertRow refuses a duplicate id and leaves the file untouched", async () => {
   const { dir, patchPath } = await workspace();
   try {
@@ -157,9 +148,7 @@ test("insertRow refuses unsafe ids (path separators, traversal, absolute)", asyn
     await rm(dir, { recursive: true, force: true });
   }
 });
-// #endregion TEST_guards
 
-// #region TEST_provenance
 /** @purpose Prove user (insert) vs bundle (bare override) vs unknown (absent) ownership, across every id form a caller may pass. */
 test("provenance distinguishes user inserts, bundle overrides, and unresolved rows", async () => {
   const { dir, patchPath } = await workspace();
@@ -222,10 +211,8 @@ test("provenance matches old slug ids in either form", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
-// #endregion TEST_provenance
 
-// #region TEST_loaderShape
-/** @purpose A bare row for an unknown id is the shape the loader skips ("entry not found", spike R2). */
+/** @purpose A bare row for an unknown id carries no insert entry, so the loader skips it. */
 test("disableRow for an unknown id yields a bare (non-insert) row the loader skips", async () => {
   const { dir, patchPath } = await workspace();
   try {
@@ -240,9 +227,7 @@ test("disableRow for an unknown id yields a bare (non-insert) row the loader ski
     await rm(dir, { recursive: true, force: true });
   }
 });
-// #endregion TEST_loaderShape
 
-// #region TEST_batch
 /** @purpose Batch rollback restores the in-memory backup when a later step throws. */
 test("withPatchBatch restores the backup when a step throws", async () => {
   const { dir, patchPath } = await workspace();
@@ -269,7 +254,7 @@ test("withPatchBatch restores the backup when a step throws", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
-/** @purpose M1: a batch that throws BEFORE any write must not rewrite/restore the file (no needless HMR, no foreign-commit clobber). */
+/** @purpose A batch that throws BEFORE any write must not rewrite/restore the file (no needless HMR, no foreign-commit clobber). */
 test("withPatchBatch leaves the file untouched when a step fails before writing", async () => {
   const { dir, patchPath } = await workspace();
   try {
@@ -290,9 +275,7 @@ test("withPatchBatch leaves the file untouched when a step fails before writing"
     await rm(dir, { recursive: true, force: true });
   }
 });
-// #endregion TEST_batch
 
-// #region TEST_mutex
 /** @purpose Concurrent mutations serialize; both land and the file stays parseable. */
 test("concurrent insertRows serialize without losing rows", async () => {
   const { dir, patchPath } = await workspace();
@@ -311,10 +294,8 @@ test("concurrent insertRows serialize without losing rows", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
-// #endregion TEST_mutex
 
-// #region TEST_gateRmw
-/** @purpose Astra finding C: the exclusivity gate wraps the ENTIRE
+/** @purpose The exclusivity gate wraps the ENTIRE
  *  read-modify-write, so a queued writer re-reads the file AFTER external
  *  (configEditor-style) edits already on disk instead of committing a stale
  *  full document over them. */
@@ -394,7 +375,7 @@ test("a failing batch never restores a stale backup over an external edit", asyn
 /** @purpose renameSectionRow is a SINGLE commit — one read, one write, one
  *  gate section — and it touches the SECTION ONLY: the new row and the old
  *  row's removal land (or roll back) together, while profile refs are left
- *  EXACTLY as they were (frozen decision: no profile rewriting). */
+ *  EXACTLY as they were (rename never rewrites profiles). */
 test("renameSectionRow inserts the new row and drops the old one in one commit, leaving profile refs untouched", async () => {
   const { dir, patchPath } = await workspace("[]\n");
   try {
@@ -438,12 +419,10 @@ test("renameSectionRow inserts the new row and drops the old one in one commit, 
     await rm(dir, { recursive: true, force: true });
   }
 });
-// #endregion TEST_gateRmw
 
-// #region TEST_leadingComment
 /** @purpose A file-leading comment attached to the removed FIRST entry must
  *  survive a rename/remove: it re-attaches to the next surviving entry, or to
- *  the document itself when none remain (verify-fixes-glm defect 4). */
+ *  the document itself when none remain. */
 test("rename and removeRow keep the file-leading comment of a removed first entry", async () => {
   const header = "# File-leading header comment:\n# keep me across renames.\n";
   const firstEntry = (rowId, id) =>
@@ -479,4 +458,45 @@ test("rename and removeRow keep the file-leading comment of a removed first entr
     await rm(dir2, { recursive: true, force: true });
   }
 });
-// #endregion TEST_leadingComment
+
+/** @purpose A BOM-prefixed patch still parses: the first write succeeds, the file is BOM-free after it, and a second write succeeds too. */
+test("insertRow on a BOM-prefixed patch succeeds and leaves the file BOM-free", async () => {
+  const { dir, patchPath } = await workspace(`\uFEFF${samplePatch}`);
+  try {
+    await insertRow({ patchPath, row: sectionRow("bom") });
+    const after = await readFile(patchPath, "utf8");
+    assert.equal(after.charCodeAt(0) === 0xfeff, false, "no BOM in the written file");
+    assert.ok(!after.includes("\uFEFF"), "no BOM anywhere in the written file");
+    assert.match(after, /prompt-section-bom/);
+    await insertRow({ patchPath, row: sectionRow("bom-two") });
+    const twice = await readFile(patchPath, "utf8");
+    assert.equal(twice.charCodeAt(0) === 0xfeff, false, "still BOM-free after the second write");
+    assert.match(twice, /prompt-section-bom-two/);
+    assert.deepEqual(entryIds(twice), ["ui-settings-general"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/** @purpose Line endings follow the source: a CRLF patch round-trips CRLF (comments and !!js intact) while an LF patch stays LF. */
+test("a CRLF patch round-trips CRLF; an LF patch stays LF", async () => {
+  const { dir, patchPath } = await workspace(samplePatch.replaceAll("\n", "\r\n"));
+  try {
+    await insertRow({ patchPath, row: sectionRow("crlf") });
+    const after = await readFile(patchPath, "utf8");
+    assert.match(after, /# Your patch layer for this dsh profile/);
+    assert.match(after, /!!js "process\.env\.DSH_WEB_URL/);
+    assert.match(after, /id: prompt-section-crlf/);
+    assert.ok(!after.replaceAll("\r\n", "").includes("\n"), "every linefeed is a CRLF pair");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  const { dir: dir2, patchPath: patchPath2 } = await workspace();
+  try {
+    await insertRow({ patchPath: patchPath2, row: sectionRow("lf") });
+    const after = await readFile(patchPath2, "utf8");
+    assert.ok(!after.includes("\r"), "no carriage return leaks into an LF patch");
+  } finally {
+    await rm(dir2, { recursive: true, force: true });
+  }
+});

@@ -7,8 +7,8 @@
  *   warnings, usedIn scope reporting, and name-anchored splice planning
  *   against a realistic assembly WITHOUT any collision offset (orders reach
  *   the assembly exactly as the profile states them).
- * @scope lib/registry.js (PLAN step 2); assembly fixtures encode the spike-R1
- *   fact that assembled sections carry names but no order field.
+ * @scope The pure registry only; assembly fixtures carry names but no order
+ *   field, exactly what the assembly provides.
  * #endregion moduleContract
  */
 
@@ -54,7 +54,6 @@ function fixtureRegistry() {
   return { registry, warnings, disposeA, disposeB };
 }
 
-// #region SECTION_views
 test("sections() sorts by id; profiles() sorts by title", () => {
   const { registry } = fixtureRegistry();
   assert.deepEqual(
@@ -81,9 +80,7 @@ test("disposers remove registrations", () => {
     ["no-preamble"],
   );
 });
-// #endregion SECTION_views
 
-// #region SECTION_duplicates
 test("duplicate config.id warns naming both rowIds and the later row wins", () => {
   const { registry, warnings } = fixtureRegistry();
   registry.registerSection({
@@ -117,7 +114,7 @@ test("disposing an overridden registration is a no-op (deterministic winner)", (
   );
 });
 
-test("H4: disposing the winner RESTORES the still-mounted earlier registration", () => {
+test("disposing the winner RESTORES the still-mounted earlier registration", () => {
   const { registry, disposeA } = fixtureRegistry();
   const disposeC = registry.registerSection({
     rowId: "row-c",
@@ -138,9 +135,7 @@ test("H4: disposing the winner RESTORES the still-mounted earlier registration",
     undefined,
   );
 });
-// #endregion SECTION_duplicates
 
-// #region SECTION_usedIn
 test("usedIn lists referencing profiles with per-profile scope", () => {
   const { registry } = fixtureRegistry();
   assert.deepEqual(registry.usedIn("light-tone"), [
@@ -150,11 +145,9 @@ test("usedIn lists referencing profiles with per-profile scope", () => {
   assert.deepEqual(registry.usedIn("no-preamble"), [{ profileId: "light", scope: "inherit" }]);
   assert.deepEqual(registry.usedIn("missing"), []);
 });
-// #endregion SECTION_usedIn
 
-// #region SECTION_insertionIndex
 test("insertionIndex anchors on builtin names present in the assembly", () => {
-  // Realistic assembly: entries carry names only, NO order field (spike R1).
+  // Realistic assembly: entries carry names only, NO order field.
   const assemblyNames = [
     "harness:identity", // -1000
     "deployment:persona-prefix", // 0
@@ -219,12 +212,10 @@ test("insertionIndex splices descending keep our ascending order intact", () => 
     ],
   );
 });
-// #endregion SECTION_insertionIndex
 
-// #region TEST_volatileUnwrap
-/** @purpose Astra finding B: volatile wrapper refs (.get()) are unwrapped at
- *  READ time — a live settings edit after registration flows into views,
- *  sorting, and usedIn without re-registering the row. */
+/** @purpose Volatile wrapper refs (.get()) are unwrapped at READ time — a live
+ *  settings edit after registration flows into views, sorting, and usedIn
+ *  without re-registering the row. */
 test("volatile wrappers are unwrapped at read time and follow live edits", () => {
   const registry = new PromptProfilesRegistry({ warn: () => {} });
   // Fake Cordis volatile wrapper: .get() returns the CURRENT value.
@@ -268,4 +259,3 @@ test("volatile wrappers are unwrapped at read time and follow live edits", () =>
     ["p", "b"],
   );
 });
-// #endregion TEST_volatileUnwrap

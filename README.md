@@ -35,7 +35,7 @@ dsh plugin --profile <name> remove @knopki/dsh-prompt-profiles
 |---|---|
 | Section and profile rows, per-row overrides | the profile's patch rows in `cordis.patch.yml` (written by this bundle's writer) |
 | `default` and `lastByWorkspace` | volatile settings of the `prompt-profiles` main row |
-| Sealed per-session snapshots | `$DSH_HOME/storages/prompt_profiles/sessions/<sessionId>.json` (per-record layout, like the platform's own `session_projcache`; the backend bootstraps a pre-per-record `prompt_profiles.json` once and leaves that file in place) |
+| Sealed per-session snapshots | `$DSH_HOME/storages/prompt_profiles/sessions/<sessionId>.json` (one record per session) |
 
 ## Use it
 
@@ -68,14 +68,10 @@ pnpm run check        # typecheck + lint + test + test:client + test:remote + bu
 
 ## Known limitations
 
-- **One DSH process.** Writes are serialized in-process (module mutex plus the optional `dsh-hmr`
-  gate); there is no cross-process lock on the profile patch, so a second DSH process editing the
-  same `cordis.patch.yml` can overwrite rows or choices.
+- **One DSH process.** Writes from a single DSH process are coordinated; a second DSH process
+  editing the same profile patch can overwrite rows or choices.
 - **Strict sealing.** A session's decision is made once and never revised — an empty decision
-  included. A session that started before the snapshot record existed keeps its result; to get a
+  included. A session that started before its snapshot record existed keeps its result; to get a
   profile in such a session, start a new one.
-- **Bundle size.** `lib/client.js` is 139 010 B (853 799 B on full zod): the strict codecs are built on `zod/mini`
-  (a subpath of the `zod` package), so only the mini part is bundled into the client artifact
-  (the browser module table has no bare `zod`).
 
-See [SPEC.md](SPEC.md) for the full contract and [PLAN.md](PLAN.md) for status.
+See [SPEC.md](SPEC.md) for the product-level contract and the module contracts under [src/](src/) for implementation responsibilities.

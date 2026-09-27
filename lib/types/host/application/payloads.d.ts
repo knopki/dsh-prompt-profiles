@@ -1,28 +1,14 @@
 /** #region moduleContract
  * @modulecontract
- * @purpose The TOLERANT business parse of the promptProfiles payloads the use
- *   cases apply: the same field rules the strict wire codecs publish (they are
- *   composed from src/shared/wire-schemas.ts, so the two cannot drift), with
- *   unknown keys ignored and the business refinements the operations used to
- *   hand-check enforced here.
- * @scope
- *  - The per-method tolerant schemas, their inferred payload types and
- *    `parsePayload`.
- *  - NOT: the strict wire codecs and result schemas (shared/wire-schemas.ts),
- *    cross-field reference resolution (domain/refs.ts) or registry lookups —
- *    those need host state and stay in the use cases.
+ * @purpose Tolerant business parse of the promptProfiles payloads: shared
+ *   wire field shapes with unknown keys ignored and business refinements enforced.
+ * @scope Per-method tolerant schemas and `parsePayload`.
+ *  - NOT: strict wire codecs, reference resolution, or registry lookups.
  * @invariants
- *  - `<method>Payload` accepts rows from other layers and older clients (extra
- *    keys are ignored) but rejects a missing, empty or blank required field.
  *  - A payload is validated BEFORE any write happens.
- * @keywords payload schema, tolerant parse, business rules, validation
  * #endregion moduleContract */
 import { z } from "zod";
 import type * as zmini from "zod/mini";
-export declare const previewPayload: z.ZodObject<{
-    cwd: zmini.ZodMiniOptional<zmini.ZodMiniString<string>>;
-    profileId: zmini.ZodMiniString<string>;
-}, z.core.$strip>;
 export declare const sectionCreatePayload: z.ZodObject<{
     id: zmini.ZodMiniOptional<zmini.ZodMiniString<string>>;
     title: zmini.ZodMiniOptional<zmini.ZodMiniString<string>>;
@@ -87,19 +73,5 @@ export declare const lastPayload: z.ZodObject<{
 export declare const defaultPayload: z.ZodObject<{
     default: z.ZodUnion<readonly [z.ZodString, z.ZodNull]>;
 }, z.core.$strip>;
-/**
- * @purpose Apply a business payload schema and report the FIRST violation as a
- *   clean InvalidInputError carrying the labelled field path, so a malformed
- *   request never reaches a write.
- */
+/** @purpose Apply a business payload schema, reporting the FIRST violation as a clean InvalidInputError. */
 export declare function parsePayload<S extends z.ZodType>(schema: S, value: unknown, label: string): z.output<S>;
-export type PreviewPayload = z.output<typeof previewPayload>;
-export type SectionCreatePayload = z.output<typeof sectionCreatePayload>;
-export type SectionUpdatePayload = z.output<typeof sectionUpdatePayload>;
-export type SectionDeletePayload = z.output<typeof sectionDeletePayload>;
-export type SectionRenamePayload = z.output<typeof sectionRenamePayload>;
-export type ProfileCreatePayload = z.output<typeof profileCreatePayload>;
-export type ProfileUpdatePayload = z.output<typeof profileUpdatePayload>;
-export type ProfileDeletePayload = z.output<typeof profileDeletePayload>;
-export type LastPayload = z.output<typeof lastPayload>;
-export type DefaultPayload = z.output<typeof defaultPayload>;

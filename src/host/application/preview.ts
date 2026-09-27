@@ -1,27 +1,22 @@
 /**
  * #region moduleContract
  * @modulecontract
- * @purpose Show the user what a profile would contribute BEFORE a session
- *   starts, without pretending to be the runtime text.
- * @scope
- *  - The `preview` document only: selection via the shared skip predicate,
- *    built-in placeholders, ordered merge, and the variables actually used.
- *  - NOT: the sealed runtime text (assembler.ts) or any write.
+ * @purpose Show what a profile would contribute BEFORE a session starts,
+ *   without pretending to be the runtime text.
+ * @scope The `preview` document only: selection, placeholders, ordered merge,
+ *   and the variables actually used.
+ *  - NOT: the sealed runtime text or any write.
  * @invariants
- *  - The preview is ILLUSTRATIVE: only `{{cwd}}` is filled host-side, every
- *    other variable stays literal and is reported with a `null` value, and
- *    unknown or malformed references are NOT rejected.
- *  - Selection and splice order reuse the SAME rules the sealer applies
- *    (domain/ordering.ts), so preview and runtime cannot disagree about which
- *    sections contribute.
- * @keywords preview, illustrative, variables, cwd, insertion
+ *  - The preview is ILLUSTRATIVE: only a supplied `cwd` is filled host-side,
+ *    every other variable stays literal with a `null` value.
+ *  - Selection and splice order reuse the sealer's rules, so preview and
+ *    runtime cannot disagree about which sections contribute.
  * #endregion moduleContract
  */
 
 import {
   findRow,
   InvalidInputError,
-  interpolationSkipReason,
   NotFoundError,
   planInsertion,
   SKIP_REASONS,
@@ -30,9 +25,8 @@ import {
 } from "../domain/index.ts";
 import type { UseCaseEnv } from "./env.ts";
 
-// #region TYPE_preview
 /** A section as the preview shows it: interpolated leniently, always emitting. */
-export interface PreviewSection {
+interface PreviewSection {
   id: string;
   title: string;
   order: number;
@@ -42,7 +36,7 @@ export interface PreviewSection {
 }
 
 /** A built-in placeholder at its real engine order. */
-export interface PreviewBuiltin {
+interface PreviewBuiltin {
   kind: "builtin";
   name: string;
   title: string;
@@ -50,7 +44,7 @@ export interface PreviewBuiltin {
 }
 
 /** One reference that contributes nothing, with the runtime reason. */
-export interface PreviewSkip {
+interface PreviewSkip {
   id: string;
   title: string;
   reason: string;
@@ -69,22 +63,12 @@ export interface PreviewRequest {
   profileId?: unknown;
   cwd?: unknown;
 }
-// #endregion TYPE_preview
 
 // #region FUNC_previewResponse
 /**
- * @purpose Build the preview document for `preview({profileId, cwd?})`: an
- *   ILLUSTRATIVE preview, not the runtime text. Built-in sections appear as
- *   `{kind:"builtin", name, order}` placeholders interleaved with our sections
- *   in final order; selection reuses `sectionSkipReason` (the same predicate
- *   `buildSnapshot` applies for the main agent) and the merge reuses
- *   `planInsertion`, BUT interpolation is lenient: `{{cwd}}` is filled with
- *   the session cwd when the input supplies one (otherwise `process.cwd()`),
- *   every other variable stays literal, and unknown or malformed references
- *   are NOT rejected. Real values are substituted when the session starts, so
- *   the response reports exactly which variables were used and what (if
- *   anything) was substituted — `null` means unknown — for the client to flag
- *   as illustrative. The sealed snapshot remains the ONLY runtime truth.
+ * @purpose Build the ILLUSTRATIVE preview document for a profile: lenient
+ *   interpolation (only a supplied cwd is substituted), malformed references
+ *   kept literal with their section skipped, unknown variables reported null.
  */
 function previewResponse(env: UseCaseEnv, profileId: string, { cwd }: { cwd?: unknown } = {}): PreviewResult {
   const { registry, orders } = env.ports;
@@ -92,15 +76,19 @@ function previewResponse(env: UseCaseEnv, profileId: string, { cwd }: { cwd?: un
   if (!profile) throw new NotFoundError(`profile "${profileId}" is not registered`);
   const sectionsById = new Map(registry.sections().map((row) => [row.id, row]));
   const builtinOrdersByName = orders.ordersByName();
-  const sessionCwd = typeof cwd === "string" && cwd !== "" ? cwd : process.cwd();
-  // Variables actually referenced by the rendered text, with the value the
-  // preview substituted (null = unknown host-side / substituted at session start).
+  // No supplied cwd means no substitution and a null cwd variable — never the host cwd.
+  const sessionCwd = typeof cwd === "string" && cwd !== "" ? cwd : undefined;
+  // Variables actually referenced by the rendered text (null = substituted at session start).
   const usedVariables = new Set<string>();
-  const interpolate = (text: string) =>
+  let malformedRefs: string[] = [];
+  const interpolate = (text: string): string =>
     text.replace(/\{\{([^{}]*)\}\}/g, (match, name: string) => {
-      if (!/^[a-z][a-z0-9_]*$/.test(name)) return match; // malformed: left literal
+      if (!/^[a-z][a-z0-9_]*$/.test(name)) {
+        malformedRefs.push(match);
+        return match;
+      }
       usedVariables.add(name);
-      return name === "cwd" ? sessionCwd : match; // only cwd is known host-side
+      return name === "cwd" && sessionCwd !== undefined ? sessionCwd : match;
     });
   // Profile order = insertion order (stable on equal orders), the same sort
   // planInsertion performs.
@@ -116,11 +104,14 @@ function previewResponse(env: UseCaseEnv, profileId: string, { cwd }: { cwd?: un
       skipped.push({ id: ref.id, title: section?.title ?? ref.id, reason: reason ?? SKIP_REASONS.sectionNotFound });
       continue;
     }
-    let text = "";
-    try {
-      text = interpolate(section.body);
-    } catch (error) {
-      skipped.push({ id: ref.id, title: section.title, reason: interpolationSkipReason(error) });
+    malformedRefs = [];
+    const text = interpolate(section.body);
+    if (malformedRefs.length > 0) {
+      skipped.push({
+        id: ref.id,
+        title: section.title,
+        reason: `malformed prompt variable reference ${malformedRefs[0]} (references are complete simple {{name}} groups)`,
+      });
       continue;
     }
     ours.push({
@@ -149,7 +140,7 @@ function previewResponse(env: UseCaseEnv, profileId: string, { cwd }: { cwd?: un
   const merged: Array<PreviewSection | PreviewBuiltin> = builtins.slice();
   for (let i = plan.length - 1; i >= 0; i--) merged.splice(plan[i].index, 0, ours[i]);
   const variables = Object.fromEntries(
-    [...usedVariables].sort().map((name) => [name, name === "cwd" ? sessionCwd : null]),
+    [...usedVariables].sort().map((name) => [name, name === "cwd" && sessionCwd !== undefined ? sessionCwd : null]),
   );
   return { profileId, title: profile.title, sections: merged, skipped, variables };
 }
@@ -159,7 +150,8 @@ function previewResponse(env: UseCaseEnv, profileId: string, { cwd }: { cwd?: un
 /** @purpose Build the preview use case over the shared environment. */
 export function createPreviewCases(env: UseCaseEnv) {
   return {
-    /** Illustrative preview of `profileId`, optionally against a session cwd. */
+    // #region METHOD_preview
+    /** @purpose Illustrative preview of `profileId`, optionally against a session cwd. */
     preview: (input?: PreviewRequest): PreviewResult => {
       const profileId = input?.profileId;
       if (typeof profileId !== "string" || profileId === "") {
@@ -167,6 +159,7 @@ export function createPreviewCases(env: UseCaseEnv) {
       }
       return previewResponse(env, profileId, { cwd: input?.cwd });
     },
+    // #endregion METHOD_preview
   };
 }
 // #endregion FUNC_createPreviewCases

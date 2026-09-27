@@ -2,24 +2,14 @@
  * #region moduleContract
  * @modulecontract
  * @purpose Own the authoritative in-memory view of every registered section
- *   and profile row, so the service, the editor and the prompt-injection step
- *   read one consistent, deterministically ordered dataset.
+ *   and profile row, so service, editor, and prompt injection read one dataset.
  * @scope
- *  - Registration/disposal with the duplicate-config.id policy (SPEC §5.1),
- *    sorted detached views, and the usedIn lookup. Insertion anchoring is a
- *    domain rule and lives in domain/ordering.ts (re-exported here for the
- *    modules and tests that reach it through the registry).
- *  - Pure data structure: no Cordis, no filesystem, no clock.
- *  - NOT: mounting rows (section.ts/profile.ts), serving the registry on ctx
- *    (index.ts), prompt injection.
+ *  - Registration/disposal with the duplicate-config.id policy, sorted
+ *    detached views, and the usedIn lookup.
+ *  - NOT: mounting rows or serving the registry on ctx.
  * @invariants
- *  - Views are fresh shallow copies in a stable order; mutating one never
- *    affects the registry. Volatile `.get()` fields are unwrapped at READ time
- *    so live settings edits keep flowing into views, sorting and usedIn.
- *  - A duplicate config.id resolves to the registration mounted LAST;
- *    disposing an overridden registration is a no-op, and disposing the winner
- *    reveals the still-mounted earlier one.
- * @keywords registry, sections, profiles, duplicate, usedIn
+ *  - Views are fresh shallow copies in stable order; volatile fields unwrap at
+ *    read time. The last registration wins; disposing it reveals the earlier one.
  * #endregion moduleContract
  */
 
@@ -37,12 +27,6 @@ import { usedIn } from "../domain/refs.ts";
 
 export { insertionIndex };
 
-// #region FUNC_configView
-/**
- * Cordis/Schemastery volatile fields arrive as `.get()` wrapper refs. Unwrap
- * AT READ TIME (never once at registration) so live settings edits keep
- * flowing into views; plain values pass through.
- */
 const unwrapVolatile = (value: unknown): unknown => {
   if (value != null && typeof (value as { get?: unknown }).get === "function") {
     return (value as { get: () => unknown }).get();
@@ -50,7 +34,8 @@ const unwrapVolatile = (value: unknown): unknown => {
   return value;
 };
 
-/** Project a stored config into a plain, one-level read view with CURRENT values. */
+// #region FUNC_configView
+/** @purpose Project a stored config into a plain read view with current values. */
 function configView(config: { id: string } & Record<string, unknown>): Record<string, unknown> {
   if (config == null || typeof config !== "object") return config;
   const view: Record<string, unknown> = {};
@@ -59,7 +44,6 @@ function configView(config: { id: string } & Record<string, unknown>): Record<st
 }
 // #endregion FUNC_configView
 
-// #region TYPE_RegistryEntry
 /** One registered row: its loader entry id, its row config and its provenance. */
 interface RegistryEntry {
   rowId: string | null;
@@ -73,39 +57,51 @@ interface RegisterRow {
   config: { id: string } & Record<string, unknown>;
   source?: RowSource;
 }
-// #endregion TYPE_RegistryEntry
 
 // #region CLASS_PromptProfilesRegistry
-/** Pure in-memory registry of section and profile rows. */
+/**
+ * Pure in-memory registry of section and profile rows.
+ *
+ * @purpose Own the authoritative dataset the service, editor, and injection read.
+ */
 export class PromptProfilesRegistry {
   #warn: (message: string, details?: unknown) => void;
   #sections: Map<string, RegistryEntry>;
   #profiles: Map<string, RegistryEntry>;
   #stacks: Map<string, RegistryEntry[]>;
 
-  /** @param options.warn duplicate-id sink (defaults to console.warn). */
+  // #region METHOD_constructor
+  /**
+   * @purpose Initialize empty section/profile registries with the selected duplicate warning sink.
+   */
   constructor({ warn = console.warn }: { warn?: (message: string, details?: unknown) => void } = {}) {
     this.#warn = warn;
     this.#sections = new Map();
     this.#profiles = new Map();
     this.#stacks = new Map();
   }
+  // #endregion METHOD_constructor
 
+  // #region METHOD_registerSection
   /**
-   * Register one `.../section` row (SPEC §5.1).
-   * @returns disposer; a no-op when a later row with the same config.id
-   *   already overrode this registration.
+   * @purpose Register a section and return a disposer that restores any shadowed registration.
    */
   registerSection(row: RegisterRow): () => void {
     return this.#register("section", this.#sections, row);
   }
+  // #endregion METHOD_registerSection
 
-  /** Register one `.../profile` row; same disposer semantics as registerSection. */
+  // #region METHOD_registerProfile
+  /**
+   * @purpose Register a profile and return a disposer that restores any shadowed registration.
+   */
   registerProfile(row: RegisterRow): () => void {
     return this.#register("profile", this.#profiles, row);
   }
+  // #endregion METHOD_registerProfile
 
-  /** Detached view of every section, sorted by `id`. */
+  // #region METHOD_sections
+  /** @purpose Return detached section views in stable id order. */
   sections(): SectionView[] {
     return (
       [...this.#sections.values()]
@@ -115,8 +111,10 @@ export class PromptProfilesRegistry {
         .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     );
   }
+  // #endregion METHOD_sections
 
-  /** Detached view of every profile, sorted by `title` then `id` (SPEC decision 19). */
+  // #region METHOD_profiles
+  /** @purpose Return detached profile views in title/id order. */
   profiles(): ProfileView[] {
     return (
       [...this.#profiles.values()]
@@ -129,12 +127,10 @@ export class PromptProfilesRegistry {
         )
     );
   }
+  // #endregion METHOD_profiles
 
-  /**
-   * Which profiles reference a section, with per-profile scope — feeds the
-   * editor's read-only «используется в» field (SPEC §2 #26). A section
-   * referenced twice contributes one entry per reference.
-   */
+  // #region METHOD_usedIn
+  /** @purpose Report each profile reference to the requested section with its scope. */
   usedIn(sectionId: ConfigId): UsedInEntry[] {
     return usedIn(
       [...this.#profiles.values()].map((entry) => {
@@ -147,14 +143,9 @@ export class PromptProfilesRegistry {
       sectionId,
     );
   }
+  // #endregion METHOD_usedIn
 
-  /**
-   * Shared registration path (SPEC §5.1). Each kind/id keeps a STACK of live
-   * registrations; the per-kind Map exposes the top of the stack (later
-   * registration wins deterministically). Disposing the top reveals the next
-   * surviving registration, so an HMR teardown of an overriding row RESTORES
-   * the still-mounted one instead of dropping the id from prompts.
-   */
+  /** Later registration wins; disposing it restores the prior live entry. */
   #register(kind: RowKind, map: Map<string, RegistryEntry>, row: RegisterRow): () => void {
     const { rowId = null, config, source = "unknown" } = row;
     if (!config || typeof config.id !== "string" || config.id === "") {

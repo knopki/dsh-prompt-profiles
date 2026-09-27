@@ -1,11 +1,10 @@
 /**
- * The Sections tab and its editor on real React + jsdom: the searchable list
- * with used-in titles, source badges and the empty-body marker, the modal-free
- * create, and the editor — the autosave gate (no write before the poll confirms
- * the row, no empty title), the flush on blur and on leave, the rename dialog
- * (pre-filled configId, verbatim send, doubled-prefix guard, no-op on an
- * unchanged id, empty-id hint, affected-profile notice), duplicate opening the
- * copy, delete confirmation and the bundle-owned id lock.
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Prove the Sections tab and its editor on real React + jsdom: the
+ *   searchable list, modal-free create, the autosave gate with flush, the
+ *   rename dialog, duplicate, delete, and the bundle-owned id lock.
+ * #endregion moduleContract
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";

@@ -1,20 +1,12 @@
 /** #region moduleContract
  * @modulecontract
- * @purpose The Sections tab of the settings page: the searchable section list
- *   with source/used-in badges and drill-down, plus the section editor — title
- *   and body with whole-object autosave, duplicate/delete through the
- *   optimistic mutation flow, and the Change-id dialog.
- * @scope
- *  - `SectionsTab` and `SectionForm`.
- *  - NOT: the Profiles/Preview tabs, the api facade or the host rules.
+ * @purpose The Sections tab: searchable section list with drill-down, plus
+ *   the section editor with autosave and the Change-id dialog.
  * @invariants
- *  - An EMPTY title is never written (the server rejects it) and no write
- *    happens before the create-flow poll confirmed the row in /state.
- *  - A rename sends the typed id VERBATIM: the host owns prefixing, and it does
- *    NOT rewrite profile references — leftovers are reported, not fixed here.
- *  - A bundle-owned row's id cannot be changed: the host would disable rather
- *    than rewrite the bundle, so the action is blocked with a reason.
- * @keywords settings, sections tab, section form, rename id, autosave
+ *  - An empty title is never written, and no write happens before the
+ *    create-flow poll confirmed the row in /state.
+ *  - A rename sends the typed id verbatim and does not rewrite references.
+ *  - A bundle-owned row's id cannot be changed.
  * #endregion moduleContract */
 
 import {
@@ -46,7 +38,6 @@ import { runSave, useAutosave, useFocusSelect } from "./settings-shared.ts";
 import {
   ConfirmDialog,
   fieldStyle,
-  flexFill,
   iconControl,
   inlineError,
   mutedStyle,
@@ -54,8 +45,7 @@ import {
   type ValueChangeEvent,
 } from "./ui.tsx";
 
-// #region TYPE_sectionsTab
-export interface SectionsTabProps {
+interface SectionsTabProps {
   state: StateDocument;
   api: RemoteApi;
   reload: () => Promise<void>;
@@ -80,15 +70,9 @@ export interface SectionFormProps {
   setState: (value: StateDocument | null) => void;
   autoFocusTitle: boolean;
 }
-// #endregion TYPE_sectionsTab
 
 // #region COMPONENT_SectionForm
-/**
- * @purpose Section editor: title + body (whole-object autosaved), an
- *   inline error line next to the fields, read-only used-in with scopes,
- *   source, duplicate/delete/rename-id actions. No scope control
- *   (SPEC decision 26). After creation the title is focused + selected.
- */
+/** @purpose Section editor: autosaved title and body, used-in feed, rename-id dialog. */
 export function SectionForm({
   section,
   state,
@@ -111,20 +95,23 @@ export function SectionForm({
   const [mutating, setMutating] = React.useState(false);
   const [renameHint, setRenameHint] = React.useState("");
   const titleRef = React.useRef<HTMLInputElement | null>(null);
-  useFocusSelect(titleRef, autoFocusTitle === true);
-  // Duplicate/delete/rename change which rows exist — and a rename does NOT
-  // rewrite profile references (the profiles keep naming the old id): all
-  // three go through the optimistic + poll mutation flow, never a bare
-  // runSave-reload.
-  const mutation = makeMutationFlow({
-    api,
-    t,
-    notify,
-    reload,
-    getState: () => state,
-    onState: setState,
-    onPending: setMutating,
-  });
+  useFocusSelect(titleRef, autoFocusTitle);
+  // Duplicate/delete/rename change which rows exist, so all three go through
+  // the optimistic + poll mutation flow, never a bare runSave-reload.
+  // Memoized on the current values so the flow never runs against stale state.
+  const mutation = React.useMemo(
+    () =>
+      makeMutationFlow({
+        api,
+        t,
+        notify,
+        reload,
+        getState: () => state,
+        onState: setState,
+        onPending: setMutating,
+      }),
+    [api, t, notify, reload, state, setState],
+  );
   // The row is confirmed when /state already carries it — the create flow
   // only drills AFTER the poll, so this holds in every real mount; the gate
   // below is the belt-and-suspenders against any pre-poll write.
@@ -264,7 +251,7 @@ export function SectionForm({
         />
         {emptyBody && <span style={{ ...mutedStyle, fontSize: "12px" }}>{t("emptyBody")}</span>}
       </label>
-      <div {...({ style: mutedStyle, marginBottom: "4px" } as React.HTMLAttributes<HTMLDivElement>)}>
+      <div style={{ ...mutedStyle, marginBottom: "4px" }}>
         {`${t("usedIn")}: `}
         {usedIn.length === 0
           ? t("notUsed")
@@ -280,7 +267,7 @@ export function SectionForm({
             ))}
       </div>
       {sourceKind && (
-        <div {...({ style: mutedStyle, marginBottom: "8px" } as React.HTMLAttributes<HTMLDivElement>)}>
+        <div style={{ ...mutedStyle, marginBottom: "8px" }}>
           {`${t("sourceLabel")}: ${t(sourceKind === "bundle" ? "sourceBundle" : "sourceUnknown")}`}
         </div>
       )}
@@ -348,12 +335,7 @@ export function SectionForm({
 // #endregion COMPONENT_SectionForm
 
 // #region COMPONENT_SectionsTab
-/**
- * @purpose Section list with search, used-in, source, drill-down, and a
- *   modal-free create action (POST default title → poll /state → drill
- *   into the editor with the title focused and selected). The create
- *   button is disabled while a create is in flight.
- */
+/** @purpose Section list with search, drill-down and modal-free creation. */
 export function SectionsTab({
   state,
   api,
@@ -369,56 +351,63 @@ export function SectionsTab({
   const [creating, setCreating] = React.useState(false);
   const [justCreated, setJustCreated] = React.useState<string | null>(null);
   const sections = filterSections(state.sections ?? [], query);
-  const flow =
-    createFlow ??
-    makeCreateFlow({
-      api,
-      t,
-      notify,
-      reload,
-      getState: () => state,
-      onState: setState,
-      onPending: setCreating,
-      onDrill: (id) => {
-        setJustCreated(id);
-        setDrill(id);
-      },
-    });
-  if (drill) {
-    const live = (state.sections ?? []).find((s) => idOf(s) === drill);
-    if (live)
-      return (
-        <SectionForm
-          // Key on the row id: after DUPLICATE the drill moves to the copy and
-          // React must remount the form with the copy's state, not reuse the
-          // original's useState values.
-          key={idOf(live) as string}
-          section={live}
-          state={state}
-          api={api}
-          reload={reload}
-          t={t}
-          notify={notify}
-          autoFocusTitle={justCreated === drill}
-          onBack={() => {
-            setJustCreated(null);
-            setDrill(null);
-          }}
-          // After a rename the drill must follow the NEW id or the form drops
-          // back to the list (the old id no longer resolves).
-          onRenamed={(id: string) => {
-            setJustCreated(null);
-            setDrill(id);
-          }}
-          // Duplicate opens the copy (creation-style drill).
-          onDrill={(id: string | null) => {
-            setJustCreated(null);
-            setDrill(id);
-          }}
-          setState={setState}
-        />
-      );
-    setDrill(null);
+  // Memoized on the current values so the flow never runs against stale
+  // state, while the instance (and its busy guard) survives ordinary renders.
+  const flow = React.useMemo(
+    () =>
+      createFlow ??
+      makeCreateFlow({
+        api,
+        t,
+        notify,
+        reload,
+        getState: () => state,
+        onState: setState,
+        onPending: setCreating,
+        onDrill: (id) => {
+          setJustCreated(id);
+          setDrill(id);
+        },
+      }),
+    [createFlow, api, t, notify, reload, state, setState, setDrill],
+  );
+  const drilledSection = drill ? ((state.sections ?? []).find((s) => idOf(s) === drill) ?? null) : null;
+  React.useEffect(() => {
+    if (drill && !drilledSection) setDrill(null);
+  }, [drill, drilledSection, setDrill]);
+  if (drilledSection) {
+    const live = drilledSection;
+    return (
+      <SectionForm
+        // Key on the row id: after DUPLICATE the drill moves to the copy and
+        // React must remount the form with the copy's state, not reuse the
+        // original's useState values.
+        key={idOf(live) as string}
+        section={live}
+        state={state}
+        api={api}
+        reload={reload}
+        t={t}
+        notify={notify}
+        autoFocusTitle={justCreated === drill}
+        onBack={() => {
+          setJustCreated(null);
+          setDrill(null);
+        }}
+        // After a rename the drill must follow the NEW id or the form drops
+        // back to the list (the old id no longer resolves).
+        onRenamed={(id: string) => {
+          setJustCreated(null);
+          setDrill(id);
+        }}
+        // Duplicate opens the copy (creation-style drill).
+        onDrill={(id: string | null) => {
+          setJustCreated(null);
+          setDrill(id);
+        }}
+        setState={setState}
+      />
+    );
   }
   return (
     <div>
@@ -443,7 +432,7 @@ export function SectionsTab({
         const sourceKind = sourceKindOf(section.source);
         return (
           <div key={idOf(section)} style={{ ...rowStyle, cursor: "pointer" }} onClick={() => setDrill(idOf(section))}>
-            <span {...flexFill}>
+            <span>
               {section.title}
               {!String(section.body ?? "").trim() && <Tag>{t("emptyBody")}</Tag>}
             </span>

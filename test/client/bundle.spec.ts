@@ -1,10 +1,11 @@
 /**
- * The SHIPPED artifact (`lib/client.js`) as the browser loads it: one
- * ModuleLoader module under the plugin id, the exact service declaration
- * (`inject`), the two slot rows with their ids/orders/locale and injection
- * shapes — plus the transport guarantees that hold only for the built file
- * (Remote-only, no HTTP route base, no client-built path ops, no primitive
- * called as a plain function).
+ * #region moduleContract
+ * @modulecontract
+ * @purpose Prove the SHIPPED `lib/client.js` loads as one ModuleLoader module
+ *   with the exact service declaration, slot rows, and built-file-only
+ *   transport guarantees (Remote-only, no HTTP route base, no primitives
+ *   called as plain functions).
+ * #endregion moduleContract
  */
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";

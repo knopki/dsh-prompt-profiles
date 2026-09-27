@@ -1,18 +1,13 @@
 /**
  * #region moduleContract
  * @modulecontract
- * @purpose Expose the whole prompt-profile use-case set behind ONE factory that
- *   takes the driven-ports bag, so every surface executes the same
- *   implementation and cannot drift apart.
- * @scope
- *  - The `OperationSet` shape, its composition from the per-domain use case
- *    modules, and the create-token source the tests drive.
- *  - NOT: how a surface reaches the ports (infra/index.ts), the domain rules
- *    (host/domain/) or the sealing step (assembler.ts).
+ * @purpose Expose the whole prompt-profile use-case set behind ONE factory,
+ *   so every surface executes the same implementation.
+ * @scope The `OperationSet` shape and its composition from the per-domain
+ *   use case modules.
+ *  - NOT: how a surface reaches the ports, the domain rules, or sealing.
  * @invariants
- *  - Results are plain JSON-safe objects (no class instances, no functions):
- *    surfaces serialize them verbatim.
- *  - Operation names are the method names every surface publishes.
+ *  - Results are plain JSON-safe objects: surfaces serialize them verbatim.
  * @keywords operations, use cases, factory, barrel
  * #endregion moduleContract
  */
@@ -29,11 +24,7 @@ export type { PreviewRequest, PreviewResult } from "./preview.ts";
 export type { ProfileCreateResult, ProfileUpdateResult } from "./profiles.ts";
 export type { SectionCreateResult, SectionRenameResult, SectionUpdateResult } from "./sections.ts";
 export type { ModeView, StateResult } from "./state.ts";
-/**
- * THE operation set. Keys are the operation names every surface publishes as
- * its method names; each operation takes the raw JSON body its surface decoded
- * and returns a plain JSON result (`undefined` means "nothing to report").
- */
+/** Operation names and JSON result types shared by all surfaces. */
 export interface OperationSet {
     state: (input?: unknown) => Promise<StateResult>;
     preview: (input?: PreviewRequest) => PreviewResult;
@@ -51,12 +42,5 @@ export interface OperationSet {
     }) => Promise<void>;
     last: (body?: unknown) => Promise<void>;
 }
-/**
- * @purpose Build the operation set once per surface over the driven ports.
- *   Optional services are read per call through the ports, so a
- *   late-appearing service is picked up and a missing one degrades per
- *   operation instead of blocking the mount.
- */
-export declare function createOperations(ports: HostPorts): {
-    ops: OperationSet;
-};
+/** @purpose Build the operation set once per surface over the driven ports. */
+export declare function createOperations(ports: HostPorts): OperationSet;
