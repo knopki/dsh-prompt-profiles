@@ -14,11 +14,21 @@
 
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { build } from "esbuild";
 
 // Must match the id the hand-written wrapper used before Phase 0: the boot
 // manifest and the client ModuleLoader key the contribution by this id.
 const MODULE_ID = "@knopki/dsh-prompt-profiles";
+
+// Every path below is resolved from this file, and `absWorkingDir` pins esbuild
+// to the same root. esbuild stamps each module in the bundle with its path
+// RELATIVE TO THE WORKING DIRECTORY, and those comment lines are part of the
+// content that names the chunks: without this, building the same tree from a
+// checkout, a linked worktree or a temp copy produced three different (all
+// equivalent) `lib/` outputs. The committed artifact must be the build of the
+// current tree, so the root has to be explicit rather than inherited from CWD.
+const root = import.meta.dirname;
 
 const dshExternal = ["@deepseek-ai/cordis", "@deepseek-ai/dsh-*", "@deepseek-ai/schemastery"];
 
@@ -62,10 +72,11 @@ const hostEntries = {
 // source leaves the previous chunk-*.js files behind as unreferenced orphans
 // (and tsc leaves declarations of deleted modules). Wiping first keeps the
 // committed artifacts exactly equal to the build of the current tree.
-rmSync("lib", { recursive: true, force: true });
-mkdirSync("lib", { recursive: true });
+rmSync(join(root, "lib"), { recursive: true, force: true });
+mkdirSync(join(root, "lib"), { recursive: true });
 
 await build({
+  absWorkingDir: root,
   entryPoints: hostEntries,
   outdir: "lib",
   bundle: true,
@@ -81,6 +92,7 @@ await build({
 });
 
 await build({
+  absWorkingDir: root,
   entryPoints: ["src/client/index.ts"],
   outfile: "lib/client.js",
   bundle: true,
@@ -106,4 +118,6 @@ await build({
 
 // Windows-safe tsc invocation: `node_modules/.bin/tsc` is an sh shim that
 // spawnSync cannot resolve on win32; run the JS entry through node instead.
-execFileSync(process.execPath, ["node_modules/typescript/bin/tsc", "-p", "tsconfig.json"], { stdio: "inherit" });
+execFileSync(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "-p", join(root, "tsconfig.json")], {
+  stdio: "inherit",
+});
