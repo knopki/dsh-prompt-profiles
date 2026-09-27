@@ -134,7 +134,7 @@ Phase 2b moved the operation logic out of `api.ts` into `operations.ts` **withou
 - **Biome** as the project linter/formatter, wired into `check`.
 - **Try TypeScript 7**; if it cannot build this project, stay on 6 and record exactly why.
 - Remove the `@ts-nocheck` headers from the surviving modules as they get typed.
-- **Try `zod/mini` (tree-shakable) for the client bundle size** (~760 KB of bundled zod today). The check is not only size: verify that the gateway/registry rely solely on the standard schema surface (`parse`/`safeParse`, `~standard`) and that a `zod/mini` schema satisfies it — then measure again. Not urgent. — Проверено: строгие кодеки переведены на `zod/mini`, `lib/client.js` 856 744 → 139 289 B (−717 455 B); контракт strict-кодеков без изменений.
+- **Try `zod/mini` (tree-shakable) for the client bundle size** (~760 KB of bundled zod today). The check is not only size: verify that the gateway/registry rely solely on the standard schema surface (`parse`/`safeParse`, `~standard`) and that a `zod/mini` schema satisfies it — then measure again. Not urgent. — Проверено (коммит `0674915`): рантайм rc.2 действительно использует только `codec.create().parse(...)` (gateway `index.js:1501-1516`) и `typeof codec.create === "function"` (registry `index.js:1354-1358`), строгие кодеки переведены на `zod/mini`, `lib/client.js` 853 799 → 139 010 B; контракт strict-кодеков без изменений (125 сравнений classic/mini — 0 расхождений).
 - Подумать, допустимо ли использовать zod в domain layer
 
 
