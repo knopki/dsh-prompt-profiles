@@ -98,7 +98,7 @@ export const ru: Record<MessageKey, string> = {
   menuLabel: "Выберите профиль промпта",
   chooseNeedsWorkspace: "Сначала выберите воркспейс — выбор профиля запоминается для воркспейса.",
   // settings page
-  nav: "Профили промпта",
+  nav: "Промпты",
   tabProfiles: "Профили",
   tabSections: "Секции",
   tabPreview: "Предпросмотр",
