@@ -14,6 +14,8 @@ the committed artifacts must always be the build of the current `src/`.
 
 ## Commands
 
+Node, pnpm and the DSH release are pinned in `mise.toml`; run `mise install` once per machine.
+
 ```
 pnpm install --store-dir ./.pnpm-store
 pnpm run build        # esbuild host entries + client bundle, then tsc declarations into lib/

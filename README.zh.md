@@ -134,6 +134,7 @@ dsh plugin --profile web remove @knopki/dsh-prompt-profiles
 ## 开发
 
 ```bash
+mise install          # Node、pnpm 以及本包针对的 DSH 版本
 pnpm install --store-dir ./.pnpm-store
 pnpm run build        # esbuild 打包 + tsc 生成声明到 lib/
 pnpm test             # 主机端单元和差分测试（node --test）

@@ -1,0 +1,8 @@
+# Toolchain for developing this bundle. Node and pnpm are the versions the
+# suites and the committed lib/ build were verified on; the DSH pin is the
+# platform release the bundle targets and the one used for live acceptance.
+
+[tools]
+node = "26.10.0"
+pnpm = "12.6.0"
+"npm:@deepseek-ai/dsh" = "v0.1.7-rc.2"

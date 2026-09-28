@@ -134,6 +134,7 @@ Section bodies may contain `{{name}}` references, for example `{{cwd}}`. The run
 ## Develop
 
 ```bash
+mise install          # Node, pnpm and the DSH release the bundle targets
 pnpm install --store-dir ./.pnpm-store
 pnpm run build        # esbuild bundles + tsc declarations into lib/
 pnpm test             # host unit and differential tests (node --test)

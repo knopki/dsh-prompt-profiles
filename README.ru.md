@@ -134,6 +134,7 @@ dsh plugin --profile web remove @knopki/dsh-prompt-profiles
 ## Разработка
 
 ```bash
+mise install          # Node, pnpm и релиз DSH, под который собран бандл
 pnpm install --store-dir ./.pnpm-store
 pnpm run build        # esbuild-бандлы + декларации tsc в lib/
 pnpm test             # хостовые модульные и дифференциальные тесты (node --test)
