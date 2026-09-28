@@ -49,7 +49,7 @@ afterEach(cleanup);
 test("the list shows profiles with their section count and no default marker", () => {
   render(<ProfilesTab {...tabProps({ state: stateOf({ default: "main" }) })} />);
   expect(screen.getAllByText("Main").length).toBeGreaterThan(0);
-  expect(screen.getByText("1 sectionsWord")).toBeTruthy();
+  expect(screen.getByText("1 sectionsOne")).toBeTruthy();
   expect(screen.queryByText("★")).toBeNull();
   expect(screen.getByText("defaultForNewSessions")).toBeTruthy();
   expect(screen.queryByRole("dialog")).toBeNull();
@@ -210,7 +210,7 @@ test("the outline renders built-in, own and broken rows with an honest counter",
   expect(screen.getByText("persona-prefix")).toBeTruthy();
   expect(screen.getByText("plan:policy")).toBeTruthy();
   expect(screen.getAllByText("builtIn")).toHaveLength(2);
-  expect(screen.getByText("1 sectionsWord · 1 brokenWord")).toBeTruthy();
+  expect(screen.getByText("1 sectionsOne · 1 brokenOne")).toBeTruthy();
   expect(screen.getByText(/missingSection/)).toBeTruthy();
   // A broken ref carries no order input: it renders its order as text instead.
   const orders = screen.getAllByLabelText("orderLabel") as HTMLInputElement[];

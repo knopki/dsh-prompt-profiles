@@ -72,12 +72,16 @@ export declare const en: {
     pickerEmpty: string;
     builtinMarker: string;
     skippedMarker: string;
-    brokenWord: string;
+    brokenOne: string;
+    brokenFew: string;
+    brokenMany: string;
     noProfiles: string;
     noSections: string;
     previewEmpty: string;
     previewVariables: string;
-    sectionsWord: string;
+    sectionsOne: string;
+    sectionsFew: string;
+    sectionsMany: string;
 };
 /** The locale key set `en` defines; `ru`/`zh` must carry exactly these keys. */
 type MessageKey = keyof typeof en;
@@ -152,20 +156,27 @@ export declare const messages: {
         pickerEmpty: string;
         builtinMarker: string;
         skippedMarker: string;
-        brokenWord: string;
+        brokenOne: string;
+        brokenFew: string;
+        brokenMany: string;
         noProfiles: string;
         noSections: string;
         previewEmpty: string;
         previewVariables: string;
-        sectionsWord: string;
+        sectionsOne: string;
+        sectionsFew: string;
+        sectionsMany: string;
     };
-    ru: Record<"addSection" | "back" | "bodyLabel" | "brokenWord" | "builtIn" | "builtInNote" | "builtinMarker" | "cancel" | "chooseNeedsWorkspace" | "completeModeWarning" | "confirm" | "confirmDeleteProfile" | "confirmDeleteSection" | "confirmRemoveRef" | "confirmRename" | "conflictError" | "copySuffix" | "createError" | "createTimeout" | "creating" | "defaultForNewSessions" | "defaultProfileTitle" | "defaultSectionTitle" | "deleteLabel" | "dragHandle" | "duplicate" | "editProfile" | "emptyBody" | "loadError" | "menuLabel" | "missingSection" | "nav" | "newProfile" | "newSection" | "noProfiles" | "noSections" | "none" | "notUsed" | "openInSectionTab" | "orderLabel" | "pickerAdd" | "pickerEmpty" | "pickerTitle" | "previewEmpty" | "previewProfile" | "previewVariables" | "profileWord" | "remoteUnavailable" | "remove" | "renameAffected" | "renameEmpty" | "renameId" | "renameIdLocked" | "renameNote" | "saveError" | "scopeInherit" | "scopeLabel" | "scopeMainOnly" | "scopeSubagentsOnly" | "searchPlaceholder" | "sectionsWord" | "skippedMarker" | "sourceBundle" | "sourceLabel" | "sourceUnknown" | "tabPreview" | "tabProfiles" | "tabSections" | "titleLabel" | "titleRequired" | "untitled" | "usedIn", string>;
-    zh: Record<"addSection" | "back" | "bodyLabel" | "brokenWord" | "builtIn" | "builtInNote" | "builtinMarker" | "cancel" | "chooseNeedsWorkspace" | "completeModeWarning" | "confirm" | "confirmDeleteProfile" | "confirmDeleteSection" | "confirmRemoveRef" | "confirmRename" | "conflictError" | "copySuffix" | "createError" | "createTimeout" | "creating" | "defaultForNewSessions" | "defaultProfileTitle" | "defaultSectionTitle" | "deleteLabel" | "dragHandle" | "duplicate" | "editProfile" | "emptyBody" | "loadError" | "menuLabel" | "missingSection" | "nav" | "newProfile" | "newSection" | "noProfiles" | "noSections" | "none" | "notUsed" | "openInSectionTab" | "orderLabel" | "pickerAdd" | "pickerEmpty" | "pickerTitle" | "previewEmpty" | "previewProfile" | "previewVariables" | "profileWord" | "remoteUnavailable" | "remove" | "renameAffected" | "renameEmpty" | "renameId" | "renameIdLocked" | "renameNote" | "saveError" | "scopeInherit" | "scopeLabel" | "scopeMainOnly" | "scopeSubagentsOnly" | "searchPlaceholder" | "sectionsWord" | "skippedMarker" | "sourceBundle" | "sourceLabel" | "sourceUnknown" | "tabPreview" | "tabProfiles" | "tabSections" | "titleLabel" | "titleRequired" | "untitled" | "usedIn", string>;
+    ru: Record<"addSection" | "back" | "bodyLabel" | "brokenFew" | "brokenMany" | "brokenOne" | "builtIn" | "builtInNote" | "builtinMarker" | "cancel" | "chooseNeedsWorkspace" | "completeModeWarning" | "confirm" | "confirmDeleteProfile" | "confirmDeleteSection" | "confirmRemoveRef" | "confirmRename" | "conflictError" | "copySuffix" | "createError" | "createTimeout" | "creating" | "defaultForNewSessions" | "defaultProfileTitle" | "defaultSectionTitle" | "deleteLabel" | "dragHandle" | "duplicate" | "editProfile" | "emptyBody" | "loadError" | "menuLabel" | "missingSection" | "nav" | "newProfile" | "newSection" | "noProfiles" | "noSections" | "none" | "notUsed" | "openInSectionTab" | "orderLabel" | "pickerAdd" | "pickerEmpty" | "pickerTitle" | "previewEmpty" | "previewProfile" | "previewVariables" | "profileWord" | "remoteUnavailable" | "remove" | "renameAffected" | "renameEmpty" | "renameId" | "renameIdLocked" | "renameNote" | "saveError" | "scopeInherit" | "scopeLabel" | "scopeMainOnly" | "scopeSubagentsOnly" | "searchPlaceholder" | "sectionsFew" | "sectionsMany" | "sectionsOne" | "skippedMarker" | "sourceBundle" | "sourceLabel" | "sourceUnknown" | "tabPreview" | "tabProfiles" | "tabSections" | "titleLabel" | "titleRequired" | "untitled" | "usedIn", string>;
+    zh: Record<"addSection" | "back" | "bodyLabel" | "brokenFew" | "brokenMany" | "brokenOne" | "builtIn" | "builtInNote" | "builtinMarker" | "cancel" | "chooseNeedsWorkspace" | "completeModeWarning" | "confirm" | "confirmDeleteProfile" | "confirmDeleteSection" | "confirmRemoveRef" | "confirmRename" | "conflictError" | "copySuffix" | "createError" | "createTimeout" | "creating" | "defaultForNewSessions" | "defaultProfileTitle" | "defaultSectionTitle" | "deleteLabel" | "dragHandle" | "duplicate" | "editProfile" | "emptyBody" | "loadError" | "menuLabel" | "missingSection" | "nav" | "newProfile" | "newSection" | "noProfiles" | "noSections" | "none" | "notUsed" | "openInSectionTab" | "orderLabel" | "pickerAdd" | "pickerEmpty" | "pickerTitle" | "previewEmpty" | "previewProfile" | "previewVariables" | "profileWord" | "remoteUnavailable" | "remove" | "renameAffected" | "renameEmpty" | "renameId" | "renameIdLocked" | "renameNote" | "saveError" | "scopeInherit" | "scopeLabel" | "scopeMainOnly" | "scopeSubagentsOnly" | "searchPlaceholder" | "sectionsFew" | "sectionsMany" | "sectionsOne" | "skippedMarker" | "sourceBundle" | "sourceLabel" | "sourceUnknown" | "tabPreview" | "tabProfiles" | "tabSections" | "titleLabel" | "titleRequired" | "untitled" | "usedIn", string>;
 };
-/** @purpose A dictionary lookup, as the locale service hands one out. */
-export type Translate = (key: string) => string;
+/**
+ * @purpose A dictionary lookup, as the locale service hands one out:
+ *   `{name}` placeholders fill from `params`.
+ */
+export type Translate = (key: string, params?: Record<string, string | number>) => string;
 /** @purpose Translate through the bound locale service, else through `en`. */
-export declare function boundT(key: string): string;
+export declare function boundT(key: string, params?: Record<string, string | number>): string;
 /** @purpose Install the locale service's per-key binder (called once by the plugin entry). */
 export declare function bindT(translate: Translate): void;
 export {};

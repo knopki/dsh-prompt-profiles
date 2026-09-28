@@ -107,6 +107,13 @@ export declare function sourceKindOf(source: unknown): "bundle" | "unknown" | nu
  *   back to the raw id when the profile is missing from /state.
  */
 export declare function usedInProfileName(state: StateDocument | null | undefined, profileId: string): string;
+/**
+ * @purpose Render a count with the noun form the number demands: the Slavic
+ *   rule (one for 1/21/31…, few for 2–4/22–24…, many otherwise). English
+ *   carries one value for `few` and `many`, Chinese the same value in all
+ *   three, so one rule serves every dictionary.
+ */
+export declare function countLabel(n: number, t: Translate, base: "sections" | "broken"): string;
 /** @purpose Locale key for a section-ref scope value (single mapping shared
  *   by the scope menu and the used-in line, so none render the raw enum). */
 export declare function scopeKeyOf(scope: string | null | undefined): "scopeMainOnly" | "scopeSubagentsOnly" | "scopeInherit";
@@ -169,6 +176,11 @@ export declare function notifyProfilesChanged(): void;
 export declare function subscribeProfilesChanged(listener: (seq: number) => void): () => void;
 /** @purpose Duck-typed error message (cross-realm-safe, unlike instanceof). */
 export declare function errText(err: unknown): string;
+/**
+ * @purpose Localize one skipped-reference reason: the id through the
+ *   dictionary, its value appended when the host sent one.
+ */
+export declare function skipReasonText(reason: unknown, detail: unknown, t: Translate): string;
 export declare const helpers: {
     insertionOrders: typeof insertionOrders;
     outlineRows: typeof outlineRows;

@@ -235,6 +235,26 @@ export function usedInProfileName(state: StateDocument | null | undefined, profi
 }
 // #endregion FUNC_usedInProfileName
 
+// #region FUNC_countLabel
+/**
+ * @purpose Render a count with the noun form the number demands: the Slavic
+ *   rule (one for 1/21/31…, few for 2–4/22–24…, many otherwise). English
+ *   carries one value for `few` and `many`, Chinese the same value in all
+ *   three, so one rule serves every dictionary.
+ */
+export function countLabel(n: number, t: Translate, base: "sections" | "broken"): string {
+  const mod10 = Math.abs(n) % 10;
+  const mod100 = Math.abs(n) % 100;
+  const form =
+    mod10 === 1 && mod100 !== 11
+      ? `${base}One`
+      : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+        ? `${base}Few`
+        : `${base}Many`;
+  return `${n} ${t(form)}`;
+}
+// #endregion FUNC_countLabel
+
 // #region FUNC_scopeKeyOf
 /** @purpose Locale key for a section-ref scope value (single mapping shared
  *   by the scope menu and the used-in line, so none render the raw enum). */
@@ -469,6 +489,34 @@ export function errText(err: unknown): string {
   return typeof message === "string" ? message : "";
 }
 // #endregion FUNC_errText
+
+// The reasons the host can attach to a skipped preview reference, as the
+// dictionary names them. A reason this build does not know (newer host) falls
+// back to the raw text rather than rendering an empty line.
+const SKIP_REASON_KEYS: Record<string, string> = {
+  "section-not-found": "skipSectionNotFound",
+  "section-disabled": "skipSectionDisabled",
+  "empty-body": "skipEmptyBody",
+  "main-only-in-subagent": "skipMainOnlyInSubagent",
+  "subagents-only-outside-subagent": "skipSubagentsOnlyOutsideSubagent",
+  "unknown-scope": "skipUnknownScope",
+  "malformed-variable-reference": "skipMalformedVariableReference",
+};
+
+// #region FUNC_skipReasonText
+/**
+ * @purpose Localize one skipped-reference reason: the id through the
+ *   dictionary, its value appended when the host sent one.
+ */
+export function skipReasonText(reason: unknown, detail: unknown, t: Translate): string {
+  const id = String(reason ?? "");
+  const key = SKIP_REASON_KEYS[id];
+  if (!key) return id;
+  const text = t(key);
+  const value = detail === undefined || detail === null ? "" : String(detail);
+  return value === "" ? text : `${text} (${value})`;
+}
+// #endregion FUNC_skipReasonText
 
 export const helpers = {
   insertionOrders,

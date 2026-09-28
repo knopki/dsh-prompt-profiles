@@ -77,12 +77,16 @@ export const en = {
   pickerEmpty: "No sections to add",
   builtinMarker: "⟨built-in⟩",
   skippedMarker: "⟨skipped⟩",
-  brokenWord: "broken",
+  brokenOne: "broken",
+  brokenFew: "broken",
+  brokenMany: "broken",
   noProfiles: "No profiles yet.",
   noSections: "No sections yet.",
   previewEmpty: "This profile emits no sections.",
   previewVariables: "Substituted at session start — may differ from this preview:",
-  sectionsWord: "sections",
+  sectionsOne: "section",
+  sectionsFew: "sections",
+  sectionsMany: "sections",
 };
 
 /** The locale key set `en` defines; `ru`/`zh` must carry exactly these keys. */
@@ -94,9 +98,9 @@ export const ru: Record<MessageKey, string> = {
   untitled: "(без названия)",
   loadError: "Не удалось загрузить профили промпта.",
   saveError: "Не удалось сохранить профиль промпта.",
-  remoteUnavailable: "Профили промпта недоступны: Remote-соединение не установлено, перезагрузите страницу.",
+  remoteUnavailable: "Профили промпта недоступны: Remote-соединение не установлено. Перезагрузите страницу.",
   menuLabel: "Выберите профиль промпта",
-  chooseNeedsWorkspace: "Сначала выберите воркспейс — выбор профиля запоминается для воркспейса.",
+  chooseNeedsWorkspace: "Сначала выберите рабочую папку — профиль запоминается по рабочей папке.",
   // settings page
   nav: "Промпты",
   tabProfiles: "Профили",
@@ -126,8 +130,8 @@ export const ru: Record<MessageKey, string> = {
   sourceBundle: "из бандла",
   sourceUnknown: "неизвестно",
   usedIn: "Используется в",
-  notUsed: "не используется",
-  openInSectionTab: "Открыть в «Секциях»",
+  notUsed: "нигде",
+  openInSectionTab: "Открыть во вкладке «Секции»",
   remove: "Убрать из профиля",
   duplicate: "Дублировать",
   deleteLabel: "Удалить",
@@ -143,13 +147,13 @@ export const ru: Record<MessageKey, string> = {
   confirmDeleteSection: "Удалить эту секцию?",
   confirmRemoveRef: "Убрать эту секцию из профиля?",
   confirmRename: "Изменить id секции?",
-  renameNote: "Ссылки в профилях при этом НЕ обновятся — их придётся поправить вручную.",
+  renameNote: "Ссылки в профилях при переименовании НЕ обновятся — их придётся поправить вручную.",
   renameAffected: "В этих профилях осталась старая ссылка — поправьте вручную:",
   renameEmpty: "Введите новый id — пустым он быть не может.",
-  titleRequired: "Введите название — секцию нельзя сохранить с пустым названием.",
+  titleRequired: "Введите название — без него секцию не сохранить.",
   dragHandle: "Перетащите, чтобы изменить порядок",
   missingSection: "секция не найдена",
-  emptyBody: "пустой текст — не вставляется",
+  emptyBody: "пустой текст — не попадает в промпт",
   completeModeWarning: "В режимах с полной заменой промпта секции профиля отбрасываются:",
   conflictError: "Параллельная правка — состояние перезагружено.",
   pickerTitle: "Добавить секции",
@@ -157,25 +161,29 @@ export const ru: Record<MessageKey, string> = {
   pickerEmpty: "Нет секций для добавления",
   builtinMarker: "⟨встроенная⟩",
   skippedMarker: "⟨пропущено⟩",
-  brokenWord: "битых",
+  brokenOne: "битая",
+  brokenFew: "битые",
+  brokenMany: "битых",
   noProfiles: "Профилей пока нет.",
   noSections: "Секций пока нет.",
-  previewEmpty: "Этот профиль не выдаёт ни одной секции.",
+  previewEmpty: "Этот профиль не содержит ни одной секции.",
   previewVariables: "Подстановка произойдёт при старте сессии — может отличаться от предпросмотра:",
-  sectionsWord: "секций",
+  sectionsOne: "секция",
+  sectionsFew: "секции",
+  sectionsMany: "секций",
 };
 
 export const zh: Record<MessageKey, string> = {
   // chip
   none: "无",
   untitled: "（无标题）",
-  loadError: "无法加载提示配置。",
-  saveError: "无法保存提示配置。",
-  remoteUnavailable: "提示配置不可用：Remote 连接未建立，请重新加载页面。",
-  menuLabel: "选择提示配置",
-  chooseNeedsWorkspace: "请先选择工作区——提示配置的选择按工作区保存。",
+  loadError: "无法加载提示词配置。",
+  saveError: "无法保存提示词配置。",
+  remoteUnavailable: "提示词配置不可用：Remote 连接未建立，请重新加载页面。",
+  menuLabel: "选择提示词配置",
+  chooseNeedsWorkspace: "请先选择工作区——提示词配置的选择按工作区保存。",
   // settings page
-  nav: "提示配置",
+  nav: "提示词配置",
   tabProfiles: "配置",
   tabSections: "片段",
   tabPreview: "预览",
@@ -200,7 +208,7 @@ export const zh: Record<MessageKey, string> = {
   scopeMainOnly: "仅主代理",
   scopeSubagentsOnly: "仅子代理",
   sourceLabel: "来源",
-  sourceBundle: "来自插件包",
+  sourceBundle: "插件包",
   sourceUnknown: "未知",
   usedIn: "用于",
   notUsed: "未使用",
@@ -209,7 +217,7 @@ export const zh: Record<MessageKey, string> = {
   duplicate: "复制",
   deleteLabel: "删除",
   renameId: "修改 id",
-  copySuffix: "（副本）",
+  copySuffix: "(副本)",
   renameIdLocked: "插件包提供的片段——无法修改其 id，只能停用。",
   titleLabel: "标题",
   bodyLabel: "内容",
@@ -223,38 +231,52 @@ export const zh: Record<MessageKey, string> = {
   renameNote: "配置中的引用不会随之更新——请手动修改。",
   renameAffected: "以下配置仍引用旧 id——请手动修改：",
   renameEmpty: "请输入新的 id——不能为空。",
-  titleRequired: "请输入名称——片段标题不能为空才能保存。",
+  titleRequired: "请输入名称——片段必须填写标题才能保存。",
   dragHandle: "拖动以调整顺序",
   missingSection: "未找到片段",
   emptyBody: "内容为空——不会注入",
-  completeModeWarning: "在完全替换提示词的模式下，配置片段会被丢弃：",
+  completeModeWarning: "在完全替换提示词的模式下，配置中的片段会被丢弃：",
   conflictError: "并发编辑——状态已重新加载。",
   pickerTitle: "添加片段",
   pickerAdd: "添加",
   pickerEmpty: "没有可添加的片段",
   builtinMarker: "⟨内置⟩",
   skippedMarker: "⟨已跳过⟩",
-  brokenWord: "损坏",
+  brokenOne: "处损坏",
+  brokenFew: "处损坏",
+  brokenMany: "处损坏",
   noProfiles: "还没有配置。",
   noSections: "还没有片段。",
   previewEmpty: "此配置不会注入任何片段。",
   previewVariables: "将在会话启动时替换——可能与预览不同：",
-  sectionsWord: "个片段",
+  sectionsOne: "个片段",
+  sectionsFew: "个片段",
+  sectionsMany: "个片段",
 };
 
 /** Every registered dictionary, as `ctx.locale.register(NS, messages)` takes it. */
 export const messages = { en, ru, zh };
 
-/** @purpose A dictionary lookup, as the locale service hands one out. */
-export type Translate = (key: string) => string;
+/**
+ * @purpose A dictionary lookup, as the locale service hands one out:
+ *   `{name}` placeholders fill from `params`.
+ */
+export type Translate = (key: string, params?: Record<string, string | number>) => string;
+
+// The service fills placeholders itself; the pre-bind fallback mirrors it so
+// both paths render the same value.
+function fillParams(template: string, params?: Record<string, string | number>): string {
+  if (!params) return template;
+  return template.replace(/\{(\w+)\}/g, (match, name: string) => (name in params ? String(params[name]) : match));
+}
 
 // Until `apply` binds the service, English is the only content that exists.
-let bound: Translate = (key) => en[key as MessageKey] ?? key;
+let bound: Translate = (key, params) => fillParams(en[key as MessageKey] ?? key, params);
 
 // #region FUNC_boundT
 /** @purpose Translate through the bound locale service, else through `en`. */
-export function boundT(key: string): string {
-  return bound(key);
+export function boundT(key: string, params?: Record<string, string | number>): string {
+  return bound(key, params);
 }
 // #endregion FUNC_boundT
 

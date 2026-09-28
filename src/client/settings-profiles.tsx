@@ -26,6 +26,7 @@ import * as React from "react";
 import { type CreateFlow, findEntry, makeCreateFlow, makeMutationFlow, optimisticEntry } from "./flows.ts";
 import {
   addSectionsToRefs,
+  countLabel,
   filterSections,
   idOf,
   insertionOrders,
@@ -423,8 +424,8 @@ export function ProfileOutline({
         {/* Count only the resolvable sections; broken refs are called out. */}
         <Tag>
           {brokenRows.length
-            ? `${ours.length} ${t("sectionsWord")} · ${brokenRows.length} ${t("brokenWord")}`
-            : `${ours.length} ${t("sectionsWord")}`}
+            ? `${countLabel(ours.length, t, "sections")} · ${countLabel(brokenRows.length, t, "broken")}`
+            : countLabel(ours.length, t, "sections")}
         </Tag>
       </div>
       <hr style={{ border: "none", borderTop: "1px solid var(--dsw-alias-border-l2)" }} />
@@ -592,7 +593,7 @@ export function ProfilesTab({
       {profiles.map((profile) => (
         <div key={idOf(profile)} style={{ ...rowStyle, cursor: "pointer" }} onClick={() => setDrill(idOf(profile))}>
           <span>{profile.title}</span>
-          <span style={mutedStyle}>{`${(profile.sections ?? []).length} ${t("sectionsWord")}`}</span>
+          <span style={mutedStyle}>{countLabel((profile.sections ?? []).length, t, "sections")}</span>
           {iconControl(t("editProfile"), IconEditOutlineRegular, () => setDrill(idOf(profile)))}
           {iconControl(
             t("duplicate"),
