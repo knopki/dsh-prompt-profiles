@@ -175,8 +175,12 @@ export declare const PROFILES_REFRESH_DEBOUNCE_MS = 150;
 export declare function notifyProfilesChanged(): void;
 /** @purpose Subscribe to the profiles-changed signal; returns the unsubscribe. */
 export declare function subscribeProfilesChanged(listener: (seq: number) => void): () => void;
-/** @purpose Duck-typed error message (cross-realm-safe, unlike instanceof). */
-export declare function errText(err: unknown): string;
+/**
+ * @purpose One user-facing failure line: the caller's localized prefix plus the
+ *   host failure said in the reader's language. A code this build has no
+ *   wording for falls back to the host's own message.
+ */
+export declare function errorNote(err: unknown, t: Translate, prefix: string): string;
 /**
  * @purpose Localize one skipped-reference reason: the id through the
  *   dictionary, its value appended when the host sent one.

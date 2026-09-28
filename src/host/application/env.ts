@@ -190,12 +190,20 @@ export function createUseCaseEnv(ports: HostPorts): UseCaseEnv {
    */
   const resolveSection = (received: string): AddressedRow<SectionView> => {
     const row = findRow(registry.sections(), received);
-    if (!row) throw new NotFoundError(`section row "${received}" is not registered`);
+    if (!row)
+      throw new NotFoundError(`section row "${received}" is not registered`, {
+        reason: "row-not-found",
+        params: { id: received },
+      });
     return { row, patchId: patchIdOf(row.rowId) };
   };
   const resolveProfile = (received: string): AddressedRow<ProfileView> => {
     const row = findRow(registry.profiles(), received);
-    if (!row) throw new NotFoundError(`profile row "${received}" is not registered`);
+    if (!row)
+      throw new NotFoundError(`profile row "${received}" is not registered`, {
+        reason: "row-not-found",
+        params: { id: received },
+      });
     return { row, patchId: patchIdOf(row.rowId) };
   };
 
@@ -216,7 +224,10 @@ export function createUseCaseEnv(ports: HostPorts): UseCaseEnv {
   /** Known settings-layer failures map to clean statuses with their real message (never a bare 500). */
   const mapSettingsError = (error: unknown, revision: number | undefined): never => {
     if ((error as { code?: unknown } | null)?.code === "SETTINGS_CONFLICT") {
-      throw new ConflictError(`configuration changed since read (expected revision ${revision})`);
+      throw new ConflictError(`configuration changed since read (expected revision ${revision})`, {
+        reason: "conflict",
+        params: { expected: revision },
+      });
     }
     const message = errorMessage(error);
     if (/is not volatile/.test(message)) throw new InvalidInputError(message);
@@ -270,7 +281,10 @@ export function createUseCaseEnv(ports: HostPorts): UseCaseEnv {
           typeof expected === "number" &&
           clientRevision !== expected
         ) {
-          throw new ConflictError(`configuration changed since read (expected revision ${clientRevision})`);
+          throw new ConflictError(`configuration changed since read (expected revision ${clientRevision})`, {
+            reason: "conflict",
+            params: { expected: clientRevision },
+          });
         }
         const ops = buildOps({ revisionAvailable: typeof expected === "number" }); // read + decide INSIDE the lock
         if (ops.length === 0) return false;
@@ -280,7 +294,9 @@ export function createUseCaseEnv(ports: HostPorts): UseCaseEnv {
         } catch (error) {
           if ((error as { code?: unknown } | null)?.code !== "SETTINGS_CONFLICT") mapSettingsError(error, expected);
           if (attempt >= MAX_MUTATE_ATTEMPTS) {
-            throw new ConflictError(`configuration kept changing; gave up after ${MAX_MUTATE_ATTEMPTS} attempts`);
+            throw new ConflictError(`configuration kept changing; gave up after ${MAX_MUTATE_ATTEMPTS} attempts`, {
+              reason: "conflict",
+            });
           }
           // conflict: re-read the config/revision and retry
         }
@@ -313,7 +329,11 @@ export function createUseCaseEnv(ports: HostPorts): UseCaseEnv {
     const ownership = patch.ownership(patchId);
     if (ownership.source === "user") {
       const removed = await patch.remove(patchId);
-      if (!removed) throw new NotFoundError(`row "${patchId}" not found in the profile patch`);
+      if (!removed)
+        throw new NotFoundError(`row "${patchId}" not found in the profile patch`, {
+          reason: "row-not-found",
+          params: { id: patchId },
+        });
       return { disabled: false };
     }
     await patch.disable(patchId, name);

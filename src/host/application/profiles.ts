@@ -64,7 +64,10 @@ function sectionRefs(env: UseCaseEnv, label: string, refs: readonly ParsedSectio
   return refs.map((ref, index) => {
     const id = resolveSectionRefId(ref.id, { targets, pending });
     if (id === null) {
-      throw new InvalidInputError(`${label}: sections[${index}].id "${ref.id}" is not a registered section`);
+      throw new InvalidInputError(`${label}: sections[${index}].id "${ref.id}" is not a registered section`, {
+        reason: "section-not-registered",
+        params: { id: ref.id },
+      });
     }
     return { id, order: ref.order, ...(ref.scope != null ? { scope: ref.scope } : {}) };
   });
@@ -120,7 +123,10 @@ export function createProfileCases(env: UseCaseEnv) {
       // An explicit id may never duplicate a registered config.id; patch
       // row-id duplicates fall to the writer's own duplicate guard.
       if (id !== null && env.registeredConfigIds("profile").has(id)) {
-        throw new InvalidInputError(`profile id "${id}" already exists`);
+        throw new InvalidInputError(`profile id "${id}" already exists`, {
+          reason: "profile-id-exists",
+          params: { id },
+        });
       }
       const rowId = id ?? newRowId("profile", env.idsInUse("profile"));
       // FROZEN ID SCHEME: row id === stored config.id (full form).
@@ -188,7 +194,10 @@ export function createProfileCases(env: UseCaseEnv) {
       await env.mutateWithRetry(
         (): SettingsOp[] => {
           if (defaultId !== "" && !env.profileSelectable(defaultId)) {
-            throw new NotFoundError(`profile "${defaultId}" is not registered`);
+            throw new NotFoundError(`profile "${defaultId}" is not registered`, {
+              reason: "profile-not-registered",
+              params: { id: defaultId },
+            });
           }
           return [{ op: "set", path: ["default"], value: defaultId }];
         },
@@ -218,7 +227,10 @@ export function createProfileCases(env: UseCaseEnv) {
           // AUTHORITATIVE patch: a profile deleted mid-resolution is rejected,
           // never resurrected as a dangling choice.
           if (payload.profileId !== "" && !env.profileSelectable(payload.profileId)) {
-            throw new NotFoundError(`profile "${payload.profileId}" is not registered`);
+            throw new NotFoundError(`profile "${payload.profileId}" is not registered`, {
+              reason: "profile-not-registered",
+              params: { id: payload.profileId },
+            });
           }
           // Pruning runs ONLY with a settings revision: without CAS a
           // concurrent writer could make a scanned key valid before mutate,

@@ -8,7 +8,15 @@
 
 import { Tag } from "@deepseek-ai/dsh-client-ui-primitives";
 import * as React from "react";
-import { errText, idOf, type PreviewPlan, previewPlan, previewVariableNotice, refIdOf, skipReasonText } from "./helpers.ts";
+import {
+  errorNote,
+  idOf,
+  type PreviewPlan,
+  previewPlan,
+  previewVariableNotice,
+  refIdOf,
+  skipReasonText,
+} from "./helpers.ts";
 import type { Translate } from "./i18n.ts";
 import type { StateDocument } from "./model.ts";
 import type { RemoteApi } from "./remote.ts";
@@ -36,7 +44,7 @@ export function PreviewTab({ state, api, t, notify }: PreviewTabProps): React.Re
         if (live) setData(previewPlan(value));
       })
       .catch((err) => {
-        if (live) notify(errText(err) ? `${t("loadError")} ${errText(err)}`.trim() : t("loadError"));
+        if (live) notify(errorNote(err, t, t("loadError")));
       });
     return () => {
       live = false;

@@ -74,7 +74,11 @@ export interface PreviewRequest {
 function previewResponse(env: UseCaseEnv, profileId: string, { cwd }: { cwd?: unknown } = {}): PreviewResult {
   const { registry, orders } = env.ports;
   const profile = findRow(registry.profiles(), profileId);
-  if (!profile) throw new NotFoundError(`profile "${profileId}" is not registered`);
+  if (!profile)
+    throw new NotFoundError(`profile "${profileId}" is not registered`, {
+      reason: "profile-not-registered",
+      params: { id: profileId },
+    });
   const sectionsById = new Map(registry.sections().map((row) => [row.id, row]));
   const builtinOrdersByName = orders.ordersByName();
   // No supplied cwd means no substitution and a null cwd variable — never the host cwd.

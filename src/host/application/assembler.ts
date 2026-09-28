@@ -19,8 +19,8 @@ import {
   interpolationSkipReason,
   planInsertion,
   SKIP_REASONS,
-  sectionSkipReason,
   type SkipReason,
+  sectionSkipReason,
 } from "../domain/ordering.ts";
 import type {
   BuiltinOrdersPort,

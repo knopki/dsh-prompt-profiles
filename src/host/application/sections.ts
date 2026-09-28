@@ -67,7 +67,7 @@ async function renameSection(
   { rowId: received, id: newId }: { rowId: string; id: string },
 ): Promise<SectionRenameResult> {
   const patch = env.ports.patch();
-  if (!patch) throw new UnavailableError("profile storage service is unavailable");
+  if (!patch) throw new UnavailableError("profile storage service is unavailable", { reason: "storage-unavailable" });
   const { row: section, patchId } = env.resolveSection(received);
   const oldRowId = patchId;
   // Every id naming THIS section, for the no-op check AND the affected report.
@@ -77,7 +77,11 @@ async function renameSection(
     .filter((profile) => profile.sections.some((ref) => refNamesRow(ref.id, aliases)))
     .map((profile) => ({ profileId: profile.id, title: profile.title }));
   // The normalized new id already naming THIS row is a collision, not a silent no-op.
-  if (refNamesRow(newId, aliases)) throw new InvalidInputError(`section id "${newId}" is already taken`);
+  if (refNamesRow(newId, aliases))
+    throw new InvalidInputError(`section id "${newId}" is already taken`, {
+      reason: "section-id-taken",
+      params: { id: newId },
+    });
   // Uniqueness on FULL id strings; a patch-only duplicate surfaces from the
   // writer's duplicate guard inside the batch (mapped below, rollback already applied).
   const clash = env.registry
@@ -86,7 +90,11 @@ async function renameSection(
       (row) =>
         row.rowId !== section.rowId && (row.id === newId || row.rowId === newId || toPatchId(row.rowId) === newId),
     );
-  if (clash) throw new InvalidInputError(`section id "${newId}" is already taken`);
+  if (clash)
+    throw new InvalidInputError(`section id "${newId}" is already taken`, {
+      reason: "section-id-taken",
+      params: { id: newId },
+    });
   // Only a row THIS patch inserted may be physically removed; anything else is
   // disabled instead. `.inserted` (not source) stays correct for absent rows.
   const bundleOwned = !patch.ownership(oldRowId).inserted;
@@ -117,7 +125,10 @@ export function createSectionCases(env: UseCaseEnv) {
       // An explicit id may never duplicate a registered config.id; patch
       // row-id duplicates fall to the writer's own duplicate guard.
       if (id !== null && env.registeredConfigIds("section").has(id)) {
-        throw new InvalidInputError(`section id "${id}" already exists`);
+        throw new InvalidInputError(`section id "${id}" already exists`, {
+          reason: "section-id-taken",
+          params: { id },
+        });
       }
       const title = titleOrDefault(payload.title, "Section");
       const sectionBody = payload.body ?? "";

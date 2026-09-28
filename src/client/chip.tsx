@@ -14,7 +14,7 @@ import {
   Menu,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import * as React from "react";
-import { errText, idOf, PROFILES_REFRESH_DEBOUNCE_MS, profileLabel, subscribeProfilesChanged } from "./helpers.ts";
+import { errorNote, idOf, PROFILES_REFRESH_DEBOUNCE_MS, profileLabel, subscribeProfilesChanged } from "./helpers.ts";
 import type { Translate } from "./i18n.ts";
 import type { StateDocument } from "./model.ts";
 import { readyApi } from "./transport.ts";
@@ -87,7 +87,7 @@ export function PromptProfileChip(props: PromptProfileChipProps): React.ReactEle
           if (live) setState(value);
         })
         .catch((err) => {
-          if (live) notify(errText(err) ? `${t("loadError")} ${errText(err)}`.trim() : t("loadError"));
+          if (live) notify(errorNote(err, t, t("loadError")));
         });
     load();
     // The settings page announces every successful profile/section mutation;
@@ -155,7 +155,7 @@ export function PromptProfileChip(props: PromptProfileChipProps): React.ReactEle
       setState(refreshed);
     } catch (err) {
       setState(previous);
-      notify(errText(err) ? `${t("saveError")} ${errText(err)}`.trim() : t("saveError"));
+      notify(errorNote(err, t, t("saveError")));
     }
   };
   // Menu is owner-controlled: `open` + `anchor` (rendered in place) + data

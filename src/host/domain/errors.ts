@@ -5,10 +5,28 @@
  * @scope Domain errors and thrown-value message normalization.
  * @invariants
  *  - `status` mirrors `code` numerically; messages are chosen by throwers.
+ *  - `reason` is wire vocabulary the client localizes; a failure a user cannot
+ *    act on (a malformed call, a violated invariant) carries none.
  * #endregion moduleContract
  */
 
 type DomainErrorCode = "invalid" | "not-found" | "conflict" | "unavailable" | "internal";
+
+/** The failures a user can act on, addressed by id or revision. */
+export type DomainErrorReason =
+  | "section-id-taken"
+  | "profile-id-exists"
+  | "profile-not-registered"
+  | "section-not-registered"
+  | "row-not-found"
+  | "storage-unavailable"
+  | "conflict";
+
+/** What a reason needs to say which value failed. */
+export interface DomainErrorExtra {
+  reason?: DomainErrorReason;
+  params?: { id?: string; expected?: number };
+}
 
 const DOMAIN_ERROR_STATUS: Record<DomainErrorCode, number> = {
   invalid: 400,
@@ -25,12 +43,16 @@ const DOMAIN_ERROR_STATUS: Record<DomainErrorCode, number> = {
 export class DomainError extends Error {
   readonly code: DomainErrorCode;
   readonly status: number;
+  readonly reason: DomainErrorReason | undefined;
+  readonly params: DomainErrorExtra["params"];
 
-  constructor(code: DomainErrorCode, message: string) {
+  constructor(code: DomainErrorCode, message: string, extra: DomainErrorExtra = {}) {
     super(message);
     this.name = "DomainError";
     this.code = code;
     this.status = DOMAIN_ERROR_STATUS[code];
+    this.reason = extra.reason;
+    this.params = extra.params;
   }
 }
 // #endregion CLASS_DomainError
@@ -40,8 +62,8 @@ export class DomainError extends Error {
  * @purpose Signal malformed payloads, addresses, or requests.
  */
 export class InvalidInputError extends DomainError {
-  constructor(message: string) {
-    super("invalid", message);
+  constructor(message: string, extra: DomainErrorExtra = {}) {
+    super("invalid", message, extra);
     this.name = "InvalidInputError";
   }
 }
@@ -52,8 +74,8 @@ export class InvalidInputError extends DomainError {
  * @purpose Signal an addressed row, profile, or section that is not registered.
  */
 export class NotFoundError extends DomainError {
-  constructor(message: string) {
-    super("not-found", message);
+  constructor(message: string, extra: DomainErrorExtra = {}) {
+    super("not-found", message, extra);
     this.name = "NotFoundError";
   }
 }
@@ -64,8 +86,8 @@ export class NotFoundError extends DomainError {
  * @purpose Signal a stale expected revision that no longer matches storage.
  */
 export class ConflictError extends DomainError {
-  constructor(message: string) {
-    super("conflict", message);
+  constructor(message: string, extra: DomainErrorExtra = {}) {
+    super("conflict", message, extra);
     this.name = "ConflictError";
   }
 }
@@ -76,8 +98,8 @@ export class ConflictError extends DomainError {
  * @purpose Signal a required service that is absent or unusable.
  */
 export class UnavailableError extends DomainError {
-  constructor(message: string) {
-    super("unavailable", message);
+  constructor(message: string, extra: DomainErrorExtra = {}) {
+    super("unavailable", message, extra);
     this.name = "UnavailableError";
   }
 }

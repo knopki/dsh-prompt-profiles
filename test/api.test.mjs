@@ -1745,9 +1745,7 @@ test("preview merges the REAL built-in placeholders in an independently expected
       ],
       "hand-written expected merge of the REAL built-in table",
     );
-    assert.deepEqual(body.skipped, [
-      { id: "sub-note", title: "Sub", reason: "subagents-only-outside-subagent" },
-    ]);
+    assert.deepEqual(body.skipped, [{ id: "sub-note", title: "Sub", reason: "subagents-only-outside-subagent" }]);
     assert.ok(
       body.sections.filter((s) => s.kind !== "builtin").every((s) => s.emits === true && typeof s.text === "string"),
       "emitted sections carry their text",

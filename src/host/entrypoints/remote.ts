@@ -14,7 +14,7 @@
  */
 
 import type { Context } from "@deepseek-ai/cordis";
-import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
+import { RemoteError, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import type { TypertContribution } from "@deepseek-ai/dsh-typert-registry";
 import {
   buildRemoteDescriptors,
@@ -24,9 +24,10 @@ import {
   REMOTE_SERVICE_KEY,
   TYPERT_PACKAGE,
 } from "../../shared/remote-contract.ts";
+import type {} from "../../shared/remote-errors.ts";
 import { createOperations, type OperationSet, type PreviewRequest } from "../application/index.ts";
 import type { LogPort, WarnFn } from "../application/ports.ts";
-import { InternalError } from "../domain/errors.ts";
+import { DomainError, InternalError } from "../domain/errors.ts";
 import { createHostPorts, type RegistryService } from "../infra/index.ts";
 
 export { REMOTE_NAMESPACE, REMOTE_SERVICE_KEY, TYPERT_PACKAGE };
@@ -95,6 +96,36 @@ function assertPlainJson(value: unknown, method: string, ancestors: Set<object> 
 }
 // #endregion FUNC_assertPlainJson
 
+// #region FUNC_asRemoteFailure
+/**
+ * @purpose Give a user-actionable domain failure its wire code, so the client
+ *   can say it in the reader's language. A failure carrying no reason crosses
+ *   unchanged: the gateway reports it as `gateway/internal` with its message.
+ */
+function asRemoteFailure(error: unknown): unknown {
+  if (!(error instanceof DomainError) || error.reason === undefined) return error;
+  const id = String(error.params?.id ?? "");
+  switch (error.reason) {
+    case "section-id-taken":
+      return new RemoteError("promptProfiles/section-id-taken", error.message, { id });
+    case "profile-id-exists":
+      return new RemoteError("promptProfiles/profile-id-exists", error.message, { id });
+    case "profile-not-registered":
+      return new RemoteError("promptProfiles/profile-not-registered", error.message, { id });
+    case "section-not-registered":
+      return new RemoteError("promptProfiles/section-not-registered", error.message, { id });
+    case "row-not-found":
+      return new RemoteError("promptProfiles/row-not-found", error.message, { id });
+    case "storage-unavailable":
+      return new RemoteError("promptProfiles/storage-unavailable", error.message, {});
+    case "conflict": {
+      const expected = error.params?.expected;
+      return new RemoteError("promptProfiles/conflict", error.message, expected === undefined ? {} : { expected });
+    }
+  }
+}
+// #endregion FUNC_asRemoteFailure
+
 function remoteInvocations(): Array<Record<string, unknown>> {
   return buildRemoteDescriptors("host");
 }
@@ -137,7 +168,12 @@ export class PromptProfilesRemote extends TypertRemoteService {
      * @purpose Validate and normalize one operation result before it crosses Remote.
      */
     const invoke = async (method: string, input: unknown): Promise<unknown> => {
-      const value = await HOST_RUNNERS[method](ops, input);
+      let value: unknown;
+      try {
+        value = await HOST_RUNNERS[method](ops, input);
+      } catch (error) {
+        throw asRemoteFailure(error);
+      }
       const result = value === undefined ? { ok: true } : value;
       assertPlainJson(result, method);
       const parsed = dispatch[method].result().safeParse(result);

@@ -352,6 +352,14 @@ test("real gateway: strict rejection leaves the patch untouched; a valid Remote 
   });
   assert.equal(notRegistered.ok, false, "unknown row surfaces as a Remote failure");
   assert.match(notRegistered.error.message, /is not registered/);
+  // A user-actionable failure carries a code and typed details, so the client
+  // says it in the reader's language instead of echoing this message.
+  assert.equal(notRegistered.error.code, "promptProfiles/row-not-found");
+  assert.deepEqual(notRegistered.error.details, { id: "ghost" });
+  const ghost = await gateway.invokeRpc("promptProfiles/preview", { args: { input: { profileId: "ghost" } } });
+  assert.equal(ghost.ok, false, "an unknown profile is a Remote failure");
+  assert.equal(ghost.error.code, "promptProfiles/profile-not-registered");
+  assert.deepEqual(ghost.error.details, { id: "ghost" });
 
   // --- valid call: same fixture, deterministic token, identical outcome for
   //     the shared operations (A) and the Remote surface (B).

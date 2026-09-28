@@ -10,7 +10,9 @@ import { expect, test } from "vitest";
 import {
   addSectionsToRefs,
   canSaveSection,
+  countLabel,
   dedupeRowPrefix,
+  errorNote,
   escapesDrillDown,
   filterSections,
   idOf,
@@ -25,11 +27,21 @@ import {
   refIdOf,
   renameNotice,
   scopeKeyOf,
+  skipReasonText,
   sourceKindOf,
   subscribeProfilesChanged,
   usedInProfileName,
 } from "../../src/client/helpers.ts";
+import { ru } from "../../src/client/i18n.ts";
 import { keyT } from "./harness.ts";
+
+/** The locale service's own contract: `{name}` placeholders fill from params. */
+const ruT = (key: string, params?: Record<string, string | number>): string => {
+  const template = (ru as Record<string, string>)[key] ?? key;
+  return template.replace(/\{(\w+)\}/g, (match, name: string) =>
+    params && name in params ? String(params[name]) : match,
+  );
+};
 
 test("idOf prefers the unqualified configId", () => {
   expect(idOf({ configId: "main", patchId: "p" })).toBe("main");
@@ -280,4 +292,33 @@ test("the profiles-changed signal reaches every live subscriber and unsubscribes
   notifyProfilesChanged();
   expect(seen).toHaveLength(2);
   expect(seen[1]).toBeGreaterThan(seen[0]);
+});
+
+test("countLabel picks the noun form the number demands", () => {
+  expect(countLabel(1, keyT, "sections")).toBe("1 sectionsOne");
+  expect(countLabel(2, keyT, "sections")).toBe("2 sectionsFew");
+  expect(countLabel(5, keyT, "sections")).toBe("5 sectionsMany");
+  expect(countLabel(11, keyT, "sections")).toBe("11 sectionsMany");
+  expect(countLabel(21, keyT, "sections")).toBe("21 sectionsOne");
+  expect(countLabel(1, ruT, "broken")).toBe("1 битая");
+  expect(countLabel(3, ruT, "broken")).toBe("3 битые");
+  expect(countLabel(7, ruT, "broken")).toBe("7 битых");
+});
+
+test("skipReasonText says a host reason in the reader's language, detail included", () => {
+  expect(skipReasonText("section-not-found", undefined, ruT)).toBe("секция не найдена");
+  expect(skipReasonText("unknown-scope", "everywhere", ruT)).toBe("неизвестная область видимости (everywhere)");
+  // A reason this build does not know stays readable instead of rendering an empty line.
+  expect(skipReasonText("reason-from-a-newer-host", undefined, ruT)).toBe("reason-from-a-newer-host");
+});
+
+test("errorNote says a coded host failure in the reader's language", () => {
+  const err = { code: "promptProfiles/section-id-taken", details: { id: "tone" } };
+  expect(errorNote(err, ruT, "Не удалось создать:")).toBe("Не удалось создать: Секция с id «tone» уже есть.");
+  // No wording for the code: the host's own message is the diagnostic.
+  expect(errorNote({ code: "gateway/internal", message: 'profile "x" is not registered' }, ruT, "Ошибка:")).toBe(
+    'Ошибка: profile "x" is not registered',
+  );
+  expect(errorNote(new Error("boom"), ruT, "Ошибка:")).toBe("Ошибка: boom");
+  expect(errorNote(undefined, ruT, "Ошибка:")).toBe("Ошибка:");
 });

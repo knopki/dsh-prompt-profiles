@@ -5,18 +5,25 @@
  * @invariants
  *  - Descriptors are shape-identical to the host's; every call passes an object.
  *  - `{ ok: true, value }` resolves to `value`; `{ ok: false, error }`
- *    rejects with the envelope's message and code.
- *  - The envelope carries no status, so conflicts classify from message text.
+ *    rejects with the envelope's code, details and message.
+ *  - A failure is classified by its code; the message is diagnostic prose the
+ *    host happens to carry and is never matched against.
  * #endregion moduleContract */
 
 import { buildRemoteDescriptors, REMOTE_NAMESPACE, TYPERT_PACKAGE } from "../shared/remote-contract.ts";
 import type { CreateResponse, PreviewResponse, RenameResponse, SectionRef, StateDocument } from "./model.ts";
 
+/** The detail fields the published failure codes carry, as the client reads them. */
+export interface RemoteErrorDetails {
+  id?: string;
+  expected?: number;
+}
+
 /** One RemoteResult envelope as the gateway delivers it. */
 export interface RemoteEnvelope {
   ok?: boolean;
   value?: unknown;
-  error?: { code?: string; message?: string } | null;
+  error?: { code?: string; message?: string; details?: RemoteErrorDetails } | null;
 }
 
 /**
@@ -88,17 +95,19 @@ const clientContribution = {
 
 // #region CLASS_RemoteCallError
 /**
- * The Error a `{ ok: false, error }` envelope becomes: the envelope's message
- * (what errText/notify render) plus its `code`, so callers can discriminate
- * without string matching on anything but the documented conflict messages.
+ * The Error a `{ ok: false, error }` envelope becomes: the envelope's message,
+ * its `code`, and the details the code types, so callers address a failure by
+ * code and never by the prose the host happens to carry.
  */
 class RemoteCallError extends Error {
   readonly code: string | undefined;
+  readonly details: RemoteErrorDetails;
 
-  constructor(code: string | undefined, message: string | undefined) {
+  constructor(code: string | undefined, message: string | undefined, details: RemoteErrorDetails = {}) {
     super(message || "prompt profiles remote call failed");
     this.name = "RemoteCallError";
     this.code = code;
+    this.details = details;
   }
 }
 // #endregion CLASS_RemoteCallError
@@ -108,12 +117,12 @@ class RemoteCallError extends Error {
  * @purpose Unwrap one RemoteResult envelope: `{ ok: true, value }` resolves
  *   to `value`, `{ ok: false, error }` rejects with RemoteCallError — the
  *   failure path every existing UI handler (notify, inline error, runSave)
- *   already consumes via err.message.
+ *   already consumes.
  */
 async function unwrapRemoteResult<T>(envelope: RemoteEnvelope | null | undefined): Promise<T> {
   if (envelope?.ok) return envelope.value as T;
   const error = envelope?.error;
-  throw new RemoteCallError(error?.code, error?.message);
+  throw new RemoteCallError(error?.code, error?.message, error?.details);
 }
 // #endregion FUNC_unwrapRemoteResult
 
@@ -129,18 +138,25 @@ async function remoteCall<T>(scope: RemoteScope, method: string, args: object): 
 }
 // #endregion FUNC_remoteCall
 
-/** The stale-revision failures the host reports as ConflictError. */
+/** The stale-revision failure the host reports as a coded conflict. */
+const REMOTE_CONFLICT_CODE = "promptProfiles/conflict";
+/** The conflict messages a host build predating the code still sends. */
 const REMOTE_CONFLICT_PATTERN = /configuration changed since read|configuration kept changing/;
 
 // #region FUNC_isRemoteConflict
 /**
  * @purpose Conflict classifier shared by runSave's re-apply flow: true for a
- *   stale-revision message, so the conflict behaviour (reload, re-apply once,
- *   conflictError notice on the second failure) is preserved.
+ *   stale-revision failure, so the conflict behaviour (reload, re-apply once,
+ *   conflictError notice on the second failure) is preserved. The code is the
+ *   signal; the message pattern only covers a host bundle from before it.
  */
 function isRemoteConflict(err: unknown): boolean {
-  const candidate = err as { status?: number; message?: unknown } | null | undefined;
-  return candidate?.status === 409 || REMOTE_CONFLICT_PATTERN.test(String(candidate?.message ?? ""));
+  const candidate = err as { code?: unknown; status?: number; message?: unknown } | null | undefined;
+  return (
+    candidate?.status === 409 ||
+    candidate?.code === REMOTE_CONFLICT_CODE ||
+    REMOTE_CONFLICT_PATTERN.test(String(candidate?.message ?? ""))
+  );
 }
 // #endregion FUNC_isRemoteConflict
 

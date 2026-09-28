@@ -7,7 +7,7 @@
  *  - One flow instance runs one mutation at a time; a failure restores prior state.
  * #endregion moduleContract */
 
-import { errText, idOf, notifyProfilesChanged } from "./helpers.ts";
+import { errorNote, idOf, notifyProfilesChanged } from "./helpers.ts";
 import type { Translate } from "./i18n.ts";
 import type { CreateResponse, RowEntry, SectionRef, StateDocument } from "./model.ts";
 import type { RemoteApi } from "./remote.ts";
@@ -179,7 +179,7 @@ export function makeCreateFlow({
       notifyProfilesChanged();
       return { ok: true, item: found, created };
     } catch (err) {
-      notify(`${t("createError")} ${errText(err)}`.trim());
+      notify(errorNote(err, t, t("createError")));
       if (reload) {
         try {
           await reload();
@@ -234,7 +234,7 @@ export function makeMutationFlow({
       return { ok: true, result };
     } catch (err) {
       if (onState && prior) onState(prior); // restore the pre-click local state
-      notify(`${t("createError")} ${errText(err)}`.trim());
+      notify(errorNote(err, t, t("createError")));
       if (reload) {
         try {
           await reload();

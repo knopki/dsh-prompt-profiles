@@ -483,13 +483,44 @@ export function subscribeProfilesChanged(listener: (seq: number) => void): () =>
 }
 // #endregion FUNC_subscribeProfilesChanged
 
-// #region FUNC_errText
-/** @purpose Duck-typed error message (cross-realm-safe, unlike instanceof). */
-export function errText(err: unknown): string {
+/** Duck-typed error message (cross-realm-safe, unlike instanceof). */
+function errText(err: unknown): string {
   const message = (err as { message?: unknown } | null | undefined)?.message;
   return typeof message === "string" ? message : "";
 }
-// #endregion FUNC_errText
+
+// The failure codes this bundle publishes, as the dictionary names them.
+const REMOTE_ERROR_KEYS: Record<string, string> = {
+  "promptProfiles/section-id-taken": "errorSectionIdTaken",
+  "promptProfiles/profile-id-exists": "errorProfileIdExists",
+  "promptProfiles/profile-not-registered": "errorProfileNotFound",
+  "promptProfiles/section-not-registered": "errorSectionNotFound",
+  "promptProfiles/row-not-found": "errorRowNotFound",
+  "promptProfiles/storage-unavailable": "errorStorageUnavailable",
+  "promptProfiles/conflict": "conflictError",
+};
+
+// #region FUNC_errorNote
+/**
+ * @purpose One user-facing failure line: the caller's localized prefix plus the
+ *   host failure said in the reader's language. A code this build has no
+ *   wording for falls back to the host's own message.
+ */
+export function errorNote(err: unknown, t: Translate, prefix: string): string {
+  const failure = err as {
+    code?: unknown;
+    details?: { id?: unknown; expected?: unknown } | null;
+  } | null;
+  const key = typeof failure?.code === "string" ? REMOTE_ERROR_KEYS[failure.code] : undefined;
+  if (!key) {
+    const message = errText(err);
+    return message ? `${prefix} ${message}`.trim() : prefix.trim();
+  }
+  const details = failure?.details ?? {};
+  const params = { id: String(details.id ?? ""), expected: String(details.expected ?? "") };
+  return `${prefix} ${t(key, params)}`.trim();
+}
+// #endregion FUNC_errorNote
 
 // The reasons the host can attach to a skipped preview reference, as the
 // dictionary names them. A reason this build does not know (newer host) falls

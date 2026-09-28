@@ -5,10 +5,16 @@
  * @invariants
  *  - Descriptors are shape-identical to the host's; every call passes an object.
  *  - `{ ok: true, value }` resolves to `value`; `{ ok: false, error }`
- *    rejects with the envelope's message and code.
- *  - The envelope carries no status, so conflicts classify from message text.
+ *    rejects with the envelope's code, details and message.
+ *  - A failure is classified by its code; the message is diagnostic prose the
+ *    host happens to carry and is never matched against.
  * #endregion moduleContract */
 import type { CreateResponse, PreviewResponse, RenameResponse, SectionRef, StateDocument } from "./model.ts";
+/** The detail fields the published failure codes carry, as the client reads them. */
+export interface RemoteErrorDetails {
+    id?: string;
+    expected?: number;
+}
 /** One RemoteResult envelope as the gateway delivers it. */
 export interface RemoteEnvelope {
     ok?: boolean;
@@ -16,6 +22,7 @@ export interface RemoteEnvelope {
     error?: {
         code?: string;
         message?: string;
+        details?: RemoteErrorDetails;
     } | null;
 }
 /**
@@ -81,19 +88,20 @@ declare const clientContribution: {
     descriptors: Record<string, unknown>[];
 };
 /**
- * The Error a `{ ok: false, error }` envelope becomes: the envelope's message
- * (what errText/notify render) plus its `code`, so callers can discriminate
- * without string matching on anything but the documented conflict messages.
+ * The Error a `{ ok: false, error }` envelope becomes: the envelope's message,
+ * its `code`, and the details the code types, so callers address a failure by
+ * code and never by the prose the host happens to carry.
  */
 declare class RemoteCallError extends Error {
     readonly code: string | undefined;
-    constructor(code: string | undefined, message: string | undefined);
+    readonly details: RemoteErrorDetails;
+    constructor(code: string | undefined, message: string | undefined, details?: RemoteErrorDetails);
 }
 /**
  * @purpose Unwrap one RemoteResult envelope: `{ ok: true, value }` resolves
  *   to `value`, `{ ok: false, error }` rejects with RemoteCallError — the
  *   failure path every existing UI handler (notify, inline error, runSave)
- *   already consumes via err.message.
+ *   already consumes.
  */
 declare function unwrapRemoteResult<T>(envelope: RemoteEnvelope | null | undefined): Promise<T>;
 /**
@@ -104,8 +112,9 @@ declare function unwrapRemoteResult<T>(envelope: RemoteEnvelope | null | undefin
 declare function remoteCall<T>(scope: RemoteScope, method: string, args: object): Promise<T>;
 /**
  * @purpose Conflict classifier shared by runSave's re-apply flow: true for a
- *   stale-revision message, so the conflict behaviour (reload, re-apply once,
- *   conflictError notice on the second failure) is preserved.
+ *   stale-revision failure, so the conflict behaviour (reload, re-apply once,
+ *   conflictError notice on the second failure) is preserved. The code is the
+ *   signal; the message pattern only covers a host bundle from before it.
  */
 declare function isRemoteConflict(err: unknown): boolean;
 /** @purpose Adapt the injected namespace while preserving endpoint wire shapes. */

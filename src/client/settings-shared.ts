@@ -8,7 +8,7 @@
  * #endregion moduleContract */
 
 import * as React from "react";
-import { errText, notifyProfilesChanged } from "./helpers.ts";
+import { errorNote, notifyProfilesChanged } from "./helpers.ts";
 import type { Translate } from "./i18n.ts";
 import type { StateDocument } from "./model.ts";
 import { isRemoteConflict, type RemoteApi } from "./remote.ts";
@@ -28,7 +28,7 @@ export function useProfilesState(api: RemoteApi, t: Translate, notify: (text: st
       api
         .loadState()
         .then(setState)
-        .catch((err) => notify(errText(err) ? `${t("loadError")} ${errText(err)}`.trim() : t("loadError"))),
+        .catch((err) => notify(errorNote(err, t, t("loadError")))),
     [api, t, notify],
   );
   React.useEffect(() => {
@@ -91,7 +91,7 @@ export async function runSave(
   onError?: (text: string) => void,
 ): Promise<boolean> {
   const fail = (prefix: string, err: unknown) => {
-    const text = `${prefix} ${errText(err)}`.trim();
+    const text = errorNote(err, t, prefix);
     notify(text);
     if (onError) onError(text);
   };

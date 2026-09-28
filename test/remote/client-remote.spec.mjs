@@ -293,6 +293,57 @@ test("a failure envelope surfaces through the UI error path (runSave notify), co
     expect(attempts).toBe(2);
     expect(reloaded.length).toBe(2);
     expect(notes.length).toBe(0, "a recovered conflict raises no toast");
+
+    // (3) a CODED failure: the notice comes from the code and its details, not
+    //     from the host's English sentence.
+    bench.mock.unary("promptProfiles/preview", {
+      ok: false,
+      error: {
+        code: "promptProfiles/profile-not-registered",
+        message: 'profile "ghost" is not registered',
+        details: { id: "ghost" },
+      },
+    });
+    const coded = await api.preview("ghost").then(
+      () => null,
+      (err) => err,
+    );
+    expect(coded.code).toBe("promptProfiles/profile-not-registered");
+    expect(coded.details).toEqual({ id: "ghost" });
+    notes.length = 0;
+    reloaded.length = 0;
+    await bench.plugin.runSave(
+      () => api.preview("ghost"),
+      async () => {
+        reloaded.push(1);
+      },
+      (k) => k,
+      (m) => notes.push(m),
+    );
+    expect(notes.at(-1)).toBe("saveError errorProfileNotFound");
+    expect(reloaded.length).toBe(0, "a coded non-conflict never reloads");
+
+    // (4) conflict by CODE, with prose that no longer matches the old pattern.
+    bench.mock.unary("promptProfiles/sectionUpdate", {
+      ok: false,
+      error: { code: "promptProfiles/conflict", message: "revision 7 is stale", details: { expected: 7 } },
+    });
+    notes.length = 0;
+    let codedAttempts = 0;
+    const codedConflict = await bench.plugin.runSave(
+      async () => {
+        codedAttempts += 1;
+        if (codedAttempts === 1) await api.sectionUpdate("section-a", { title: "T", body: "B" });
+      },
+      async () => {
+        reloaded.push(1);
+      },
+      (k) => k,
+      (m) => notes.push(m),
+    );
+    expect(codedConflict).toBe(true, "the coded conflict takes the re-apply path");
+    expect(codedAttempts).toBe(2);
+    expect(notes.length).toBe(0, "a recovered coded conflict raises no toast");
   } finally {
     await bench.dispose();
   }
