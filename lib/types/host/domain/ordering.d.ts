@@ -6,21 +6,34 @@
  * @invariants
  *  - Scope is evaluated before existence and state.
  *  - Planned indices address the original assembly array; consumers splice last to first.
+ *  - A skip reason is a stable id the client localizes, never a sentence.
  * #endregion moduleContract
  */
 import type { AssemblySection, PlannedInsertion, Section, SectionRef, SnapshotSection } from "./model.ts";
+/**
+ * Stable identifiers for why a reference contributes nothing. They cross the
+ * wire and the client localizes them, so they are vocabulary, not prose.
+ */
 export declare const SKIP_REASONS: {
-    readonly mainOnlyInSubagent: "scope main-only in a subagent";
-    readonly subagentsOnlyOutsidePlainSubagent: "scope subagents-only outside a plain subagent";
-    readonly sectionNotFound: "section not found";
-    readonly sectionDisabled: "section disabled";
-    readonly emptyBody: "empty body";
-    readonly emptyAfterInterpolation: "empty after interpolation";
+    readonly mainOnlyInSubagent: "main-only-in-subagent";
+    readonly subagentsOnlyOutsidePlainSubagent: "subagents-only-outside-subagent";
+    readonly sectionNotFound: "section-not-found";
+    readonly sectionDisabled: "section-disabled";
+    readonly emptyBody: "empty-body";
+    readonly emptyAfterInterpolation: "empty-after-interpolation";
+    readonly unknownScope: "unknown-scope";
+    readonly malformedVariableReference: "malformed-variable-reference";
+    readonly interpolationFailed: "interpolation-failed";
 };
+/** One skip: the stable reason plus the value behind it, when the reason names one. */
+export interface SkipReason {
+    reason: string;
+    detail?: string;
+}
 /**
  * @purpose Explain a body that could not be interpolated against this assembly.
  */
-export declare function interpolationSkipReason(error: unknown): string;
+export declare function interpolationSkipReason(error: unknown): SkipReason;
 /**
  * @purpose Decide whether a section contributes text: true only for a string body with non-whitespace content.
  */
@@ -31,7 +44,7 @@ export declare function sectionEmits(section: Pick<Section, "body"> | null | und
 export declare function sectionSkipReason(ref: Pick<SectionRef, "id" | "scope"> | undefined, section: Section | undefined, { subagent, fork }?: {
     subagent?: boolean;
     fork?: boolean;
-}): string | null;
+}): SkipReason | null;
 /**
  * @purpose Return a detached copy in ascending order, keeping input order on ties.
  */

@@ -84,6 +84,7 @@ export declare function buildSnapshot({ profile, sectionsById, isSubagent: subag
     onSkip?: (skip: {
         id: string;
         reason: string;
+        detail?: string;
     }) => void;
 }): Snapshot;
 /** Everything the sealing use case reads from the host. */

@@ -154,6 +154,7 @@ export interface PreviewPlan {
         id?: string;
         title: string;
         reason: string;
+        detail?: string;
     }>;
     variables: Record<string, string | null> | null;
 }

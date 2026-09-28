@@ -8,7 +8,7 @@
 
 import { Tag } from "@deepseek-ai/dsh-client-ui-primitives";
 import * as React from "react";
-import { errText, idOf, type PreviewPlan, previewPlan, previewVariableNotice, refIdOf } from "./helpers.ts";
+import { errText, idOf, type PreviewPlan, previewPlan, previewVariableNotice, refIdOf, skipReasonText } from "./helpers.ts";
 import type { Translate } from "./i18n.ts";
 import type { StateDocument } from "./model.ts";
 import type { RemoteApi } from "./remote.ts";
@@ -97,7 +97,7 @@ export function PreviewTab({ state, api, t, notify }: PreviewTabProps): React.Re
         <div style={{ marginTop: "12px" }}>
           {data.skipped.map((s) => (
             <div key={s.id ?? s.title} style={{ ...mutedStyle, fontStyle: "italic" }}>
-              {`${t("skippedMarker")} ${s.title} — ${s.reason}`}
+              {`${t("skippedMarker")} ${s.title} — ${skipReasonText(s.reason, s.detail, t)}`}
             </div>
           ))}
         </div>

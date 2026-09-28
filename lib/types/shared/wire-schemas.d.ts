@@ -200,6 +200,7 @@ export declare const previewResult: z.ZodMiniObject<{
         id: z.ZodMiniString<string>;
         title: z.ZodMiniString<string>;
         reason: z.ZodMiniString<string>;
+        detail: z.ZodMiniOptional<z.ZodMiniString<string>>;
     }, z.core.$strict>>;
     variables: z.ZodMiniRecord<z.ZodMiniString<string>, z.ZodMiniNullable<z.ZodMiniString<string>>>;
 }, z.core.$strict>;

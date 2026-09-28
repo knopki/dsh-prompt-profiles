@@ -72,6 +72,13 @@ export declare const en: {
     pickerEmpty: string;
     builtinMarker: string;
     skippedMarker: string;
+    skipSectionNotFound: string;
+    skipSectionDisabled: string;
+    skipEmptyBody: string;
+    skipMainOnlyInSubagent: string;
+    skipSubagentsOnlyOutsideSubagent: string;
+    skipUnknownScope: string;
+    skipMalformedVariableReference: string;
     brokenOne: string;
     brokenFew: string;
     brokenMany: string;
@@ -156,6 +163,13 @@ export declare const messages: {
         pickerEmpty: string;
         builtinMarker: string;
         skippedMarker: string;
+        skipSectionNotFound: string;
+        skipSectionDisabled: string;
+        skipEmptyBody: string;
+        skipMainOnlyInSubagent: string;
+        skipSubagentsOnlyOutsideSubagent: string;
+        skipUnknownScope: string;
+        skipMalformedVariableReference: string;
         brokenOne: string;
         brokenFew: string;
         brokenMany: string;
@@ -167,8 +181,8 @@ export declare const messages: {
         sectionsFew: string;
         sectionsMany: string;
     };
-    ru: Record<"addSection" | "back" | "bodyLabel" | "brokenFew" | "brokenMany" | "brokenOne" | "builtIn" | "builtInNote" | "builtinMarker" | "cancel" | "chooseNeedsWorkspace" | "completeModeWarning" | "confirm" | "confirmDeleteProfile" | "confirmDeleteSection" | "confirmRemoveRef" | "confirmRename" | "conflictError" | "copySuffix" | "createError" | "createTimeout" | "creating" | "defaultForNewSessions" | "defaultProfileTitle" | "defaultSectionTitle" | "deleteLabel" | "dragHandle" | "duplicate" | "editProfile" | "emptyBody" | "loadError" | "menuLabel" | "missingSection" | "nav" | "newProfile" | "newSection" | "noProfiles" | "noSections" | "none" | "notUsed" | "openInSectionTab" | "orderLabel" | "pickerAdd" | "pickerEmpty" | "pickerTitle" | "previewEmpty" | "previewProfile" | "previewVariables" | "profileWord" | "remoteUnavailable" | "remove" | "renameAffected" | "renameEmpty" | "renameId" | "renameIdLocked" | "renameNote" | "saveError" | "scopeInherit" | "scopeLabel" | "scopeMainOnly" | "scopeSubagentsOnly" | "searchPlaceholder" | "sectionsFew" | "sectionsMany" | "sectionsOne" | "skippedMarker" | "sourceBundle" | "sourceLabel" | "sourceUnknown" | "tabPreview" | "tabProfiles" | "tabSections" | "titleLabel" | "titleRequired" | "untitled" | "usedIn", string>;
-    zh: Record<"addSection" | "back" | "bodyLabel" | "brokenFew" | "brokenMany" | "brokenOne" | "builtIn" | "builtInNote" | "builtinMarker" | "cancel" | "chooseNeedsWorkspace" | "completeModeWarning" | "confirm" | "confirmDeleteProfile" | "confirmDeleteSection" | "confirmRemoveRef" | "confirmRename" | "conflictError" | "copySuffix" | "createError" | "createTimeout" | "creating" | "defaultForNewSessions" | "defaultProfileTitle" | "defaultSectionTitle" | "deleteLabel" | "dragHandle" | "duplicate" | "editProfile" | "emptyBody" | "loadError" | "menuLabel" | "missingSection" | "nav" | "newProfile" | "newSection" | "noProfiles" | "noSections" | "none" | "notUsed" | "openInSectionTab" | "orderLabel" | "pickerAdd" | "pickerEmpty" | "pickerTitle" | "previewEmpty" | "previewProfile" | "previewVariables" | "profileWord" | "remoteUnavailable" | "remove" | "renameAffected" | "renameEmpty" | "renameId" | "renameIdLocked" | "renameNote" | "saveError" | "scopeInherit" | "scopeLabel" | "scopeMainOnly" | "scopeSubagentsOnly" | "searchPlaceholder" | "sectionsFew" | "sectionsMany" | "sectionsOne" | "skippedMarker" | "sourceBundle" | "sourceLabel" | "sourceUnknown" | "tabPreview" | "tabProfiles" | "tabSections" | "titleLabel" | "titleRequired" | "untitled" | "usedIn", string>;
+    ru: Record<"addSection" | "back" | "bodyLabel" | "brokenFew" | "brokenMany" | "brokenOne" | "builtIn" | "builtInNote" | "builtinMarker" | "cancel" | "chooseNeedsWorkspace" | "completeModeWarning" | "confirm" | "confirmDeleteProfile" | "confirmDeleteSection" | "confirmRemoveRef" | "confirmRename" | "conflictError" | "copySuffix" | "createError" | "createTimeout" | "creating" | "defaultForNewSessions" | "defaultProfileTitle" | "defaultSectionTitle" | "deleteLabel" | "dragHandle" | "duplicate" | "editProfile" | "emptyBody" | "loadError" | "menuLabel" | "missingSection" | "nav" | "newProfile" | "newSection" | "noProfiles" | "noSections" | "none" | "notUsed" | "openInSectionTab" | "orderLabel" | "pickerAdd" | "pickerEmpty" | "pickerTitle" | "previewEmpty" | "previewProfile" | "previewVariables" | "profileWord" | "remoteUnavailable" | "remove" | "renameAffected" | "renameEmpty" | "renameId" | "renameIdLocked" | "renameNote" | "saveError" | "scopeInherit" | "scopeLabel" | "scopeMainOnly" | "scopeSubagentsOnly" | "searchPlaceholder" | "sectionsFew" | "sectionsMany" | "sectionsOne" | "skipEmptyBody" | "skipMainOnlyInSubagent" | "skipMalformedVariableReference" | "skipSectionDisabled" | "skipSectionNotFound" | "skipSubagentsOnlyOutsideSubagent" | "skipUnknownScope" | "skippedMarker" | "sourceBundle" | "sourceLabel" | "sourceUnknown" | "tabPreview" | "tabProfiles" | "tabSections" | "titleLabel" | "titleRequired" | "untitled" | "usedIn", string>;
+    zh: Record<"addSection" | "back" | "bodyLabel" | "brokenFew" | "brokenMany" | "brokenOne" | "builtIn" | "builtInNote" | "builtinMarker" | "cancel" | "chooseNeedsWorkspace" | "completeModeWarning" | "confirm" | "confirmDeleteProfile" | "confirmDeleteSection" | "confirmRemoveRef" | "confirmRename" | "conflictError" | "copySuffix" | "createError" | "createTimeout" | "creating" | "defaultForNewSessions" | "defaultProfileTitle" | "defaultSectionTitle" | "deleteLabel" | "dragHandle" | "duplicate" | "editProfile" | "emptyBody" | "loadError" | "menuLabel" | "missingSection" | "nav" | "newProfile" | "newSection" | "noProfiles" | "noSections" | "none" | "notUsed" | "openInSectionTab" | "orderLabel" | "pickerAdd" | "pickerEmpty" | "pickerTitle" | "previewEmpty" | "previewProfile" | "previewVariables" | "profileWord" | "remoteUnavailable" | "remove" | "renameAffected" | "renameEmpty" | "renameId" | "renameIdLocked" | "renameNote" | "saveError" | "scopeInherit" | "scopeLabel" | "scopeMainOnly" | "scopeSubagentsOnly" | "searchPlaceholder" | "sectionsFew" | "sectionsMany" | "sectionsOne" | "skipEmptyBody" | "skipMainOnlyInSubagent" | "skipMalformedVariableReference" | "skipSectionDisabled" | "skipSectionNotFound" | "skipSubagentsOnlyOutsideSubagent" | "skipUnknownScope" | "skippedMarker" | "sourceBundle" | "sourceLabel" | "sourceUnknown" | "tabPreview" | "tabProfiles" | "tabSections" | "titleLabel" | "titleRequired" | "untitled" | "usedIn", string>;
 };
 /**
  * @purpose A dictionary lookup, as the locale service hands one out:

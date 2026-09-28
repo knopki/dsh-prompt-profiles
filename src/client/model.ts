@@ -73,6 +73,7 @@ interface PreviewSkippedEntry {
   id?: string;
   title?: string;
   reason?: string;
+  detail?: string;
 }
 
 export interface PreviewResponse {

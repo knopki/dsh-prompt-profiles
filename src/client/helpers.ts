@@ -369,7 +369,7 @@ type PreviewPlanItem = BuiltinsPreviewPlanItem | OursPreviewPlanItem;
 
 export interface PreviewPlan {
   plan: PreviewPlanItem[];
-  skipped: Array<{ id?: string; title: string; reason: string }>;
+  skipped: Array<{ id?: string; title: string; reason: string; detail?: string }>;
   variables: Record<string, string | null> | null;
 }
 // #region FUNC_previewPlan
@@ -408,6 +408,7 @@ export function previewPlan(response: PreviewResponse | null | undefined): Previ
     id: s?.id,
     title: s?.title ?? s?.id ?? "?",
     reason: s?.reason ?? "",
+    detail: s?.detail,
   }));
   // `variables` is the host's own report of what it substituted (cwd from the
   // host process, model unknown/null) — carried through so the pane can be

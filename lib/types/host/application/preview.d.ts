@@ -35,6 +35,7 @@ interface PreviewSkip {
     id: string;
     title: string;
     reason: string;
+    detail?: string;
 }
 export interface PreviewResult {
     profileId: string;

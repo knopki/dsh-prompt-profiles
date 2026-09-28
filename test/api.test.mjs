@@ -1663,8 +1663,8 @@ test("preview renders ordered sections with interpolation and skip reasons", asy
       "our equal-order section stands BEFORE the built-in placeholder",
     );
     assert.deepEqual(body.skipped, [
-      { id: "missing", title: "missing", reason: "section not found" },
-      { id: "blank", title: "Blank", reason: "empty body" },
+      { id: "missing", title: "missing", reason: "section-not-found" },
+      { id: "blank", title: "Blank", reason: "empty-body" },
     ]);
     assert.equal(body.variables.cwd, "/work");
     assert.equal(body.variables.model, null);
@@ -1746,7 +1746,7 @@ test("preview merges the REAL built-in placeholders in an independently expected
       "hand-written expected merge of the REAL built-in table",
     );
     assert.deepEqual(body.skipped, [
-      { id: "sub-note", title: "Sub", reason: "scope subagents-only outside a plain subagent" },
+      { id: "sub-note", title: "Sub", reason: "subagents-only-outside-subagent" },
     ]);
     assert.ok(
       body.sections.filter((s) => s.kind !== "builtin").every((s) => s.emits === true && typeof s.text === "string"),
@@ -1819,8 +1819,8 @@ test("preview reports disabled and empty sections with the runtime reasons", asy
   try {
     const { body } = await api.call("GET", "/preview?profileId=light");
     assert.deepEqual(body.skipped, [
-      { id: "off", title: "Off", reason: "section disabled" },
-      { id: "empty", title: "Empty", reason: "empty body" },
+      { id: "off", title: "Off", reason: "section-disabled" },
+      { id: "empty", title: "Empty", reason: "empty-body" },
     ]);
   } finally {
     await api.cleanup();
@@ -1853,7 +1853,8 @@ test("preview reports a malformed variable reference as a skip, not an emitting 
     );
     assert.equal(body.skipped.length, 1);
     assert.equal(body.skipped[0].id, "broken");
-    assert.match(body.skipped[0].reason, /malformed/);
+    assert.equal(body.skipped[0].reason, "malformed-variable-reference");
+    assert.equal(body.skipped[0].detail, "{{9bad}}");
   } finally {
     await api.cleanup();
   }

@@ -15,7 +15,13 @@
 
 import { errorMessage } from "../domain/errors.ts";
 import type { Profile, Section, Snapshot, SnapshotSection } from "../domain/model.ts";
-import { interpolationSkipReason, planInsertion, SKIP_REASONS, sectionSkipReason } from "../domain/ordering.ts";
+import {
+  interpolationSkipReason,
+  planInsertion,
+  SKIP_REASONS,
+  sectionSkipReason,
+  type SkipReason,
+} from "../domain/ordering.ts";
 import type {
   BuiltinOrdersPort,
   LoaderRegistryPort,
@@ -169,12 +175,12 @@ export function buildSnapshot({
   isFork?: boolean;
   variables?: Record<string, unknown>;
   warn?: (message: string, details?: unknown) => void;
-  onSkip?: (skip: { id: string; reason: string }) => void;
+  onSkip?: (skip: { id: string; reason: string; detail?: string }) => void;
 }): Snapshot {
   const sections: SnapshotSection[] = [];
-  const skip = (id: string, reason: string) => {
+  const skip = (id: string, reason: SkipReason) => {
     try {
-      onSkip({ id, reason });
+      onSkip({ id, ...reason });
     } catch {
       // diagnostics must never break the sealed decision
     }
@@ -184,7 +190,7 @@ export function buildSnapshot({
     const reason = sectionSkipReason(ref, section, { subagent, fork });
     if (reason !== null || section === undefined) {
       // The rule reports an absent section itself; this guard only narrows the type.
-      skip(ref.id, reason ?? SKIP_REASONS.sectionNotFound);
+      skip(ref.id, reason ?? { reason: SKIP_REASONS.sectionNotFound });
       continue;
     }
     let text: string;
@@ -196,7 +202,7 @@ export function buildSnapshot({
       continue;
     }
     if (!text.trim()) {
-      skip(ref.id, SKIP_REASONS.emptyAfterInterpolation);
+      skip(ref.id, { reason: SKIP_REASONS.emptyAfterInterpolation });
       continue;
     }
     sections.push({ id: ref.id, order: ref.order, text });

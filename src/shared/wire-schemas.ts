@@ -105,7 +105,11 @@ export const previewResult = z.strictObject({
   profileId: z.string(),
   title: z.string(),
   sections: jsonRows(),
-  skipped: z.array(z.strictObject({ id: z.string(), title: z.string(), reason: z.string() })),
+  // `reason` is a stable id the client localizes; `detail` carries the value
+  // behind it (an unknown scope, a malformed reference) when there is one.
+  skipped: z.array(
+    z.strictObject({ id: z.string(), title: z.string(), reason: z.string(), detail: z.optional(z.string()) }),
+  ),
   variables: z.record(z.string(), z.nullable(z.string())),
 });
 

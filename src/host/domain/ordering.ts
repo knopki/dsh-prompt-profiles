@@ -6,27 +6,41 @@
  * @invariants
  *  - Scope is evaluated before existence and state.
  *  - Planned indices address the original assembly array; consumers splice last to first.
+ *  - A skip reason is a stable id the client localizes, never a sentence.
  * #endregion moduleContract
  */
 
 import { errorMessage } from "./errors.ts";
 import type { AssemblySection, PlannedInsertion, Section, SectionRef, SnapshotSection } from "./model.ts";
 
+/**
+ * Stable identifiers for why a reference contributes nothing. They cross the
+ * wire and the client localizes them, so they are vocabulary, not prose.
+ */
 export const SKIP_REASONS = {
-  mainOnlyInSubagent: "scope main-only in a subagent",
-  subagentsOnlyOutsidePlainSubagent: "scope subagents-only outside a plain subagent",
-  sectionNotFound: "section not found",
-  sectionDisabled: "section disabled",
-  emptyBody: "empty body",
-  emptyAfterInterpolation: "empty after interpolation",
+  mainOnlyInSubagent: "main-only-in-subagent",
+  subagentsOnlyOutsidePlainSubagent: "subagents-only-outside-subagent",
+  sectionNotFound: "section-not-found",
+  sectionDisabled: "section-disabled",
+  emptyBody: "empty-body",
+  emptyAfterInterpolation: "empty-after-interpolation",
+  unknownScope: "unknown-scope",
+  malformedVariableReference: "malformed-variable-reference",
+  interpolationFailed: "interpolation-failed",
 } as const;
+
+/** One skip: the stable reason plus the value behind it, when the reason names one. */
+export interface SkipReason {
+  reason: string;
+  detail?: string;
+}
 
 // #region FUNC_interpolationSkipReason
 /**
  * @purpose Explain a body that could not be interpolated against this assembly.
  */
-export function interpolationSkipReason(error: unknown): string {
-  return `interpolation failed: ${errorMessage(error)}`;
+export function interpolationSkipReason(error: unknown): SkipReason {
+  return { reason: SKIP_REASONS.interpolationFailed, detail: errorMessage(error) };
 }
 // #endregion FUNC_interpolationSkipReason
 
@@ -47,14 +61,16 @@ export function sectionSkipReason(
   ref: Pick<SectionRef, "id" | "scope"> | undefined,
   section: Section | undefined,
   { subagent = false, fork = false }: { subagent?: boolean; fork?: boolean } = {},
-): string | null {
+): SkipReason | null {
   const scope = ref?.scope ?? "inherit";
-  if (scope === "main-only" && subagent) return SKIP_REASONS.mainOnlyInSubagent;
-  if (scope === "subagents-only" && (!subagent || fork)) return SKIP_REASONS.subagentsOnlyOutsidePlainSubagent;
-  if (scope !== "inherit" && scope !== "main-only" && scope !== "subagents-only") return `unknown scope "${scope}"`;
-  if (!section) return SKIP_REASONS.sectionNotFound;
-  if (section.disabled) return SKIP_REASONS.sectionDisabled;
-  if (!sectionEmits(section)) return SKIP_REASONS.emptyBody;
+  if (scope === "main-only" && subagent) return { reason: SKIP_REASONS.mainOnlyInSubagent };
+  if (scope === "subagents-only" && (!subagent || fork))
+    return { reason: SKIP_REASONS.subagentsOnlyOutsidePlainSubagent };
+  if (scope !== "inherit" && scope !== "main-only" && scope !== "subagents-only")
+    return { reason: SKIP_REASONS.unknownScope, detail: scope };
+  if (!section) return { reason: SKIP_REASONS.sectionNotFound };
+  if (section.disabled) return { reason: SKIP_REASONS.sectionDisabled };
+  if (!sectionEmits(section)) return { reason: SKIP_REASONS.emptyBody };
   return null;
 }
 // #endregion FUNC_sectionSkipReason

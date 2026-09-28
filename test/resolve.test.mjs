@@ -255,10 +255,10 @@ test("buildSnapshot reports skip reasons without letting the sink break sealing"
     ["inherited"],
   );
   assert.deepEqual(skips, [
-    { id: "main", reason: "scope main-only in a subagent" },
-    { id: "missing", reason: "section not found" },
-    { id: "disabled", reason: "section disabled" },
-    { id: "blank", reason: "empty body" },
+    { id: "main", reason: "main-only-in-subagent" },
+    { id: "missing", reason: "section-not-found" },
+    { id: "disabled", reason: "section-disabled" },
+    { id: "blank", reason: "empty-body" },
   ]);
   // A throwing diagnostics sink never breaks the sealed decision.
   const robust = buildSnapshot({
@@ -281,23 +281,28 @@ test("sectionSkipReason is the shared selection rule (scope first, then state)",
   // inherit + main-only emit for the main agent; subagents-only does not.
   assert.equal(sectionSkipReason({ id: "a", scope: "inherit" }, body, { subagent: false }), null);
   assert.equal(sectionSkipReason({ id: "a", scope: "main-only" }, body, { subagent: false }), null);
-  assert.match(sectionSkipReason({ id: "a", scope: "subagents-only" }, body, { subagent: false }), /subagents-only/);
+  assert.deepEqual(sectionSkipReason({ id: "a", scope: "subagents-only" }, body, { subagent: false }), {
+    reason: "subagents-only-outside-subagent",
+  });
   // …and the reverse for a plain subagent / a fork.
-  assert.match(sectionSkipReason({ id: "a", scope: "main-only" }, body, { subagent: true }), /main-only/);
+  assert.deepEqual(sectionSkipReason({ id: "a", scope: "main-only" }, body, { subagent: true }), {
+    reason: "main-only-in-subagent",
+  });
   assert.equal(sectionSkipReason({ id: "a", scope: "subagents-only" }, body, { subagent: true }), null);
-  assert.match(
-    sectionSkipReason({ id: "a", scope: "subagents-only" }, body, { subagent: true, fork: true }),
-    /subagents-only/,
-  );
+  assert.deepEqual(sectionSkipReason({ id: "a", scope: "subagents-only" }, body, { subagent: true, fork: true }), {
+    reason: "subagents-only-outside-subagent",
+  });
   // Scope wins over state; then existence / disabled / empty body.
-  assert.match(
-    sectionSkipReason({ id: "a", scope: "subagents-only" }, undefined, { subagent: false }),
-    /subagents-only/,
-  );
-  assert.equal(sectionSkipReason({ id: "a" }, undefined), "section not found");
-  assert.equal(sectionSkipReason({ id: "a" }, { ...body, disabled: true }), "section disabled");
-  assert.equal(sectionSkipReason({ id: "a" }, { ...body, body: "  " }), "empty body");
-  assert.match(sectionSkipReason({ id: "a", scope: "everywhere" }, body), /unknown scope/);
+  assert.deepEqual(sectionSkipReason({ id: "a", scope: "subagents-only" }, undefined, { subagent: false }), {
+    reason: "subagents-only-outside-subagent",
+  });
+  assert.deepEqual(sectionSkipReason({ id: "a" }, undefined), { reason: "section-not-found" });
+  assert.deepEqual(sectionSkipReason({ id: "a" }, { ...body, disabled: true }), { reason: "section-disabled" });
+  assert.deepEqual(sectionSkipReason({ id: "a" }, { ...body, body: "  " }), { reason: "empty-body" });
+  assert.deepEqual(sectionSkipReason({ id: "a", scope: "everywhere" }, body), {
+    reason: "unknown-scope",
+    detail: "everywhere",
+  });
 });
 
 /** @purpose Pin present-built-in anchors, absent anchors, stable ties, and low-order placement (BASE indices). */

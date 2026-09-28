@@ -48,6 +48,7 @@ interface PreviewSkip {
   id: string;
   title: string;
   reason: string;
+  detail?: string;
 }
 
 export interface PreviewResult {
@@ -101,7 +102,11 @@ function previewResponse(env: UseCaseEnv, profileId: string, { cwd }: { cwd?: un
     // subagents-only is skipped with a reason.
     const reason = sectionSkipReason(ref, section, { subagent: false, fork: false });
     if (reason !== null || section === undefined) {
-      skipped.push({ id: ref.id, title: section?.title ?? ref.id, reason: reason ?? SKIP_REASONS.sectionNotFound });
+      skipped.push({
+        id: ref.id,
+        title: section?.title ?? ref.id,
+        ...(reason ?? { reason: SKIP_REASONS.sectionNotFound }),
+      });
       continue;
     }
     malformedRefs = [];
@@ -110,7 +115,8 @@ function previewResponse(env: UseCaseEnv, profileId: string, { cwd }: { cwd?: un
       skipped.push({
         id: ref.id,
         title: section.title,
-        reason: `malformed prompt variable reference ${malformedRefs[0]} (references are complete simple {{name}} groups)`,
+        reason: SKIP_REASONS.malformedVariableReference,
+        detail: malformedRefs[0],
       });
       continue;
     }
