@@ -111,6 +111,9 @@ Load the `grace-lite` skill before editing and follow its templates.
   preview is deliberately lenient and must report what it skipped instead of showing text the runtime
   would drop.
 - The host owns the operations; the client reaches them only through the platform Remote surface.
+- The `@deepseek-ai/dsh-*` peerDependencies stay a version window, never the exact build pin. DSH
+  evaluates them against the running release and disables a plugin whose peers do not satisfy it, so
+  an exact pin silently breaks every profile that is not on that one version.
 - The built-in order table is a frozen fallback for the installed engine table. The mirror suite
   compares them, so a DSH upgrade that changes the table is a failure to address, not silent drift.
 
