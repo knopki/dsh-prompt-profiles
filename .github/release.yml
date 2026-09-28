@@ -1,0 +1,16 @@
+# Release notes are built from merged pull requests: each one contributes its
+# title, its author and its category. Commits pushed straight to the default
+# branch never appear, so every change has to arrive as a pull request.
+#
+# Dependabot labels its own pull requests, which is why Dependencies works
+# without anyone tagging anything. Everything else falls into Changes until
+# labels are worth splitting into Features, Fixes and the rest.
+
+changelog:
+  categories:
+    - title: Dependencies
+      labels:
+        - dependencies
+    - title: Changes
+      labels:
+        - "*"
