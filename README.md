@@ -4,12 +4,12 @@
 
 <h3>Per-session prompt profiles for DeepSeek Harness: reusable system-prompt sections, grouped into named profiles, sealed into the session prompt</h3>
 
-<div align="center">
+<p align="center">
   <a href="https://www.npmjs.com/package/@knopki/dsh-prompt-profiles"><img src="https://img.shields.io/npm/v/@knopki/dsh-prompt-profiles.svg?style=for-the-badge&color=6366f1&labelColor=1e1b4b" alt="npm version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-10b981.svg?style=for-the-badge&labelColor=064e3b" alt="license"></a>
   <a href="https://github.com/topics/dsh-plugin"><img src="https://img.shields.io/badge/DSH-Plugin-8b5cf6.svg?style=for-the-badge&labelColor=2e1065" alt="DSH Plugin"></a>
   <a href="#requirements"><img src="https://img.shields.io/badge/DSH-0.1.7--rc.2-f59e0b.svg?style=for-the-badge&labelColor=451a03" alt="DSH version"></a>
-</div>
+</p>
 
 <p align="center">
   <a href="README.md"><b>🇬🇧 English</b></a> •

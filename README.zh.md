@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<h3>DeepSeek Harness 的按会话提示配置：把可复用的系统提示词片段组合成多个命名配置，并在会话启动时固化进该会话的提示词</h3>
+<h3>DeepSeek Harness 的按会话提示词配置：把可复用的系统提示词片段组合成多个命名配置，并在会话启动时固化进该会话的提示词</h3>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@knopki/dsh-prompt-profiles"><img src="https://img.shields.io/npm/v/@knopki/dsh-prompt-profiles.svg?style=for-the-badge&color=6366f1&labelColor=1e1b4b" alt="npm version"></a>
@@ -35,7 +35,7 @@
 
 ## 概览
 
-`@knopki/dsh-prompt-profiles` 为 DeepSeek Harness 的安装方案（`--profile`）增加了第二条轴：代理预设决定这个代理是什么，提示配置决定它以什么方式工作。同一个代理使用同一套工具时，既可以作为简洁的代码评审者运行，也可以作为遵循项目惯例的专家运行，差别只在于会话启动时选中的那份配置。
+`@knopki/dsh-prompt-profiles` 为 DeepSeek Harness 的安装方案增加了第二条轴：代理预设决定这个代理是什么，提示词配置决定它以什么方式工作。同一个代理使用同一套工具时，既可以作为简洁的代码评审者运行，也可以作为遵循项目惯例的专家运行，差别只在于会话启动时选中的那份配置。
 
 一份配置就是一组有序的片段引用。每条引用有自己的位置和作用范围，同一个片段因此可以出现在多份配置的不同位置上。配置在会话启动时选定，固化进这次会话的提示词，之后不再改动。不选配置时，系统提示词完全不变。
 
@@ -78,7 +78,7 @@ dsh plugin --profile web remove @knopki/dsh-prompt-profiles
 
 ## 快速开始
 
-1. 打开 **设置 → 提示配置 → 片段**，新建一个片段：id、标题，以及要写进提示词的内容。
+1. 打开 **设置 → 提示词配置 → 片段**，新建一个片段：id、标题，以及要写进提示词的内容。
 2. 切到 **配置** 标签，新建一份配置并往里添加片段。顺序可以拖动手柄或用方向键调整，作用范围在每一行上选择。
 3. 打开一个新的空会话。`permission` 和 `plan` 旁边的配置标签用来给这个新会话选配置；该选择按工作区保存。
 
@@ -93,7 +93,7 @@ dsh plugin --profile web remove @knopki/dsh-prompt-profiles
 
 ## 编辑器
 
-**设置 → 提示配置**有三个标签页：配置、片段和预览。
+**设置 → 提示词配置**有三个标签页：配置、片段和预览。
 
 「配置」标签页列出所有配置和各自的片段数量，并设置新会话的默认配置。
 
@@ -121,7 +121,7 @@ dsh plugin --profile web remove @knopki/dsh-prompt-profiles
 
 | 数据 | 位置 |
 |---|---|
-| 片段和配置的定义、逐行覆盖 | 该安装方案在 `cordis.patch.yml` 中的 patch 行，由本插件的写入器维护 |
+| 片段和配置的定义、逐行覆盖 | 该安装方案在 `cordis.patch.yml` 中的 patch 行，由本插件包的写入器维护 |
 | `default` 和 `lastByWorkspace` | `prompt-profiles` 主行的易失性设置 |
 | 每个会话的固化快照 | `$DSH_HOME/storages/prompt_profiles/sessions/<sessionId>.json`，每个会话一条记录 |
 
