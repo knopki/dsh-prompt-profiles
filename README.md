@@ -8,7 +8,7 @@
   <a href="https://www.npmjs.com/package/@knopki/dsh-prompt-profiles"><img src="https://img.shields.io/npm/v/@knopki/dsh-prompt-profiles.svg?style=for-the-badge&color=6366f1&labelColor=1e1b4b" alt="npm version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-10b981.svg?style=for-the-badge&labelColor=064e3b" alt="license"></a>
   <a href="https://github.com/topics/dsh-plugin"><img src="https://img.shields.io/badge/DSH-Plugin-8b5cf6.svg?style=for-the-badge&labelColor=2e1065" alt="DSH Plugin"></a>
-  <a href="#requirements"><img src="https://img.shields.io/badge/DSH-0.1.7--rc.2-f59e0b.svg?style=for-the-badge&labelColor=451a03" alt="DSH version"></a>
+  <a href="#requirements"><img src="https://img.shields.io/badge/DSH-0.2.0--rc.1-f59e0b.svg?style=for-the-badge&labelColor=451a03" alt="DSH version"></a>
 </p>
 
 <p align="center">
@@ -127,7 +127,8 @@ Section bodies may contain `{{name}}` references, for example `{{cwd}}`. The run
 
 ## Requirements
 
-- DSH `0.1.7-rc.2`.
+- DSH in `>=0.1.7-rc.2 <0.2.1-0` — the peer window this bundle declares; `0.2.0-rc.1` is the release it is verified on.
+- Outside that window DSH disables the plugin until you grant it the exact-version exemption (`dsh plugin allow-version`).
 - The installed profile's own plugins: on the host `settings`, `configEditor`, `workspaceRegistry`, `storageDomain`, `typert` and `agentPresets`; on the web client `@deepseek-ai/dsh-client-ui-settings`, `@deepseek-ai/dsh-client-ui-conversation` and `@deepseek-ai/dsh-client-ui-primitives`.
 - A missing optional service degrades one feature. It does not block the mount.
 
