@@ -1,8 +1,8 @@
 {
   "name": "@knopki/dsh-prompt-profiles",
   "version": "0.2.0",
-  "private": true,
   "description": "DSH bundle adding a per-session prompt-profile axis: named system-prompt sections grouped into profiles with per-section order and scope, sealed into the session prompt.",
+  "license": "MIT",
   "keywords": [
     "dsh",
     "deepseek-harness",
@@ -10,6 +10,14 @@
     "system-prompt",
     "bundle"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/knopki/dsh-prompt-profiles.git"
+  },
+  "homepage": "https://github.com/knopki/dsh-prompt-profiles#readme",
+  "bugs": {
+    "url": "https://github.com/knopki/dsh-prompt-profiles/issues"
+  },
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -40,6 +48,9 @@
     "cordis.patch.yml",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",

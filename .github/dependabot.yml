@@ -1,0 +1,47 @@
+# Dependency updates. The toolchain pins in mise.toml (node, pnpm, dsh) have no
+# ecosystem here, so those stay manual.
+
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Moscow"
+    versioning-strategy: "increase-if-necessary"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      # A platform release moves peerDependencies, devDependencies and lib/ together.
+      dsh-platform:
+        patterns:
+          - "@deepseek-ai/*"
+      # Development tooling travels as one reviewed bump; majors stay individual.
+      dev-tooling:
+        dependency-type: "development"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      runtime:
+        patterns:
+          - "yaml"
+          - "zod"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Moscow"
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"
