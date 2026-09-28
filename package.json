@@ -1,6 +1,6 @@
 {
   "name": "@knopki/dsh-prompt-profiles",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DSH bundle adding a per-session prompt-profile axis: named system-prompt sections grouped into profiles with per-section order and scope, sealed into the session prompt.",
   "license": "MIT",
   "keywords": [
