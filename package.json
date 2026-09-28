@@ -5,10 +5,8 @@
   "license": "MIT",
   "keywords": [
     "dsh",
-    "deepseek-harness",
-    "prompt-profiles",
-    "system-prompt",
-    "bundle"
+    "dsh-plugin",
+    "deepseek-harness"
   ],
   "repository": {
     "type": "git",
