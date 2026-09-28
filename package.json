@@ -17,6 +17,9 @@
     "url": "https://github.com/knopki/dsh-prompt-profiles/issues"
   },
   "type": "module",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
   "main": "lib/index.js",
   "exports": {
     ".": {
