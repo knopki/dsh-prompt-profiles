@@ -8,7 +8,7 @@
   <a href="https://www.npmjs.com/package/@knopki/dsh-prompt-profiles"><img src="https://img.shields.io/npm/v/@knopki/dsh-prompt-profiles.svg?style=for-the-badge&color=6366f1&labelColor=1e1b4b" alt="npm version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-10b981.svg?style=for-the-badge&labelColor=064e3b" alt="license"></a>
   <a href="https://github.com/topics/dsh-plugin"><img src="https://img.shields.io/badge/DSH-Plugin-8b5cf6.svg?style=for-the-badge&labelColor=2e1065" alt="DSH Plugin"></a>
-  <a href="#要求"><img src="https://img.shields.io/badge/DSH-0.2.0--rc.2-f59e0b.svg?style=for-the-badge&labelColor=451a03" alt="DSH version"></a>
+  <a href="#要求"><img src="https://img.shields.io/badge/DSH-0.2.1--alpha.1-f59e0b.svg?style=for-the-badge&labelColor=451a03" alt="DSH version"></a>
 </p>
 
 <p align="center">
@@ -127,7 +127,7 @@ dsh plugin --profile web remove @knopki/dsh-prompt-profiles
 
 ## 要求
 
-- DSH 位于 `>=0.1.7-rc.2 <0.2.1-0` —— 本包声明的 peer 版本窗口；`0.2.0-rc.2` 是实际验证过的版本。
+- DSH 位于 `>=0.1.7-rc.2 <0.2.2-0` —— 本包声明的 peer 版本窗口；`0.2.1-alpha.1` 是实际验证过的版本。
 - 超出该窗口时 DSH 会停用插件，直到你为它授予精确版本豁免（`dsh plugin allow-version`）。
 - 所用安装方案自带的插件：主机端 `settings`、`configEditor`、`workspaceRegistry`、`storageDomain`、`typert` 和 `agentPresets`；Web 端 `@deepseek-ai/dsh-client-ui-settings`、`@deepseek-ai/dsh-client-ui-conversation` 和 `@deepseek-ai/dsh-client-ui-primitives`。
 - 缺少可选服务时只影响对应功能，不会挡住插件的挂载。
