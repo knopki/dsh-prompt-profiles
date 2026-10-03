@@ -8,7 +8,7 @@
   <a href="https://www.npmjs.com/package/@knopki/dsh-prompt-profiles"><img src="https://img.shields.io/npm/v/@knopki/dsh-prompt-profiles.svg?style=for-the-badge&color=6366f1&labelColor=1e1b4b" alt="npm version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-10b981.svg?style=for-the-badge&labelColor=064e3b" alt="license"></a>
   <a href="https://github.com/topics/dsh-plugin"><img src="https://img.shields.io/badge/DSH-Plugin-8b5cf6.svg?style=for-the-badge&labelColor=2e1065" alt="DSH Plugin"></a>
-  <a href="#требования"><img src="https://img.shields.io/badge/DSH-0.2.0--rc.2-f59e0b.svg?style=for-the-badge&labelColor=451a03" alt="DSH version"></a>
+  <a href="#требования"><img src="https://img.shields.io/badge/DSH-0.2.1--alpha.1-f59e0b.svg?style=for-the-badge&labelColor=451a03" alt="DSH version"></a>
 </p>
 
 <p align="center">
@@ -127,7 +127,7 @@ dsh plugin --profile web remove @knopki/dsh-prompt-profiles
 
 ## Требования
 
-- DSH в диапазоне `>=0.1.7-rc.2 <0.2.1-0` — это окно peer-зависимостей, которое объявляет бандл; `0.2.0-rc.2` — релиз, на котором он проверен.
+- DSH в диапазоне `>=0.1.7-rc.2 <0.2.2-0` — это окно peer-зависимостей, которое объявляет бандл; `0.2.1-alpha.1` — релиз, на котором он проверен.
 - Вне этого диапазона DSH отключает плагин, пока вы не выдадите ему exact-version exemption (`dsh plugin allow-version`).
 - Плагины самого профиля: на хосте `settings`, `configEditor`, `workspaceRegistry`, `storageDomain`, `typert` и `agentPresets`; в веб-клиенте `@deepseek-ai/dsh-client-ui-settings`, `@deepseek-ai/dsh-client-ui-conversation` и `@deepseek-ai/dsh-client-ui-primitives`.
 - Если необязательного сервиса нет, отключается одна возможность. Монтирование бандла это не блокирует.
