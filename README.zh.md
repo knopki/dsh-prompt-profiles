@@ -20,14 +20,81 @@
 <table align="center">
   <tr>
     <td align="center">
-      ⭐ <strong>如果这个插件在你这里派上了用场，请在 GitHub 上点一颗星。</strong> 这样我才知道它还值得继续做下去。
+      🗄️ <strong>仓库已归档。</strong> issue 和 pull request 已随仓库一并关闭。如果仍然需要这个插件，欢迎 fork：MIT 许可，且 <code>lib/</code> 已提交，fork 后无需构建即可安装。
       <br><br>
-      🐛 <strong>发现 bug 或想要新功能？</strong> 用任何语言提 issue 都行。我都会看，有用的就做。
+      ➡️ <strong>想换一个 agent 的语气？</strong> 用带 <code>@deepseek-ai/dsh-persona</code> 的 agent preset。下面的迁移一节就是完整做法。
     </td>
   </tr>
 </table>
 
 </div>
+
+---
+
+> **本仓库已归档。** 只读：不再发布新版本，也不再处理 issue。插件在它针对的 DSH 版本上仍然可用，但它解决的问题现在由平台本身覆盖。请先读[为什么归档](#为什么归档)和[如何不用它达成同样效果](#从提示词配置迁移到-agent-preset)。下面的参考文档保留给仍在运行已安装副本的人。
+
+## 为什么归档
+
+**平台长出了同一条轴。** 这个 bundle 在 agent preset 旁边加了一条「agent 被要求怎么工作」的维度。agent preset 后来成了这件事的官方位置：`@deepseek-ai/dsh-agent-preset` 用普通 YAML 声明一个 agent 的子行，`@deepseek-ai/dsh-persona` 拥有 preset 内部的 persona 前缀与后缀槽位。一个语气一个 preset，就做到了一个配置原来做的事，而且走的是平台自己的 loader、提示词注册表和文档，而不是把每个都再实现一遍。
+
+**相比本插件强在哪。** bundle 必须去替换已经组装好的提示词、把固化的会话快照留在 `$DSH_HOME/storages/prompt_profiles/` 下，还要把自己的定义行写进 `cordis.patch.yml`。它还锁了一个 peer 版本窗口（`>=0.1.7-rc.2 <0.2.2-0`），窗口之外需要 `dsh plugin allow-version`，并且为了输入框里的标签和编辑器向客户端注入两个包。preset 组合只声明它挂载的包：没有版本豁免，没有要清理的存储，没有客户端注入，persona 文本和与之配套的工具、权限躺在同一个 YAML 块里，所以「这个 agent 是什么」和「它被要求怎么工作」在同一处阅读和评审。
+
+**没有用户。** npm 计数器显示该包零下载，我唯一知道的安装是我自己的。没人安装的 bundle 在每个 DSH 发布窗口都要付一次重新验证的成本，却什么都不回报。归档是诚实的结论；如果你不同意，fork 只差一个 `git clone`。
+
+## 从提示词配置迁移到 agent preset
+
+映射几乎是机械的：一个配置变成一个 preset，它的各段成为这个 preset 的 persona `prefix`（如果某段本来就该排在官方指引之后而不是之前，那就是 `suffix`），preset 在会话启动时选定，而不是在输入框的标签里选。
+
+### 1. 先盘点手上有什么
+
+配置和分段以行的形式存在你的 profile 组合里（web profile 用 `cordis.patch.yml`，共享安装用 `~/.dsh/cordis.patch.yml`），位于 `prompt-profiles` 这条 insert 行内。删除任何东西之前先把它们抄出来，或者打开 **Settings → Prompt profiles → Preview**：该页签把配置显示在官方分段之间它所在的位置，而这个顺序正是 preset 需要复现的东西。
+
+### 2. 每个配置声明一个 preset
+
+从你的基线 preset（通常是 `standard`）出发，加一行 persona。`persona` 行必须挂在 preset 内部：挂在全局会与提示词注册表自己的 persona 注册冲突并直接报错。这个冲突是设计，不是意外——这一行存在的目的就是替某个 agent 遮蔽部署级 persona。
+
+```yaml
+- insert:
+    - id: preset-reviewer
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: reviewer
+        description: Terse reviewer. Reports findings, not opinions.
+        order: 10
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |
+                You review code by reading the diff first and saying what breaks.
+```
+
+`prefix` 必填，`suffix` 默认为空（它不继承全局后缀），两者都是模板：`{{…}}` 分组在渲染时严格对照已注册的提示词变量解析，与本插件 sealer 用的是同一份严格性。还有两个字段值得知道：`complete: true` 只保留前缀作为系统提示词，`minimal` 一类 preset 就是这么做的；`includeRuntimeContext: false` 会为该 agent 去掉可选的 runtime 上下文。
+
+### 3. 还原 `scope` 原来做的事
+
+这是唯一一处映射不机械的地方。配置里的一段可以是 `inherit`、`main-only` 或 `subagents-only`；preset 没有按段的可见范围，它只有一个组合。只面向子 agent 的文本应该放进创建这些子 agent 时所用的 preset，而不是父级的 persona——是否方便取决于你如何派生子 agent。如果两种拆分都不合适，把文本并进父级 persona 是务实的选择：子 agent 只是读到了一条它不会照着做的要求。
+
+### 4. 选 preset 而不是选配置
+
+preset 在会话启动前于平台界面按会话选择，注册表的 `default` 和 `selectedDefault` 决定不做选择时新会话拿到什么。选 `None` 的等价物是 `standard` preset：两者都表示「这个会话使用平台自己的提示词」。已在运行的会话保留创建时的组合，和它们保留固化配置的方式完全一致。
+
+### 5. 卸掉插件和它的遗留物
+
+```bash
+dsh plugin --profile web remove @knopki/dsh-prompt-profiles
+```
+
+然后重启 DSH，从组合里删掉 `prompt-profiles` 那条 insert 行（writer 写进去的定义随之消失），并删除 `$DSH_HOME/storages/prompt_profiles/`，别让固化快照留在那里。
+
+### 迁移会失去什么
+
+- 编辑器：配置与分段列表、拖拽排序、在官方分段之间的就地预览、搜索、防抖自动保存、三种界面语言。
+- 复用：被五个配置引用的分段是同一段文本配五个位置。preset 把自己用到的文本内联；共用的部分得靠 YAML 锚点或复制。
+- 输入框里的标签及其按工作区的记忆，包括显式的 `None` 决定。
+- 按段的可见范围。
+
+不会失去的是固化。preset 在 agent 创建时固定其组合，不会回填进活着的 agent，所以「开一个新会话才会生效」的行为原样保留。
 
 ---
 
