@@ -20,14 +20,81 @@
 <table align="center">
   <tr>
     <td align="center">
-      ⭐ <strong>Star it on GitHub if it earns a place in your setup.</strong> It tells me the plugin is worth maintaining.
+      🗄️ <strong>Archived.</strong> Issues and pull requests are closed along with the repository. Fork it if you still need it: MIT, and <code>lib/</code> is committed, so a fork installs without a build.
       <br><br>
-      🐛 <strong>Found a bug or want a feature?</strong> Open an issue in any language. I read them all and ship the useful ones.
+      ➡️ <strong>Want another agent voice?</strong> Use an agent preset with <code>@deepseek-ai/dsh-persona</code>. The migration section below is the whole recipe.
     </td>
   </tr>
 </table>
 
 </div>
+
+---
+
+> **This repository is archived.** Read-only: no further releases, no issue triage. The plugin still works on the DSH release it targets, but the problem it solves is now covered by the platform itself. Read [why](#why-it-is-archived) and [how to get the same result without it](#migrating-from-prompt-profiles-to-an-agent-preset). The reference documentation below stays for anyone still running an installed copy.
+
+## Why it is archived
+
+**The platform grew the same axis.** This bundle added a "how the agent is told to work" dimension next to agent presets. Agent presets have since become the first-party home for exactly that: `@deepseek-ai/dsh-agent-preset` declares an agent's child rows as ordinary YAML, and `@deepseek-ai/dsh-persona` owns the persona prefix and suffix slots inside a preset. One preset per voice does what one profile did, and it does it through the platform's own loader, prompt registry, and documentation instead of a second implementation of each.
+
+**What that buys over this plugin.** The bundle has to shadow the assembled prompt, keep sealed per-session snapshots under `$DSH_HOME/storages/prompt_profiles/`, and write its own definition rows into `cordis.patch.yml`. It also pins a peer window (`>=0.1.7-rc.2 <0.2.2-0`) and needs `dsh plugin allow-version` outside it, and it injects two client packages to draw the composer chip and the editor. A preset composition declares the package it mounts and nothing else: no version exemption, no storage to reap, no client injection, and the persona text sits in the same YAML block as the tools and permissions it goes with, so "what the agent is" and "how it is told to work" are read and reviewed in one place.
+
+**It found no users.** The npm registry reports zero downloads for the package, and the only installation I know of is mine. A bundle nobody installs costs a re-verification pass on every DSH release window and returns nothing. Archiving is the honest outcome; a fork is one `git clone` away if you disagree.
+
+## Migrating from prompt profiles to an agent preset
+
+The mapping is nearly mechanical: one profile becomes one preset, its sections become that preset's persona `prefix` (or its `suffix`, for text that belonged after the first-party guidance rather than before it), and the preset is picked when a session starts instead of in the composer chip.
+
+### 1. Inventory what you actually have
+
+Profiles and sections live as rows in your profile composition (`cordis.patch.yml` for a web profile, `~/.dsh/cordis.patch.yml` for a shared install), under the `prompt-profiles` insert row. Read them out before deleting anything, or open **Settings → Prompt profiles → Preview**, which shows each profile in position among the built-in sections — that ordering is what the preset has to reproduce.
+
+### 2. Declare one preset per profile
+
+Start from your baseline preset (usually `standard`) and add a persona row. The `persona` row must be mounted inside a preset: mounted globally it collides with the prompt registry's own persona registration and fails loud. The collision is the design, not an accident — the row exists to shadow the deployment persona for one agent.
+
+```yaml
+- insert:
+    - id: preset-reviewer
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: reviewer
+        description: Terse reviewer. Reports findings, not opinions.
+        order: 10
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |
+                You review code by reading the diff first and saying what breaks.
+```
+
+`prefix` is required and `suffix` defaults to empty, so an omitted suffix does not inherit the global one. Both are templates: `{{…}}` groups resolve strictly against registered prompt variables at render time, the same strictness the sealer applied here. Two further fields matter. `complete: true` keeps only the prefix as the system prompt, which is how a `minimal`-style preset already works. `includeRuntimeContext: false` drops optional runtime context for that agent.
+
+### 3. Reproduce what `scope` was doing
+
+This is the one place the mapping is not mechanical. A prompt-profiles section could be `inherit`, `main-only`, or `subagents-only`; a preset has no per-section scope, it has one composition. Text that only ever addressed subagents belongs in a preset those subagents are created with, not in the parent's persona — whether that is convenient depends on how you spawn them. If neither split suits you, folding the text into the parent persona is the pragmatic answer, and a subagent simply reads guidance it does not act on.
+
+### 4. Choose the preset instead of the profile
+
+Presets are selected per session in the platform UI before the session starts, and the registry's `default` and `selectedDefault` decide what a new session gets without a choice. The equivalent of picking `None` is the `standard` preset: both mean "the session runs with the platform's own prompt". Sessions already running keep the composition they were created with, exactly as they kept the profile they were sealed with.
+
+### 5. Remove the plugin and its leftovers
+
+```bash
+dsh plugin --profile web remove @knopki/dsh-prompt-profiles
+```
+
+Then restart DSH, delete the `prompt-profiles` insert row from the composition (the definitions the writer stored there go with it), and delete `$DSH_HOME/storages/prompt_profiles/` so the sealed snapshots do not linger.
+
+### What the migration loses
+
+- The editor: profile and section lists, drag-and-drop ordering, in-place preview among built-in sections, search, debounced autosave, three UI languages.
+- Reuse: a section referenced by five profiles was one string with five placements. A preset inlines its own text; share it with a YAML anchor or duplicate it.
+- The composer chip and its per-workspace memory, including the explicit `None` decision.
+- Per-section scope.
+
+Not lost: sealing. A preset fixes an agent's composition when the agent is created and is not retrofitted into a live one, so the "start a new session to apply it" behavior carries over unchanged.
 
 ---
 
